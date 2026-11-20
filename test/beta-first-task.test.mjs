@@ -81,6 +81,8 @@ test('guided task prepares an exact draft from the current Git project and print
   });
   assert.equal(goal.manifest.limits.hours, 1);
   assert.equal(goal.manifest.limits.maxTasks, 1);
+  assert.equal(goal.manifest.limits.reviewAgentRuns, 1);
+  assert.equal(goal.manifest.limits.taskLimits.coding.reviews, 1);
   assert.match(io.read(), /Last bridge registry call/);
   assert.match(io.read(), /Cursor/);
   assert.match(io.read(), /goal_get/);
@@ -164,6 +166,8 @@ test('preset worker, literal checks and overnight preflight are recorded only in
   assert.equal(goal.status, 'draft');
   assert.equal(goal.manifest.mode.id, 'overnight_review');
   assert.equal(goal.manifest.mode.version, 2);
+  assert.equal(goal.manifest.reviewPolicy.source, 'host');
+  assert.equal(goal.manifest.limits.reviewAgentRuns, 1);
   assert.equal(goal.manifest.providerPolicy.defaultWorkerId, 'project-worker');
   assert.equal(goal.manifest.providerPolicy.plannerWorkerId, 'default-worker');
   assert.equal(goal.manifest.routingPolicy.defaultWorkerId, 'project-worker');
@@ -193,3 +197,17 @@ test('the package source closure includes the scripted demo runner', async () =>
   const sources = await sourceClosure(root, ['src/beta/first-task.mjs']);
   assert.ok(sources.includes('src/harness/outcomes/demo.mjs'));
 });
+
+for (const [mode, reviewerRuns] of [['collaborative', 1], ['deepseek_only', 0]]) {
+  test(`guided ${mode} budgets match the saved review policy`, async t => {
+    const f = await fixture(t, [profile('default-worker')]);
+    const repo = await repository(f);
+    const prompts = [mode, ...answers().slice(1)];
+    assert.equal(await runFirstTask(f.paths, [repo.root], {...terminal(prompts), invoke: f.invoke}), 0);
+    const [goal] = f.c.store.all('goal');
+    assert.equal(goal.manifest.limits.reviewAgentRuns, reviewerRuns);
+    assert.equal(goal.manifest.limits.taskLimits.coding.reviews, reviewerRuns);
+    assert.equal(goal.manifest.reviewPolicy?.source, reviewerRuns ? 'host' : undefined);
+    assert.deepEqual(f.calls, ['assignment_prepare', 'goal_get']);
+  });
+}
