@@ -60,6 +60,8 @@ The four available workflow policies are collaborative, API-worker-only (`deepse
 
 Use **[** for older handoffs and **]** for newer handoffs. In goal selection and details, these keys page up and down. Page Up/Down (Fn + ↑/↓ on a Mac keyboard) still work.
 
+Press **c** for Connections and **v** for Activity. Connections shows the selected coding app and worker with the last recorded evidence when available. Press **e** or **h** there for the setup and connection commands. In Activity, use the arrow keys to select an assignment. **Esc** returns to the previous view.
+
 If the existing Mosaic coding core is installed in its standard user location, the terminal also discovers its read-only viewer connection. A chat using `frontier-harness` writes to that existing service; a chat using `mosaic-beta` writes to the separate beta service. The terminal labels the service it is watching, follows work when the current service is empty or another service becomes active, and retains the selected service when both have active work. Use `mosaic --source core` or `mosaic --source beta` to choose explicitly. No goals, approvals or settings are migrated between services. Older core versions load saved handoffs in bounded pages; the terminal shows a loading message while catching up. If the watched service disconnects, its last saved view stays visible as stale.
 
 ```sh

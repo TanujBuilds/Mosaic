@@ -3,6 +3,7 @@ import {client} from './client.mjs';
 import {OBSERVER_TOOLS} from '../harness/observer.mjs';
 import {entry} from './files.mjs';
 import {chooseCurrent,currentHistory,currentRank} from './current.mjs';
+import {readHostConnection} from './hosts/connection-evidence.mjs';
 
 const labels={beta:'Mosaic Beta (mosaic-beta)',core:'Mosaic core (frontier-harness)'};
 const rank=snapshot=>snapshot.goals.some(g=>g.status==='active')?2:snapshot.goals.length?1:0;
@@ -19,9 +20,16 @@ export function observerClient(paths,{source='auto'}={}){
  const histories=new Map();
  let pinned=false;
  let selected=source==='auto'?null:source;
- const decorate=(id,snapshot,other=[])=>({...snapshot,source:id,sourceLabel:labels[id],
-  sourceHint:other.length?`Other saved goals: mosaic --source ${other[0]}`:null,
-  goals:id==='core'?snapshot.goals.map(g=>({...g,workerProfile:g.workerProfile??{displayName:'DeepSeek'}})):snapshot.goals});
+ const decorate=async(id,snapshot,other=[])=>{
+  const connections=snapshot.connections;
+  const receipt=id==='beta'&&connections?.host?await readHostConnection(paths).catch(()=>null):null;
+  return {...snapshot,source:id,sourceLabel:labels[id],
+   ...(receipt&&receipt.hostId===connections.host.id?{
+    connections:{...connections,host:{...connections.host,lastConnection:receipt}}
+   }:{}),
+   sourceHint:other.length?`Other saved goals: mosaic --source ${other[0]}`:null,
+   goals:id==='core'?snapshot.goals.map(g=>({...g,workerProfile:g.workerProfile??{displayName:'DeepSeek'}})):snapshot.goals};
+ };
  const invoke=async(name,input={},signal)=>{
   if(!OBSERVER_TOOLS.has(name))throw Error('Terminal observer has read-only access');
   if(name!=='observer_snapshot'||input.goalId){
@@ -71,7 +79,7 @@ export function observerClient(paths,{source='auto'}={}){
   let notice=choice.kind==='running'?'Current project · working now':choice.kind==='unknown'?'Current project · native activity is unconfirmed':choice.kind==='recent'?'No work currently running · most recent project':'No work currently running · no saved projects';
   if(choice.kind==='recent'&&candidates.some(c=>c.unconfirmed))notice='Most recent project · no confirmed running work; native activity is unconfirmed';
   if(uncertain)notice='Showing available activity · some service history is unavailable or still loading';
-  return {...choice,notice,snapshot:decorate(choice.id,choice.snapshot,candidates.filter(c=>c.id!==choice.id&&c.snapshot.goals.length).map(c=>c.id))};
+  return {...choice,notice,snapshot:await decorate(choice.id,choice.snapshot,candidates.filter(c=>c.id!==choice.id&&c.snapshot.goals.length).map(c=>c.id))};
  };
  return invoke;
 }
