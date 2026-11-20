@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
@@ -216,4 +216,15 @@ test('a changed host binding during confirmation prevents the approved settings 
   await assert.rejects(runConnectionRepair(paths, worker, io), /binding changed/);
   assert.deepEqual(await readFile(paths.config), before);
   await assert.rejects(readFile(paths.setupIntent), {code: 'ENOENT'});
+});
+
+
+test('coding app repair can show registration steps when the worker credential store is unreadable', async t => {
+  const {paths, hostTarget} = await fixture(t);
+  await writeFile(paths.credentials, 'incomplete data', {mode: 0o600});
+  const before = await readFile(hostTarget);
+  const io = interaction([]);
+  assert.equal(await runConnectionRepair(paths, ['--host'], io), true);
+  assert.match(io.text(), /Connect Cursor/);
+  assert.deepEqual(await readFile(hostTarget), before);
 });

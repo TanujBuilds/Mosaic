@@ -205,13 +205,14 @@ export async function runConnectionRepair(paths, args = [], options = {}) {
   }
   if (pending && selection.command === '--worker') throw Error(pending.repair ? 'Run mosaic repair --resume to finish the approved repair.' : 'Run mosaic setup to resume the pending setup.');
   const settings = readSettingsSync(paths);
+  if (selection.command === '--host') return diagnose(paths, settings, null, pending, io, {hostOnly: true});
   const credentials = readCredentialsSync(paths);
   if (settings) {
     // Legacy host instructions do not require reading legacy worker secrets.
     const identity = settings.schema === 1 ? {schema: 1, host: settings.host ?? {id: 'codex'}} : settings;
     await validateMultiWorkerCredentials(identity, credentials, {allowMissing: true});
   }
-  if (selection.command !== '--worker') return diagnose(paths, settings, credentials, pending, io, {hostOnly: selection.command === '--host'});
+  if (selection.command !== '--worker') return diagnose(paths, settings, credentials, pending, io);
   const readSnapshot = () => canonical(readSettingsSync(paths)) === canonical(settings) && canonical(readCredentialsSync(paths)) === canonical(credentials);
   return repairWorker(paths, selection, settings, credentials, io, readSnapshot);
 }
