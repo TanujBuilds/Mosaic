@@ -6,32 +6,38 @@ Mosaic coordinates bounded coding work between your coding app and an existing m
 
 ## Install Mosaic Beta on Apple Silicon
 
-[Download `install-mosaic.sh`](https://github.com/TanujBuilds/Mosaic/releases/download/v0.1.0-beta.204/install-mosaic.sh) and save it to your Home folder. You can open the file in a text editor to see what it does. Then run this in Terminal.
-
-```sh
-sh ~/install-mosaic.sh
-```
-
-If you saved it elsewhere, type `sh ` in Terminal, drag the downloaded file into the window, and press Return. The script downloads and checks the Mosaic archive and opens setup on a fresh install.
-
-<details>
-<summary>Verify both downloads and install in one paste</summary>
-
-This command downloads the installer, checks its SHA-256, and runs it. Copy the whole block into Terminal.
+Copy the whole block into Terminal and press Return. It downloads and verifies the installer and archive, installs Mosaic for your account, and opens the setup wizard on a fresh install.
 
 ```sh
 (
-  mosaic_installer=$(/usr/bin/mktemp "${TMPDIR:-/private/tmp}/mosaic-install.XXXXXXXX") &&
-  trap '/bin/rm -f "$mosaic_installer"' EXIT &&
-  /usr/bin/curl -q -fsSL --max-redirs 3 --proto '=https' --proto-redir '=https' \
-    -o "$mosaic_installer" \
-    https://github.com/TanujBuilds/Mosaic/releases/download/v0.1.0-beta.204/install-mosaic.sh &&
-  [ "$(/usr/bin/shasum -a 256 < "$mosaic_installer")" = "f1c72cb4252d101c0f3c54314ead70109bae75f4eae65ee8bca649105cef4be1  -" ] &&
-  /bin/sh "$mosaic_installer"
+  release=https://github.com/TanujBuilds/Mosaic/releases/download/v0.1.0-beta.204
+  archive=mosaic-beta-0.1.0-beta.204-darwin-arm64.tar.gz
+  stage=$(/usr/bin/mktemp -d "${TMPDIR:-/private/tmp}/mosaic-install.XXXXXXXX") || exit 1
+  trap '/bin/rm -rf -- "$stage"' EXIT
+  trap 'exit 129' HUP
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+
+  download() {
+    if ! /usr/bin/curl -q -fsSL --proto '=https' --proto-redir '=https' \
+      --max-redirs 3 --connect-timeout 15 --max-time 180 --max-filesize 268435456 \
+      --retry 1 --retry-all-errors --output "$stage/$1" "$release/$1"; then
+      printf 'Mosaic could not download %s. See Manual and offline installation below.\n' "$1" >&2
+      return 1
+    fi
+  }
+
+  download install-mosaic.sh || exit 1
+  if [ "$(/usr/bin/shasum -a 256 < "$stage/install-mosaic.sh")" != "f1c72cb4252d101c0f3c54314ead70109bae75f4eae65ee8bca649105cef4be1  -" ]; then
+    printf 'The Mosaic installer checksum did not match. Installation stopped.\n' >&2
+    exit 1
+  fi
+
+  printf 'Downloading Mosaic Beta .204 (86 MB)…\n'
+  download "$archive" || exit 1
+  /bin/sh "$stage/install-mosaic.sh" --archive "$stage/$archive"
 )
 ```
-
-</details>
 
 In the setup wizard:
 
@@ -42,6 +48,32 @@ In the setup wizard:
 You can choose **No worker yet** to start with just the coding app. Mosaic uses a model server you already run. The optional model discovery and connection checks ask before contacting your server.
 
 After registering Mosaic, check that your coding app can see the `mosaic-beta` tools and call `registry_list` with `{}`.
+
+<details>
+<summary>Manual and offline installation</summary>
+
+If the archive download keeps failing, download the installer and archive on a connection that works. Copy both files to your Mac for an offline install. The installer verifies the archive before extracting it. Compare the script’s SHA-256 with the pinned value in the command above before running it.
+
+- [Installer script](https://github.com/TanujBuilds/Mosaic/releases/download/v0.1.0-beta.204/install-mosaic.sh)
+- [Apple Silicon archive](https://github.com/TanujBuilds/Mosaic/releases/download/v0.1.0-beta.204/mosaic-beta-0.1.0-beta.204-darwin-arm64.tar.gz)
+- [Release checksums](https://github.com/TanujBuilds/Mosaic/releases/download/v0.1.0-beta.204/SHA256SUMS)
+
+Save both files in your Downloads folder and keep the archive as a `.tar.gz` file. In Terminal, check the installer.
+
+```sh
+/usr/bin/shasum -a 256 "$HOME/Downloads/install-mosaic.sh"
+```
+
+If the installer checksum matches, run the verified installer with the local archive.
+
+```sh
+/bin/sh "$HOME/Downloads/install-mosaic.sh" --archive \
+  "$HOME/Downloads/mosaic-beta-0.1.0-beta.204-darwin-arm64.tar.gz"
+```
+
+[Manual archive extraction](docs/TERMINAL_BETA.md#install-from-an-archive) · [Installation and recovery](docs/PORTABLE_BETA_INSTALL.md)
+
+</details>
 
 ## Try the source
 
