@@ -4,6 +4,7 @@ import json
 import os
 import pty
 import select
+import signal
 import struct
 import subprocess
 import sys
@@ -43,7 +44,11 @@ def expect(marker):
 try:
     for marker, keys in json.loads(raw_steps):
         expect(marker)
-        os.write(master, keys.encode())
+        if isinstance(keys, int):
+            fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 28, keys, 0, 0))
+            os.kill(child.pid, signal.SIGWINCH)
+        else:
+            os.write(master, keys.encode())
     expect("MOSAIC_SETUP_RESULT ")
     if child.wait(timeout=2) != 0:
         raise RuntimeError("setup subject failed")

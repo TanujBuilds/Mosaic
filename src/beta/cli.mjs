@@ -6,12 +6,13 @@ import {startMcp} from '../harness/mcp.mjs';
 import path from 'node:path';
 import {currentHome,locations,jsonFile,saveJson,withLock} from './files.mjs';
 import {client} from './client.mjs';
-import {readSettings,setup,setupComplete,doctor,previewHostRegistration} from './setup.mjs';
+import {readSettings,setup,setupComplete,doctor,previewHostRegistration,starter} from './setup.mjs';
 import {serveBeta} from './service.mjs';
 import {runObserver} from './observer.mjs';
 import {observerClient} from './sources.mjs';
 import {installedLauncher,uninstall,verifyVersion} from './install.mjs';
 import {formatHostReadiness,formatHostRegistrationGuide} from './hosts/index.mjs';
+import {readHostConnection,recordHostConnection} from './hosts/connection-evidence.mjs';
 
 const help=`Mosaic Beta
 
@@ -69,11 +70,13 @@ export async function main(args=process.argv.slice(2)){
   if(!args.length&&!settings)throw Error('Run mosaic setup to select a coding app, or use mosaic connect --host ID to see its instructions.');
   const hostId=args[1]??settings?.host?.id??'codex';
   const preview=previewHostRegistration(paths,hostId);
+  const connection=settings?await readHostConnection(paths).catch(()=>null):null;
   process.stdout.write(formatHostRegistrationGuide(preview)+'\n'+formatHostReadiness(hostId,{
    configuration:settings?'saved':'selected for this guide',
    instructions:'shown above',
+   connection,
    nextAction:'Follow the registration steps in the selected app and check discovery and the registry_list tool result there.'
-  }));
+  })+'\nStart a task in your coding app with:\n'+starter+'\n');
   return;
  }
  if(command==='setup'||!command&&sourceIndex===-1){
@@ -109,8 +112,13 @@ export async function main(args=process.argv.slice(2)){
  }
  if(command==='serve')return serveBeta(paths,await readSettings(paths));
  if(command==='mcp'){
-  const invoke=client(paths),tools=(await invoke('tools_list')).filter(tool=>tool.name!=='service_stop');
-  return startMcp({name:'mosaic-beta',invoke,tools});
+  const invoke=client(paths),settings=await readSettings(paths);
+  const tools=(await invoke('tools_list')).filter(tool=>tool.name!=='service_stop');
+  return startMcp({name:'mosaic-beta',tools,invoke:async(name,input)=>{
+   const result=await invoke(name,input);
+   if(name==='registry_list')await recordHostConnection(paths,settings).catch(()=>{});
+   return result;
+  }});
  }
  if(command==='uninstall')return uninstall(paths);
  throw Error('Unknown Mosaic Beta command. Run mosaic --help.');

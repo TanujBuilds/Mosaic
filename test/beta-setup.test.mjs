@@ -5,9 +5,11 @@ import {mkdir,mkdtemp,readFile,rm,symlink,writeFile} from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import {fileURLToPath} from 'node:url';
-import {locations,privateDirectories} from '../src/beta/files.mjs';
+import {locations,privateDirectories,saveJson} from '../src/beta/files.mjs';
 import {Coordinator} from '../src/harness/coordinator.mjs';
 import {Goals} from '../src/harness/goals.mjs';
+import {detectCodingApps} from '../src/beta/hosts/detection.mjs';
+import {readHostConnection,recordHostConnection} from '../src/beta/hosts/connection-evidence.mjs';
 
 const cli=fileURLToPath(new URL('../src/beta/cli.mjs',import.meta.url));
 const setupModule=new URL('../src/beta/setup.mjs',import.meta.url).href;
@@ -217,6 +219,37 @@ function terminalSetup(steps,{width=72,terminal='xterm-256color',plain=false}={}
  return {transcript:child.stdout,result};
 }
 
+test('host detection finds known executables and app bundles without running them',async t=>{
+ const home=await mkdtemp(path.join(os.tmpdir(),'Mosaic detected hosts '));
+ t.after(()=>rm(home,{recursive:true,force:true}));
+ const paths=locations(home,true),bin=path.join(home,'.local','bin');
+ assert.deepEqual(await detectCodingApps(paths),[]);
+ await mkdir(bin,{recursive:true});
+ await writeFile(path.join(bin,'codex'),'#!/bin/sh\nexit 9\n',{mode:0o755});
+ await writeFile(path.join(bin,'agy'),'#!/bin/sh\nexit 9\n',{mode:0o755});
+ await writeFile(path.join(bin,'claude'),'not executable',{mode:0o644});
+ const contents=path.join(home,'Applications','Cursor.app','Contents');
+ await mkdir(contents,{recursive:true});
+ await writeFile(path.join(contents,'Info.plist'),'fixture bundle');
+ assert.deepEqual(await detectCodingApps(paths),['codex','cursor','antigravity']);
+});
+
+test('registry call evidence belongs to the saved settings and is invalidated by a host change',async t=>{
+ const {paths}=await fixture(t);
+ const initial=run(paths);
+ assert.equal(initial.status,0,initial.stderr);
+ const settings=await bytes(paths.config);
+ assert.equal(await readHostConnection(paths),null);
+ await recordHostConnection(paths,settings);
+ const receipt=await readHostConnection(paths);
+ assert.equal(receipt.kind,'registry_call');
+ assert.equal(receipt.hostId,'codex');
+ assert.ok(Number.isSafeInteger(receipt.at));
+ await saveJson(paths.config,{...settings,host:{id:'cursor',options:{}}});
+ await recordHostConnection(paths,settings);
+ assert.equal(await readHostConnection(paths),null);
+});
+
 test('portable setup uses the blue tiled welcome and arrow keys to go back, select a host and save', {skip:process.platform!=='darwin'},()=>{
  const {transcript,result}=terminalSetup([
   ['Pick your coding app','\x1b[B\x1b[B\r'],
@@ -243,6 +276,16 @@ for(const exit of ['q','\x03'])test(`narrow setup shows the compact mark and can
  assert.equal(result.host,undefined);
  assert.equal(result.credentialsWritten,false);
  assert.match(result.error??transcript,/Setup (?:interrupted|exited|cancelled)/i);
+});
+
+test('an open setup menu redraws at the new width without a navigation key', {skip:process.platform!=='darwin'},()=>{
+ const {result}=terminalSetup([
+  ['q / Ctrl+C exit',76],
+  ['Up/Down move | Enter confirm | q / Ctrl+C exit',38],
+  ['q / Ctrl+C exit','q']
+ ],{width:38});
+ assert.equal(result.host,undefined);
+ assert.equal(result.credentialsWritten,false);
 });
 
 for(const policy of [{plain:true},{terminal:'dumb'}])test(`plain portable setup accepts numbered answers for ${policy.plain?'NO_COLOR':'TERM=dumb'}`,{skip:process.platform!=='darwin'},()=>{

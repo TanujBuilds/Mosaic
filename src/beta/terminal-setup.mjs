@@ -47,6 +47,7 @@ export function terminalSetupInput(input, output, signal, interrupt) {
   }
 
   function draw() {
+    if (!menu) return;
     erase();
     const {title, options, selected, back} = menu;
     const width = Math.max(1, (output.columns || 80) - 1);
@@ -110,6 +111,7 @@ export function terminalSetupInput(input, output, signal, interrupt) {
       signal.addEventListener('abort', abort);
       input.on('end', interrupt);
       input.on('data', forward);
+      output.on('resize', draw);
       input.setRawMode(true);
       input.resume();
     },
@@ -125,6 +127,7 @@ export function terminalSetupInput(input, output, signal, interrupt) {
       signal.removeEventListener('abort', abort);
       input.off('end', interrupt);
       input.off('data', forward);
+      output.off('resize', draw);
       keys.off('keypress', keypress);
       keys.destroy();
       lines.destroy();

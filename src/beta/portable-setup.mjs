@@ -6,6 +6,7 @@ import {ProviderRegistry} from '../harness/providers/registry.mjs';
 import {digest} from '../harness/contracts.mjs';
 import {normalizeSettings,readCredentials,readSettings,configuredPolicies,validateSettingsCredentials} from './settings.mjs';
 import {getHost,HOST_IDS,formatHostReadiness,formatHostRegistrationGuide} from './hosts/index.mjs';
+import {detectCodingApps} from './hosts/detection.mjs';
 import {validateMultiWorkerCredentials} from './multi-worker-setup.mjs';
 import {collectPortableSetup,formatPortableSetupSummary} from './setup-wizard.mjs';
 import {SETUP_PROBE_MESSAGE,createProviderDiagnostic,discoverProvider,probeProvider,formatProviderDiagnostic} from './provider-diagnostics.mjs';
@@ -96,10 +97,11 @@ export async function setupPortable(paths,{ask,choose,output,settings:provided,e
   await assertCurrentSetup();
   return value;
  }:undefined;
+ const detectedHosts=provided?undefined:await detectCodingApps(paths);
  let previousSelection;
  for(;;){
   await assertCurrentSetup();
-  const configured=provided?{settings:normalizeSettings(provided),rawSettings:provided,entries:{}}:await collectPortableSetup(guardedAsk,output,{execution:execution??old?.execution,nativeCheckRuntime:nativeCheckRuntime??old?.nativeCheckRuntime,existingSettings:old,existingCredentialRefs:Object.keys(credentials.entries),choose:guardedChoose,previousSelection});
+  const configured=provided?{settings:normalizeSettings(provided),rawSettings:provided,entries:{}}:await collectPortableSetup(guardedAsk,output,{execution:execution??old?.execution,nativeCheckRuntime:nativeCheckRuntime??old?.nativeCheckRuntime,existingSettings:old,existingCredentialRefs:Object.keys(credentials.entries),choose:guardedChoose,previousSelection,detectedHosts});
   await assertCurrentSetup();
   const arrows=guardedChoose&&configured.presentation==='simple';
   const confirm=async (prompt,title,affirmative,negative)=>yes(arrows

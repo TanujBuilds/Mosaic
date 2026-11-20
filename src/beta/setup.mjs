@@ -20,6 +20,7 @@ import {canonical,digest} from '../harness/contracts.mjs';
 import {ProviderRegistry} from '../harness/providers/registry.mjs';
 import {discoverProvider,formatProviderDiagnostic} from './provider-diagnostics.mjs';
 import {getHost,normalizeHostSettings,formatHostReadiness} from './hosts/index.mjs';
+import {readHostConnection} from './hosts/connection-evidence.mjs';
 import {supportsSetupMenus,terminalSetupInput,welcomeSetup} from './terminal-setup.mjs';
 
 const exec=promisify(execFile);
@@ -460,7 +461,8 @@ export async function doctor(paths,output=process.stdout,options={}){
  }
  const failed=checks.find(item=>!item.ok);
  const nextAction=failed?(failed.name==='Installation'?'Reinstall Mosaic Beta from a verified archive, then run mosaic doctor.':failed.name==='Setup'||failed.name==='Settings'||failed.name.startsWith('Codex')||failed.name==='Isolated MCP fixture'||failed.name==='Coordinator'?failed.detail:`Resolve the ${failed.name} issue above, then rerun mosaic doctor${options.providers===true?' --providers':''}.`):undefined;
- const readiness=formatHostReadiness(selectedHost,{configuration:settings?'saved':'not configured',instructions,registration,nextAction});
+ const connection=settings?await readHostConnection(paths).catch(()=>null):null;
+ const readiness=formatHostReadiness(selectedHost,{configuration:settings?'saved':'not configured',instructions,registration,connection,nextAction});
  const publish=()=>{for(const {name,ok,detail} of checks)output.write(`${ok?'OK':'CHECK'}  ${name} · ${detail}\n`);output.write(readiness);};
  if(settings?.schema===2)await withLock(paths,async()=>{await assertDoctorSnapshot();publish();});else publish();
  return checks.every(item=>item.ok);

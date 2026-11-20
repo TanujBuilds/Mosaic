@@ -31,11 +31,12 @@ export function formatHostRegistrationGuide(preview){
  ].join('\n');
 }
 
-// Local presentation only. Neither a receipt nor a viewer request observes the
-// coding app's tool discovery/calls; no host-proof schema or probe is implied.
-export function formatHostReadiness(hostId,{configuration='selected',instructions='not recorded for this configuration',registration='unverified',nextAction}={}){
+// A bridge call is historical evidence, and does not identify the app or its current health.
+export function formatHostReadiness(hostId,{configuration='selected',instructions='not recorded for this configuration',registration='unverified',connection=null,nextAction}={}){
  const host=getHost(hostId),fixture=registration==='fixture',saved=registration==='saved';
  const registrationDetail=fixture?'saved in a disposable fixture; actual host registration is unverified.':saved?'saved registration verified; actual tool discovery and calls remain unverified.':'unverified; saving local settings or instructions does not register the coding app.';
  const next=nextAction??(fixture||saved?`In an actual ${host.displayName} profile, discover the mosaic-beta tools, then call registry_list with {} to check the connection without dispatching Mosaic work.`:`Run mosaic connect for ${host.displayName} or use mosaic host-preview --host ${hostId} for the JSON preview.`);
- return `INFO  Coding app · ${host.displayName} ${configuration}; selection does not prove a connection.\nINFO  Host registration instructions · ${instructions}.\n${fixture||saved?'INFO':'UNVERIFIED'}  Host registration · ${registrationDetail}\nUNVERIFIED  Host tools discovered · no discovery observed from the selected coding app.\nUNVERIFIED  Host tool call · no successful call observed from the selected coding app.\nINFO  Host evidence · fixture adapters, provider checks and coordinator viewer tools_list do not prove coding-app discovery or a successful call; these stages make no sign-in, host-version, coding-quality or live-provider qualification claim.\nNext action: ${next}\n`;
+ const observed=connection?.hostId===hostId&&connection?.kind==='registry_call';
+ const toolCall=observed?`OK  Connected · Mosaic bridge answered a registry call at ${new Date(connection.at).toISOString()} (last observed).`:'UNVERIFIED  Host tool call · no successful call observed from the selected coding app.';
+ return `INFO  Coding app · ${host.displayName} ${configuration}; selection does not prove a connection.\nINFO  Host registration instructions · ${instructions}.\n${fixture||saved?'INFO':'UNVERIFIED'}  Host registration · ${registrationDetail}\nUNVERIFIED  Host tools discovered · no discovery observed from the selected coding app.\n${toolCall}\nINFO  Host evidence · fixture adapters, provider checks and coordinator viewer tools_list do not prove coding-app discovery or a successful call; these stages make no sign-in, host-version, coding-quality or live-provider qualification claim.\nNext action: ${next}\n`;
 }
