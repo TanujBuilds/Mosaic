@@ -13,7 +13,7 @@ export async function createOutcomeDemo(root) {
   await mkdir(path.join(repo, 'checks'));
   await writeFile(path.join(repo, 'src/value.mjs'), 'export const value = 0;\n');
   await writeFile(path.join(repo, 'checks/verify.mjs'),
-    "import {value} from '../src/value.mjs'; if (value !== 42) process.exit(1);\n");
+    "import {value} from " + "'../src/value.mjs'; if (value !== 42) process.exit(1);\n");
   await git(repo, 'init', '-q');
   await git(repo, 'add', '.');
   await git(repo, '-c', 'user.email=fixture@example.invalid', '-c', 'user.name=Fixture', 'commit', '-qm', 'Fixture baseline');
