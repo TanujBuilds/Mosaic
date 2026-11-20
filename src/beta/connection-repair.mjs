@@ -33,12 +33,12 @@ async function diagnose(paths, settings, credentials, pending, options, {hostOnl
   if (pending) output.write(pending.repair ? 'A previously approved worker repair is pending. Run mosaic repair --resume.\n' : 'Setup is pending. Run mosaic setup to resume.\n');
   if (!settings) {
     output.write('No Mosaic connection settings found. Run mosaic setup to connect a coding app or add a worker.\n');
-    return true;
+    return [];
   }
   const host = getHost(settings.host?.id ?? 'codex');
   if (hostOnly) {
     output.write(formatHostRegistrationGuide(host.previewRegistration({paths, launcher: paths.launcher})));
-    return true;
+    return [];
   }
   const connection = await readHostConnection(paths).catch(() => null);
   output.write(`Coding app: ${host.displayName}. ${connection ? 'A bridge call was recorded for these settings.' : 'No bridge call is recorded for these settings.'}\n`);
@@ -46,21 +46,28 @@ async function diagnose(paths, settings, credentials, pending, options, {hostOnl
   if (!await entry(paths.launcher)) output.write('Mosaic launcher is missing. Run mosaic doctor to check the installation.\n');
   if (settings.schema === 1) {
     output.write('Worker repair uses portable settings. Run mosaic migrate to review the settings upgrade.\n');
-    return true;
+    return [];
   }
+  let canRepairWorker = !pending;
   if (!pending) {
     try {
       await readPortableRepairBinding(paths, settings, options);
       output.write('Saved coding app instructions are current with these settings.\n');
     } catch {
+      canRepairWorker = false;
       output.write('The saved coding app binding needs attention. Review the app instructions or run mosaic setup to recover setup.\n');
     }
     try {
       await assertMaintenanceIdle(paths, {settingsChange: true});
     } catch (error) {
+      canRepairWorker = false;
       if (/unresolved|stopped|revision/i.test(error.message)) output.write('Resolve the existing work in its coding app before saving a worker change.\n');
       else output.write('Run mosaic doctor to check the local coordinator and saved work.\n');
     }
+  }
+  if (!credentials) {
+    output.write('Private worker settings or credentials could not be read safely. Run mosaic doctor to check the local setup.\n');
+    return [];
   }
   const workers = settings.providers.filter(profile => profile.roles.includes('worker'));
   if (!workers.length) output.write('No API worker is configured. Run mosaic setup to add one.\n');
@@ -68,10 +75,10 @@ async function diagnose(paths, settings, credentials, pending, options, {hostOnl
     const key = profile.credentialRef === null ? 'no bearer key configured' : credentialExists(profile, credentials) ? 'bearer key saved' : 'bearer key missing';
     output.write(`Worker ${profile.id}: ${quoted(profile.baseUrl)} · ${quoted(profile.model)} · ${key}.\n`);
     if (profile.roles.includes('reviewer')) output.write('This profile also handles API review. Run mosaic setup to review both roles together.\n');
-    else output.write(`Edit this connection with mosaic repair --worker ${profile.id}.\n`);
+    else if (canRepairWorker) output.write(`Edit this connection with mosaic repair --worker ${profile.id}.\n`);
   }
   output.write('Provider connectivity is unchecked. This diagnosis used local records.\n');
-  return true;
+  return canRepairWorker ? workers.filter(profile => !profile.roles.includes('reviewer')) : [];
 }
 
 async function collectChange(profile, credentials, settings, ask) {
@@ -192,27 +199,64 @@ async function repairWorker(paths, selection, settings, credentials, options, re
   return options.ask ? work(options.ask) : askSession(options.input, options.output, work, {interruptMessage: interruption});
 }
 
+async function resumeApprovedRepair(paths, pending, options) {
+  const {output} = options;
+  if (!pending) { output.write('No worker repair is pending.\n'); return true; }
+  if (pending.schema !== 2 || !pending.repair) throw Error('Setup is pending. Run mosaic setup to resume.');
+  await resumePortableSetup(paths, pending, options);
+  output.write('Resumed the approved worker repair.\n');
+  return true;
+}
+
+async function validatedCredentials(paths, settings) {
+  const credentials = readCredentialsSync(paths);
+  if (settings?.schema === 2) await validateMultiWorkerCredentials(settings, credentials, {allowMissing: true});
+  return credentials;
+}
+
+async function runRepairMenu(paths, settings, pending, options) {
+  const credentials = await validatedCredentials(paths, settings).catch(() => null);
+  const workers = await diagnose(paths, settings, credentials, pending, options);
+  if (!settings) return true;
+  const actions = [{label: 'Return without changes'}, {label: 'Review coding app connection', args: ['--host']}];
+  if (pending?.schema === 2 && pending.repair) actions.push({label: 'Resume approved worker repair', resume: true});
+  for (const profile of workers) actions.push({label: `Edit worker ${profile.id}`, args: ['--worker', profile.id]});
+  const choices = actions.map(({label}, index) => ({value: String(index), label}));
+  const title = 'Choose a connection to repair';
+  const {input, output} = options;
+  const work = async (ask, signal, choose) => {
+    const answer = choose ? await choose(title, choices, {back: true}) : await ask(
+      `\n${title}\n${choices.map(({value, label}) => `  ${value}. ${label}`).join('\n')}\nChoice [0] `
+    );
+    if (!answer) return true;
+    const index = choices.findIndex(choice => choice.value === answer);
+    if (index < 0) throw Error('Choose one of the connection repair options.');
+    const action = actions[index];
+    if (action.resume) return resumeApprovedRepair(paths, pending, options);
+    if (action.args) return runConnectionRepair(paths, action.args, {...options, openMenu: false, ask,
+      signal: options.signal && signal ? AbortSignal.any([options.signal, signal]) : options.signal ?? signal});
+    return true;
+  };
+  return options.ask ? work(options.ask) : askSession(input, output, work, {enableMenus: true, interruptMessage: interruption});
+}
+
 export async function runConnectionRepair(paths, args = [], options = {}) {
   const selection = parseArgs(args);
   const io = {input: process.stdin, output: process.stdout, codexRegistrations: codexRegistrations(paths), ...options};
   const pending = await jsonFile(paths.setupIntent, {privateFile: true});
-  if (selection.command === '--resume') {
-    if (!pending) { io.output.write('No worker repair is pending.\n'); return true; }
-    if (pending.schema !== 2 || !pending.repair) throw Error('Setup is pending. Run mosaic setup to resume.');
-    await resumePortableSetup(paths, pending, io);
-    io.output.write('Resumed the approved worker repair.\n');
-    return true;
-  }
+  if (selection.command === '--resume') return resumeApprovedRepair(paths, pending, io);
   if (pending && selection.command === '--worker') throw Error(pending.repair ? 'Run mosaic repair --resume to finish the approved repair.' : 'Run mosaic setup to resume the pending setup.');
   const settings = readSettingsSync(paths);
-  if (selection.command === '--host') return diagnose(paths, settings, null, pending, io, {hostOnly: true});
-  const credentials = readCredentialsSync(paths);
-  if (settings) {
-    // Legacy host instructions do not require reading legacy worker secrets.
-    const identity = settings.schema === 1 ? {schema: 1, host: settings.host ?? {id: 'codex'}} : settings;
-    await validateMultiWorkerCredentials(identity, credentials, {allowMissing: true});
+  if (selection.command === '--host') {
+    await diagnose(paths, settings, null, pending, io, {hostOnly: true});
+    return true;
   }
-  if (selection.command !== '--worker') return diagnose(paths, settings, credentials, pending, io);
+  if (selection.command === 'diagnose' && io.openMenu && (io.ask || io.input.isTTY && io.output.isTTY)) return runRepairMenu(paths, settings, pending, io);
+  const credentials = await validatedCredentials(paths, settings);
+  if (selection.command === 'diagnose') {
+    await diagnose(paths, settings, credentials, pending, io);
+    return true;
+  }
   const readSnapshot = () => canonical(readSettingsSync(paths)) === canonical(settings) && canonical(readCredentialsSync(paths)) === canonical(credentials);
   return repairWorker(paths, selection, settings, credentials, io, readSnapshot);
 }

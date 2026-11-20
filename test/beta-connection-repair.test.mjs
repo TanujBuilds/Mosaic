@@ -228,3 +228,43 @@ test('coding app repair can show registration steps when the worker credential s
   assert.match(io.text(), /Connect Cursor/);
   assert.deepEqual(await readFile(hostTarget), before);
 });
+
+test('dashboard repair diagnoses, then opens the selected worker in the focused editor', async t => {
+  const {paths} = await fixture(t);
+  const io = interaction(['2', '', 'from-dashboard', '', 'y']);
+  assert.equal(await runConnectionRepair(paths, [], {...io, openMenu: true}), true);
+  assert.match(io.prompts[0].prompt, /Choose a connection/);
+  assert.match(io.text(), /Worker connection preview for worker/);
+  assert.equal((await readSettings(paths)).providers[0].model, 'from-dashboard');
+});
+
+test('dashboard repair offers safe host instructions when worker credentials are unreadable', async t => {
+  const {paths} = await fixture(t);
+  await writeFile(paths.credentials, 'incomplete data', {mode: 0o600});
+  const io = interaction(['1']);
+  assert.equal(await runConnectionRepair(paths, [], {...io, openMenu: true}), true);
+  assert.match(io.text(), /Connect Cursor/);
+  assert.ok(!io.prompts[0].prompt.includes('Edit worker'));
+});
+
+test('dashboard repair resumes the approved repair selected in its picker', async t => {
+  const {paths} = await fixture(t);
+  const io = interaction(['', 'worker-pending-revision', '', 'y']);
+  await assert.rejects(runConnectionRepair(paths, worker, {...io, afterStep(step) {if (step === 'intent') throw Error('interrupted');}}), /interrupted/);
+  const before = await readSettings(paths);
+  const menu = interaction(['2']);
+  assert.equal(await runConnectionRepair(paths, [], {...menu, openMenu: true}), true);
+  assert.match(menu.prompts[0].prompt, /Resume approved worker repair/);
+  assert.notEqual((await readSettings(paths)).providers[0].revision, before.providers[0].revision);
+  assert.equal(await setupComplete(paths), true);
+});
+
+test('dashboard repair without a terminal returns the plain local diagnosis', async t => {
+  const {paths} = await fixture(t);
+  const io = interaction([]);
+  assert.equal(await runConnectionRepair(paths, [], {
+    output: io.output, input: Readable.from(['']), openMenu: true
+  }), true);
+  assert.match(io.text(), /Provider connectivity is unchecked/);
+  assert.ok(!io.text().includes('Choose a connection'));
+});

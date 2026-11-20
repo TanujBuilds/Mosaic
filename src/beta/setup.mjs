@@ -134,7 +134,7 @@ export async function setupComplete(paths){
 export const readSettings=readPrivateSettings;
 export {previewSettingsMigration,applySettingsMigration,resumeSettingsMigration};
 
-export async function askSession(input,output,work,{firstRun=false,interruptMessage='Setup interrupted. Run mosaic setup to resume.'}={}){
+export async function askSession(input,output,work,{firstRun=false,enableMenus=firstRun,interruptMessage='Setup interrupted. Run mosaic setup to resume.'}={}){
  const queue=[],interrupted=new AbortController();
  let waiter,closed=false,echo=false;
  const sink=new Writable({write(chunk,_,callback){if(echo)output.write(chunk);callback();}});
@@ -142,7 +142,7 @@ export async function askSession(input,output,work,{firstRun=false,interruptMess
   sink.isTTY=true;sink.columns=output.columns;sink.rows=output.rows;
  }
  const interrupt=()=>{interrupted.abort();queue.length=0;rl.close();};
- const menus=firstRun&&supportsSetupMenus(input,output)?terminalSetupInput(input,output,interrupted.signal,interrupt):null;
+ const menus=enableMenus&&supportsSetupMenus(input,output)?terminalSetupInput(input,output,interrupted.signal,interrupt):null;
  const rl=createInterface({input:menus?.lines??input,output:sink,terminal:!!input.isTTY&&!!output.isTTY,historySize:0});
  rl.on('line',line=>{
   // readline can process more pasted characters before an awaiting prompt resumes.
