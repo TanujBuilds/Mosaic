@@ -86,3 +86,32 @@ export function ownerInbox(c,{goalId=null,actor=null,itemId=null}={}){
  });
  return {items:itemId?items.filter(row=>row.id===itemId):items,hasMore:rows.length>50};
 }
+
+// A terminal summary should remain readable even if a candidate saved a large patch.
+export function ownerGoalView(c, goalId){
+ const goal=c.store.get('goal',identifier(goalId,'goal ID'));
+ const {mode,limits,project,providerPolicy,environment,objective}=goal.manifest;
+ const worker=providerPolicy?.workers.find(item=>item.id===providerPolicy.defaultWorkerId);
+ const maxScopeBytes=128*1024;
+ const checks=project?.checks.map(check=>check.id);
+ const scopeComplete=!!project&&Buffer.byteLength(JSON.stringify([project.readPaths,project.writePaths,checks]))<=maxScopeBytes;
+ const tasks=c.store.db.prepare("SELECT id FROM records WHERE kind='task' AND json_extract(data,'$.goalId')=? ORDER BY rowid LIMIT 101")
+  .all(goal.id).map(({id})=>{
+   const task=c.getTask(id);
+   return {id,status:task.status,priority:task.priority,deadline:task.deadline,spent:task.spent,
+    reason:terminalText(task.reason??'').slice(0,500),
+    spec:{objective:terminalText(task.spec.objective).slice(0,500),kind:task.spec.kind,
+     priority:task.spec.priority,dependsOn:task.spec.dependsOn,limits:task.spec.limits},
+    candidateCommit:task.native?.commit??task.result?.candidate?.commit??null,
+    integration:task.integration?{commit:task.integration.commit}:null};
+  });
+ const checkSuggestions=project?.checks.filter(check=>!Object.hasOwn(check,'env')&&/^[a-z0-9-]{1,120}$/u.test(check.id))
+  .slice(0,50).map(check=>({id:check.id,definitionHash:digest(check)}));
+ return {id:goal.id,status:goal.status,hash:goal.hash,version:goal.version,deadline:goal.deadline,
+  manifest:{mode,limits,environment,objective:terminalText(objective).slice(0,500),
+   workerDefault:worker?{id:worker.id,revision:worker.revision,profileHash:digest(worker)}:null,
+   project:project?{repo:project.repo,scopeComplete,checkSuggestions,
+    ...(scopeComplete?{readPaths:project.readPaths,writePaths:project.writePaths,checks}: {})}:null},
+  ...(goal.manifest.reviewPolicy?{reviewBudget:c.reviewService.budget(goal)}:{}),
+  tasks:tasks.slice(0,100),overflow:tasks.length>100};
+}

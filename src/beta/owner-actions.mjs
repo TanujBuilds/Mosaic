@@ -28,6 +28,7 @@ export async function runOwnerAction(paths,args=[],options={}){
   if(args.length===2){
    const [action,goalId]=args;
    goal=await invoke('owner_action_context',{goalId});
+   if(options.expectedBinding!==undefined&&goal.controlBinding!==options.expectedBinding)throw changed();
    if(!controlStates[action].includes(goal.status))throw Error('This control is unavailable for the current goal state.');
    item={action,goalId,title:goal.objective,detail:'Current goal state: '+goal.status,binding:goal.controlBinding};
   }else{
@@ -45,7 +46,7 @@ export async function runOwnerAction(paths,args=[],options={}){
     id=inbox.items[Number(choice)-1].id;
    }
    const selected=inbox.items.find(row=>row.id===id);
-   if(!selected)throw changed();
+   if(!selected||options.expectedBinding!==undefined&&selected.binding!==options.expectedBinding)throw changed();
    const refreshed=await invoke('owner_inbox',{goalId:selected.goalId,itemId:id});
    item=refreshed.items.find(row=>row.id===id);
    if(!item||item.binding!==selected.binding||item.action!==selected.action)throw changed();

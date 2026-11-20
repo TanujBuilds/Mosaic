@@ -416,3 +416,37 @@ test('manual navigation cancels a pending current jump and ignores its late resu
  assert.equal(observer.state.currentNotice,null);
  assert.equal(observer.state.stale,false);
 });
+
+test('owner handoff uses the decision painted before an in-flight timeline refresh',async()=>{
+ const input=new EventEmitter();
+ Object.assign(input,{isTTY:true,isRaw:false,readableFlowing:false,setRawMode(value){this.isRaw=value;},resume(){},pause(){}});
+ const first={id:'question-task-1',kind:'question',action:'answer',goalId:goal.id,taskId:'task-1',title:'First question',detail:'First',binding:'v1'};
+ const fresh={...first,title:'New question',detail:'New',binding:'v2'};
+ let frame='',didDraw,refreshStarted,allowRefresh,refreshCount=0;
+ const ready=new Promise(resolve=>{didDraw=resolve;});
+ const refreshing=new Promise(resolve=>{refreshStarted=resolve;});
+ const refresh=new Promise(resolve=>{allowRefresh=resolve;});
+ const output={isTTY:true,columns:95,rows:30,write(value){
+  if(value.includes('\x1b[2J')){frame=stripVTControlCharacters(value);didDraw();}
+ }};
+ const invoke=async name=>{
+  if(name==='observer_snapshot')return {...snapshot,source:'beta',needsYou:{items:[refreshCount?fresh:first],hasMore:false}};
+  if(name==='observer_timeline'&&++refreshCount===2){refreshStarted();await refresh;}
+  return {events:[],cursor:101,hasMore:false};
+ };
+ const pending=runObserver({input,output,invoke,noColor:false,pollMs:1});
+ try{
+  await ready;
+  input.emit('keypress','n',{name:'n'});
+  assert.match(frame,/First question/);
+  await refreshing;
+  input.emit('keypress','\r',{name:'return'});
+  assert.match(frame,/Decision changed/);
+  input.emit('keypress',null,{name:'escape'});
+  assert.match(frame,/New question/);
+  input.emit('keypress','\r',{name:'return'});
+ }finally{allowRefresh();input.emit('keypress','q',{name:'q'});}
+ const state=await pending;
+ assert.deepEqual(state.handoff,{command:'act',args:[fresh.id],expectedBinding:'v2'});
+ assert.equal(input.isRaw,false);
+});

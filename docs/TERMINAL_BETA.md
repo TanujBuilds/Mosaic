@@ -56,11 +56,59 @@ chat in the intended repository and use this prompt:
 
 > Use Mosaic Beta in this repository. Inspect the mosaic-beta registry, ask me to choose a workflow if needed, then prepare an exact goal and show me its scope and limits for approval before activation.
 
-The four available workflow policies are collaborative, API-worker-only (`deepseek_only` in the MCP protocol), host-only (`codex_only`) and overnight review. Confirm the approved manifest, Git base, literal file/check scope, provider pool, routing and budgets in the host. Host review waits durably when the app closes; an inactive chat is not guaranteed to wake. Use `mosaic` to observe activity in another terminal. Press ↑ or ↓ to select an assignment, Enter to see bounded saved evidence, g to choose a goal, and q or Ctrl-C to close the observer. Press **a** from any screen to jump to the current project. It prefers running work, then the most recently worked project, and says when nothing is running or native activity is unconfirmed. The result is labeled as the last check; press a again to refresh the selection. This shortcut only changes your view. Approvals stay in the host.
+The four available workflow policies are collaborative, API-worker-only (`deepseek_only` in the MCP protocol), host-only (`codex_only`) and overnight review. Confirm the approved manifest, Git base, literal file/check scope, provider pool, routing and budgets in the host. Host review waits durably when the app closes; an inactive chat is not guaranteed to wake. Use `mosaic` to observe activity in another terminal. Press ↑ or ↓ to select an assignment, Enter to see bounded saved evidence, g to choose a goal, and q or Ctrl-C to close the observer. Press **a** from any screen to jump to the current project. It prefers running work, then the most recently worked project, and says when nothing is running or native activity is unconfirmed. The result is labeled as the last check. Press **a** again to refresh the selection.
 
 Use **[** for older handoffs and **]** for newer handoffs. In goal selection and details, these keys page up and down. Page Up/Down (Fn + ↑/↓ on a Mac keyboard) still work.
 
-Press **c** for Connections and **v** for Activity. Connections shows the selected coding app and worker with the last recorded evidence when available. Press **e** or **h** there for the setup and connection commands. In Activity, use the arrow keys to select an assignment. **Esc** returns to the previous view.
+Press **c** for Connections and **v** for Activity. Connections shows the selected coding app and worker with the last recorded evidence when available. Press **r** there for connection diagnosis and focused repair. **e** and **h** show the setup and connection commands. In Activity, use the arrow keys to select an assignment. **Esc** returns to the previous view.
+
+
+### Your first task
+
+Run `mosaic first-task` from a committed Git checkout, or supply its root with
+`mosaic first-task --repo PATH`. Choose a small task, the workflow, file scope
+and protected checks. Mosaic prepares an exact draft and prints a prompt for
+the selected coding app. Review the saved draft and approve it before starting
+work. `mosaic first-task result --goal GOAL_ID` shows saved results and their
+next action. `mosaic first-task --demo` runs a scripted sample in a separate
+temporary Git workspace. It makes zero provider calls.
+
+### Decisions and overnight work
+
+Press **n** for **Needs You**, then select an item and press Enter to review it.
+`mosaic act` opens the same list from a plain terminal. Review exact scope
+before approving, answer the saved question, or confirm integration after the
+assigned reviewer's saved acceptance. To inspect the same list in your coding
+app, ask it to call `owner_inbox` through `mosaic-beta` and show the saved
+decisions. Ask it to show the current `owner_action_context` for your selected
+item before confirming an action. A waiting review stays assigned to its
+configured reviewer.
+
+Press **b** for **Queue**. Enter opens full saved dependency and priority
+details, **f** guides you through adding assignments within an active approval,
+and **m** opens the morning report. Pause, stop, and resume require a separate
+confirmation. For the plain terminal, use `mosaic queue GOAL_ID`,
+`mosaic queue GOAL_ID --add`, `mosaic act pause|stop|resume GOAL_ID`, or
+`mosaic morning-report GOAL_ID`. Planner-owned overnight graphs keep their
+own stage list. The report shows saved checks, candidate and integrated commits,
+recorded model usage, elapsed time and outstanding decisions.
+
+If you maintain a batch as JSON, preview it with
+`mosaic queue GOAL_ID --preview BATCH.json`. The file contains an array of
+items with `key`, `task` and `dependsOnKeys` fields. Each task names its
+`kind`, `objective` and `acceptance`. Use `--submit` with the same file
+to review the exact batch and confirm submission. The selected goal keeps its
+existing deadline and task limits.
+
+`mosaic repair --host` shows current app registration steps.
+`mosaic repair --worker ID` previews a targeted worker edit for confirmation.
+Model diagnostics require separate consent. Use `mosaic repair --resume` for
+an interrupted repair you already approved.
+
+`mosaic preset save --goal GOAL_ID` asks before saving mode, worker and check
+suggestions for the project's Git worktrees. See or clear them with
+`mosaic preset show|clear --repo PATH`. A saved preset can suggest options
+in a fresh draft. The current approval governs active work.
 
 If the existing Mosaic coding core is installed in its standard user location, the terminal also discovers its read-only viewer connection. A chat using `frontier-harness` writes to that existing service; a chat using `mosaic-beta` writes to the separate beta service. The terminal labels the service it is watching, follows work when the current service is empty or another service becomes active, and retains the selected service when both have active work. Use `mosaic --source core` or `mosaic --source beta` to choose explicitly. No goals, approvals or settings are migrated between services. Older core versions load saved handoffs in bounded pages; the terminal shows a loading message while catching up. If the watched service disconnects, its last saved view stays visible as stale.
 

@@ -201,7 +201,22 @@ async function safeGitMetadata(repo, dotGit) {
       if (file && (!file.isFile() || file.size > maxMetadataBytes)) return false;
     }
   }
-  return true;
+  return common;
+}
+
+// Presets only need verified Git identity, so allow dirty checkouts here.
+export async function repositoryCommonDirectory(value) {
+  if (!path.isAbsolute(value) || /[\x00-\x1f\x7f]/u.test(value)) throw Error('Choose an absolute Git repository root.');
+  try {
+    const repo = await realpath(value);
+    const common = await safeGitMetadata(repo, path.join(repo, '.git'));
+    if (!common) throw Error();
+    const root = (await checkoutGit(repo)(['rev-parse', '--show-toplevel'])).replace(/\n$/, '');
+    if (await realpath(root) !== repo) throw Error();
+    return common;
+  } catch {
+    throw Error('Choose an accessible Git worktree root with supported configuration.');
+  }
 }
 
 async function inspectCheckout(project) {

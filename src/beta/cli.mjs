@@ -18,6 +18,12 @@ const help=`Mosaic Beta
 
 mosaic                   Open setup or the read-only terminal observer
 mosaic setup             Configure the selected host, worker profiles and review
+mosaic first-task [REPO] Prepare a guided first assignment or try --demo
+mosaic act               Open Needs You and review saved decisions
+mosaic repair            Diagnose a connection, or repair with --worker ID
+mosaic queue [GOAL_ID]   Inspect an approved workload and its dependencies
+mosaic morning-report [GOAL_ID]  Inspect saved results and recorded usage
+mosaic preset            Show, save or clear project suggestions
 mosaic doctor [--providers]  Check setup; optionally GET worker model lists (no inference)
 mosaic migrate           Preview lossless schema1 migration; ask before applying
 mosaic off               Stop new dispatch; retain running owners and saved work
@@ -59,7 +65,25 @@ export async function main(args=process.argv.slice(2)){
   args.splice(sourceIndex,2);
  }
  const paths=locations(home??currentHome(),!!home),command=args.shift();
+ const runOwnerCommand=async(name,args,options={})=>{
+  const commandArgs=[paths,args,options];
+  if(name==='act')return (await import('./owner-actions.mjs')).runOwnerAction(...commandArgs);
+  if(name==='repair'){
+   if(!await (await import('./connection-repair.mjs')).runConnectionRepair(...commandArgs))process.exitCode=1;
+   return;
+  }
+  const result=name==='first-task'
+   ?await (await import('./first-task.mjs')).runFirstTask(paths,args,{
+    readPreset:async repo=>(await import('./project-presets.mjs')).readProjectPreset(paths,repo)
+   })
+   :name==='preset'
+    ?await (await import('./project-presets.mjs')).runProjectPreset(...commandArgs)
+    :await (await import('./queue.mjs'))[name==='queue'?'runQueue':'runMorningReport'](...commandArgs);
+  if(typeof result==='number'&&result!==0)process.exitCode=result;
+ };
+
  if(sourceIndex!==-1&&command&&command!=='status')throw Error('--source is only supported by the terminal observer and status');
+ if(['act','repair','first-task','preset','queue','morning-report'].includes(command))return runOwnerCommand(command,args);
  if(command==='host-preview'){
   if(args.length!==2||args[0]!=='--host')throw Error('Use mosaic host-preview --host codex|claude-code|cursor|antigravity');
   process.stdout.write(JSON.stringify(previewHostRegistration(paths,args[1]),null,2)+'\n');return;
@@ -86,12 +110,18 @@ export async function main(args=process.argv.slice(2)){
   if(args.length)throw Error('Use mosaic setup [--codex /absolute/path/to/codex]');
   if(command==='setup'||!await readSettings(paths)||!await setupComplete(paths)){
    if(!await setup(paths,{explicitCodex,settings}))process.exitCode=1;
+   else process.stdout.write('\nPrepare your first task with mosaic first-task, or try mosaic first-task --demo.\n');
    return;
   }
  }
  if(command==='status'||!command){
   if(args.length&&!(args.length===1&&args[0]==='--once'))throw Error('Use mosaic status [--once]');
-  return runObserver({invoke:observerClient(paths,{source}),once:args.includes('--once')});
+  const state=await runObserver({invoke:observerClient(paths,{source}),once:args.includes('--once')});
+  if(state.handoff) {
+   const {command,args,expectedBinding}=state.handoff;
+   return runOwnerCommand(command,args,{expectedBinding,...(command==='repair'?{openMenu:true}:{})});
+  }
+  return state;
  }
  if(command==='rollback'){if(args.length!==1)throw Error('Use mosaic rollback VERSION');return (await import('./install.mjs')).rollbackVersion(paths,args[0]);}
  let providerDiagnostics=false;

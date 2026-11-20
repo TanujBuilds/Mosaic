@@ -44,6 +44,13 @@ export class ReviewService {
   }
   return {items,cursor:tasks.some(t=>t.sequence>scanned)?String(scanned):null};
  }
+ budget(goal){
+  const history=this.c.store.all('goal_history').filter(row=>row.goalId===goal.id);
+  const limit=Math.min(goal.manifest.limits.reviewAgentRuns,...history.map(row=>row.manifest.limits.reviewAgentRuns));
+  const count=kind=>Number(this.c.store.db.prepare("SELECT COUNT(*) AS n FROM records WHERE kind=? AND json_extract(data,'$.goalId')=?").get(kind,goal.id).n);
+  const spent=count('review_ticket')+count('reviewer');
+  return {limit,spent,remaining:Math.max(0,limit-spent)};
+ }
  async reserve(input,key){
   keys(input,[...bindingFields],'review reservation');
   const command={op:'review.reserve',...input},old=commandReplay(this.c,key,command);if(old)return old.result;
@@ -65,9 +72,7 @@ export class ReviewService {
     existing.status='stale';existing.reasonCode='binding_superseded';existing.staleAt=this.c.now();this.c.store.put('review_ticket',existing);
     this.c.emit('review.stale',g.id,t.id,{ticketId:existing.id,reasonCode:existing.reasonCode});
    }
-   const originalBudget=Math.min(g.manifest.limits.reviewAgentRuns,...this.c.store.all('goal_history').filter(h=>h.goalId===g.id).map(h=>h.manifest.limits.reviewAgentRuns));
-   const spent=this.c.store.all('review_ticket').filter(r=>r.goalId===g.id).length+this.c.store.all('reviewer').filter(r=>r.goalId===g.id).length;
-   if(t.reviews>=t.spec.limits.reviews||spent>=originalBudget)throw Error('Original review budget exhausted');
+   if(t.reviews>=t.spec.limits.reviews||this.budget(g).remaining===0)throw Error('Original review budget exhausted');
    const ticket={id:randomUUID(),goalId:g.id,taskId:t.id,binding,reviewer:reviewerIdentity(policy),requestId:randomUUID(),savedCandidateIdentity:savedCandidateIdentity(t),snapshotHash:context.candidate.snapshotHash,executableModesHash:context.candidate.executableModesHash,status:'reserved',createdAt:this.c.now(),expiresAt:binding.expiresAt,verdictHash:null,result:null};
    t.reviews++;this.c.store.put('task',t);this.c.store.put('review_ticket',ticket);this.c.emit('review.reserved',g.id,t.id,{ticketId:ticket.id,source:policy.source});
    return {ticketId:ticket.id,binding,evidence:context.candidate.evidence,reviewer:ticket.reviewer,expiresAt:ticket.expiresAt};

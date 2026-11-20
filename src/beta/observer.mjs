@@ -173,7 +173,7 @@ function compactMain(state,goal,{width,height,color,selected,offset}){
   for(const event of state.events.slice(Math.max(0,end-room),end))
    frame.push(first(width>=42?`[${event.provenance}] ${eventText(event)}`:eventText(event)));
  }else if(!state.stale)frame.push(first('Idle · no goals'));
- const footer=first(keysFor(width,'↑↓ Enter a g c Connections v Activity q','↑↓ Enter a g c Conn v Act q','↑↓ ↵ a g c Conn v Act q','↑↓ Enter a g c v q','↑↓ a g c v q','a c v q'));
+ const footer=first(keysFor(width,'↑↓ Enter a g n Needs You b Queue c Connections v Activity q','↑↓ ↵ a g n b c v q','n b c v q'));
  return [...frame.slice(0,height-1),footer].join('\n');
 }
 
@@ -236,8 +236,8 @@ function polishedMain(state,goal,{width,height,color,selected,offset}){
   }
   out.push(...(feed.length?feed:[quiet(clip(state.events.length?'No handoffs fit. Enlarge the terminal to see the feed.':'Waiting for the first handoff.',space))]).slice(0,room));
  }
- const keys=keysFor(space,'↑↓ select  Enter evidence  a current  g goals  c Connections  v Activity  [/] feed  q quit',
-  '↑↓ Enter  a current  g goals  c Connections  v Activity  [/]  q quit','↑↓ Enter a current g goals c Conn v Act [/] q quit');
+ const keys=keysFor(space,'↑↓ Enter  a Current  g Goals  n Needs You  b Queue  c Connections  v Activity  q quit',
+  '↑↓ Enter a g n Needs You b Queue c Connections v Activity q quit','↑↓ Enter a g n b c v q quit');
  const body=out.slice(0,height-3);
  while(body.length<height-3)body.push('');
  return [...body,'',quiet('─'.repeat(space)),quiet(clip(keys,space))].map(line=>margin+line).join('\n');
@@ -321,7 +321,7 @@ function secondaryScreen(state,goal,{view,width,height,color,interactive,activit
  }
  if(wide&&state.snapshot?.sourceLabel)out.push(trim('Watching '+state.snapshot.sourceLabel));
  const keys=isConnections
-  ?keysFor(space,'e Edit setup  h Connection help  v Activity  Esc  q','e h v Esc q','e h v q')
+  ?keysFor(space,'r Diagnose/Repair  e Edit setup  h Help  Esc  q','r Repair e h Esc q','r e h q')
   :keysFor(space,'↑↓ Assignments  [/] Handoffs  c Connections  Esc  q','↑↓ [/] c Esc q','↑↓ c q');
  const bodyHeight=height-(interactive?1:0);
  if(isConnections){
@@ -333,6 +333,7 @@ function secondaryScreen(state,goal,{view,width,height,color,interactive,activit
   }else{
    for(const group of groups)for(const text of group)out.push(...lines(text,space));
   }
+  if(state.snapshot?.source==='beta')out.push('',trim('r Diagnose or repair a connection'));
   out.push('',...Object.entries(connectionActions).flatMap(([key,action])=>
    lines((interactive?key+' ':'')+action.title+' · '+action.command,space)));
  }else if(goal){
@@ -372,11 +373,47 @@ function secondaryScreen(state,goal,{view,width,height,color,interactive,activit
  return visible.map(line=>margin+line).join('\n');
 }
 
-export function renderTerminal(state,{width=80,height=36,color=false,selected=0,picker=null,detail=null,detailTitle='Saved evidence',detailOffset=0,offset=0,activitySelected=0,view=null,interactive=false}={}){
+function ownerScreen(state,goal,{view,width,height,color,interactive,pick}){
+ const snapshot=state.snapshot,inbox=view==='inbox';
+ const owned=snapshot?.source==='beta'||snapshot?.needsYou!==undefined;
+ const entries=inbox?snapshot?.needsYou?.items??[]:snapshot?.tasks?.filter(task=>task.goalId===goal?.id)??[];
+ const title=inbox?'Needs You':'Queue';
+ const out=[color?accent(title):title];
+ if(state.stale)out.push('Disconnected · saved state may be stale');
+ if(!owned)out.push('Open the Mosaic Beta observer for owner actions.');
+ if(!inbox&&goal)out.push(`${status(goal.status)} · ${goal.taskCount}/${goal.maxTasks} assignments · deadline ${clock(goal.deadline)}`,
+  clean(goal.objective));
+ if(!entries.length)out.push(inbox?'No saved decisions in this view.':'No saved assignments in this view.');
+ if(inbox&&snapshot?.needsYou?.hasMore)out.push('Showing the latest 50 decisions.');
+ if(!inbox&&snapshot?.overflow?.tasks)out.push('Some saved assignments are outside this view.');
+ const footer=inbox?keysFor(width,'↑↓ Select  Enter Review  b Queue  Esc Back  q Quit','↑↓ ↵ b Esc q','↵ Esc'):
+  keysFor(width,'Enter Details  f Add  m Morning report  p Pause  s Stop  u Resume  Esc',
+   '↵ Details f Add m Report p Pause s Stop u Resume Esc','↵ f m p s u Esc');
+ const room=Math.max(0,height-out.length-1);
+ if(entries.length) {
+  const chosen=Math.max(0,Math.min(pick,entries.length-1));
+  const selected=entries[chosen];
+  const details=inbox&&room>=4?lines(selected.detail,width).slice(0,2):[];
+  const rows=Math.max(1,room-details.length-(details.length?1:0));
+  const start=Math.max(0,Math.min(chosen,entries.length-rows));
+  for(const [index,entry] of entries.slice(start,start+rows).entries()){
+   const prefix=interactive?(start+index===chosen?'› ':'  '):'';
+   out.push(prefix+(inbox?`${status(entry.kind)} · ${entry.title}`:`${status(entry.status)} · ${entry.priority??'normal'} · ${entry.objective}`));
+  }
+  if(details.length)out.push('',...details);
+ }
+ const body=out.slice(0,height-(interactive?1:0)).map(line=>clip(line,width));
+ if(interactive)body.push(clip(footer,width));
+ return body.join('\n');
+}
+
+export function renderTerminal(state,{width=80,height=36,color=false,selected=0,picker=null,detail=null,detailTitle='Saved evidence',detailOffset=0,offset=0,activitySelected=0,view=null,interactive=false,ownerSelected=0}={}){
  width=Math.max(8,Math.min(300,width));height=Math.max(5,Math.min(200,height));
  const header=(value)=>lines(value,width).map(line=>color?accent(line):line);
  const compact=interactive&&(width<55||height<24);
  const goal=goalFor(state);
+ if((view==='inbox'||view==='queue')&&!detail&&picker===null)
+  return ownerScreen(state,goal,{view,width,height,color,interactive,pick:ownerSelected});
  if(view&&!detail&&picker===null)return secondaryScreen(state,goal,{view,width,height,color,interactive,activitySelected,offset});
  if(interactive&&picker!==null&&!detail)return polishedPicker(state,{width,height,color,picker});
  if(compact&&picker===null&&!detail)return compactMain(state,goal,{width,height,color,selected,offset});
@@ -424,7 +461,7 @@ export function renderTerminal(state,{width=80,height=36,color=false,selected=0,
    out.push(...lines(`${clock(event.at)} [${event.provenance}] ${eventText(event)}`,width));
   }
  }
- const footer=detail?'↑↓ or [/] scroll · a current · Esc back · q quit':picker!==null?'↑↓ choose · Enter select · a current · Esc back · q quit':interactive?'↑↓ rows · Enter evidence · a current · g goals · [ older · ] newer · q quit':'Approvals and decisions stay in Codex.';
+ const footer=detail?'↑↓ or [/] scroll · a current · Esc back · q quit':picker!==null?'↑↓ choose · Enter select · a current · Esc back · q quit':interactive?'↑↓ rows · Enter evidence · a current · g goals · [ older · ] newer · q quit':state.snapshot?.source==='beta'?'Use mosaic act to review saved owner decisions.':'Approvals and decisions stay in Codex.';
  const tail=lines(compact?'↑↓ a Esc q':footer,width);
  return [...out.slice(0,Math.max(0,height-tail.length-1)),'',...tail].join('\n');
 }
@@ -468,7 +505,7 @@ export class TerminalObserver {
     if(snapshot.overflow?.tasks){
      const selected=await this.invoke('observer_snapshot',{goalId:goal.id},signal);
      if(navigation!==this.navigation)return this.state;
-     if(this.state.goalId===goal.id)this.state.snapshot={...selected,goals:snapshot.goals,connections:snapshot.connections??selected.connections,source:snapshot.source,sourceLabel:snapshot.sourceLabel,sourceHint:snapshot.sourceHint};
+     if(this.state.goalId===goal.id)this.state.snapshot={...selected,goals:snapshot.goals,needsYou:snapshot.needsYou,connections:snapshot.connections??selected.connections,source:snapshot.source,sourceLabel:snapshot.sourceLabel,sourceHint:snapshot.sourceHint};
     }
     for(let page=0;page<2;page++){
      const recent=this.cursor===null;
@@ -498,12 +535,15 @@ export async function runObserver({invoke,input=process.stdin,output=process.std
  }
  const controller=new AbortController(),close=()=>controller.abort();
  const originalRaw=!!input.isRaw,wasFlowing=input.readableFlowing===true;
- let selected=0,picker=null,detail=null,detailTitle='Saved evidence',detailOffset=0,offset=0,activitySelected=0,view=null;
+ let selected=0,picker=null,detail=null,detailTitle='Saved evidence',detailOffset=0,offset=0,activitySelected=0,view=null,ownerSelected=0,handoff=null,painted=null;
  const draw=()=>{
   if(controller.signal.aborted)return;
-  output.write('\x1b[H\x1b[2J'+renderTerminal(observer.state,{width:output.columns,height:output.rows,color:true,interactive:true,selected,picker,detail,detailTitle,detailOffset,offset,activitySelected,view}));
+  const {snapshot,stale}=observer.state;
+  painted={view,snapshot,stale,goal:goalFor(observer.state)};
+  output.write('\x1b[H\x1b[2J'+renderTerminal(observer.state,{width:output.columns,height:output.rows,color:true,interactive:true,selected,picker,detail,detailTitle,detailOffset,offset,activitySelected,view,ownerSelected}));
  };
  const keypress=async(_,key={})=>{
+  if(controller.signal.aborted)return;
   if(!key.ctrl&&!key.meta&&(_==='['||_===']'))key={...key,name:_==='['?'pageup':'pagedown'};
   if(key.name==='q'||key.ctrl&&key.name==='c'){close();return;}
   if(key.name==='a'){
@@ -516,10 +556,54 @@ export async function runObserver({invoke,input=process.stdin,output=process.std
    if(delta){detailOffset=Math.max(0,Math.min(4096,detailOffset+delta));draw();}
    return;
   }
-  if(key.name==='c'||key.name==='v'){
-   view=key.name==='c'?'connections':'activity';picker=null;activitySelected=0;offset=0;draw();return;
+  const views={c:'connections',v:'activity',n:'inbox',b:'queue'};
+  if(Object.hasOwn(views,key.name)){
+   view=views[key.name];picker=null;activitySelected=0;ownerSelected=0;offset=0;draw();return;
+  }
+  const current=observer.state.snapshot;
+  const betaReady=painted?.view===view&&!painted.stale&&!observer.state.stale
+   &&painted.snapshot?.source==='beta'&&current?.source==='beta';
+  const follow=(command,args,expectedBinding)=>{
+   if(betaReady){handoff={command,args,expectedBinding};close();}
+   else{detailTitle='Mosaic Beta unavailable';detail='Reconnect or switch to the Mosaic Beta observer before proceeding.';detailOffset=0;draw();}
+  };
+  if(view==='inbox'||view==='queue'){
+   const goal=painted?.goal,snapshot=painted?.snapshot;
+   const entries=view==='inbox'?snapshot?.needsYou?.items??[]:snapshot?.tasks.filter(task=>task.goalId===goal?.id)??[];
+   const index=Math.max(0,Math.min(ownerSelected,entries.length-1));
+   if(key.name==='up')ownerSelected=Math.max(0,index-1);
+   if(key.name==='down')ownerSelected=Math.min(Math.max(0,entries.length-1),index+1);
+   const row=entries[index];
+   if(view==='inbox'&&key.name==='return'&&row){
+    if(row.action){
+     const same=current?.needsYou?.items.some(item=>item.id===row.id&&item.binding===row.binding&&item.action===row.action);
+     if(!same){detailTitle='Decision changed';detail='Review the updated Needs You list.';detailOffset=0;draw();return;}
+     follow('act',[row.id],row.binding);return;
+    }
+    detailTitle='Saved decision';detailOffset=0;
+    detail=row.detail;
+    if(row.taskId&&betaReady){
+     const initial=detail;
+     try{
+      const evidence=await invoke('observer_evidence',{reference:'task-'+row.taskId,length:4096},controller.signal);
+      if(view==='inbox'&&detail===initial)detail+='\n\n'+evidence.text;
+     }catch{if(view==='inbox'&&detail===initial)detail+='\n\nSaved evidence is unavailable.';}
+    }
+   }
+   if(view==='queue'&&goal){
+    const control={p:'pause',s:'stop',u:'resume'}[key.name];
+    if(control){
+     const same=goal.controlBinding&&goalFor(observer.state)?.controlBinding===goal.controlBinding;
+     if(!same){detailTitle='Goal changed';detail='Review the updated queue before choosing a control.';detailOffset=0;draw();return;}
+     follow('act',[control,goal.id],goal.controlBinding);return;
+    }
+    if(key.name==='f'){follow('queue',[goal.id,'--add']);return;}
+    if(key.name==='return'||key.name==='m'){follow(key.name==='m'?'morning-report':'queue',[goal.id]);return;}
+   }
+   draw();return;
   }
   if(view==='connections'){
+   if(key.name==='r'){follow('repair',[]);return;}
    if(Object.hasOwn(connectionActions,key.name)){
     const action=connectionActions[key.name];detailTitle=action.title;detailOffset=0;
     detail='Run '+action.command+'\n\n'+action.details;
@@ -581,5 +665,5 @@ export async function runObserver({invoke,input=process.stdin,output=process.std
   input.setRawMode(originalRaw);if(!wasFlowing)input.pause();
   output.write('\x1b[0m\x1b[?25h\x1b[?1049l');
  }
- return observer.state;
+ return handoff ? {...observer.state,handoff} : observer.state;
 }

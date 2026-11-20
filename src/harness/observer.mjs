@@ -1,4 +1,4 @@
-import {ownerInbox} from './owner-inbox.mjs';
+import {controlBinding,ownerInbox} from './owner-inbox.mjs';
 import {createHash} from 'node:crypto';
 import {keys,identifier,integer,canonical,digest} from './contracts.mjs';
 import {normalizeObserverQuery,normalizeActivityEvent,OBSERVER_LIMITS} from './collaboration-contracts.mjs';
@@ -273,7 +273,7 @@ export class Observer {
   const goals=Array.from(db.prepare("SELECT rowid FROM records WHERE kind='goal' AND (? IS NULL OR id=?) ORDER BY json_extract(data,'$.status')='active' DESC,rowid DESC LIMIT 100").iterate(q.goalId,q.goalId),row=>{
    const g=JSON.parse(readRecord.get(row.rowid).data);
    const selection=reviewSelection(g);
-   return {id:g.id,objective:trim(g.manifest.objective),status:g.status,mode:g.manifest.mode.id,...(this.c.selectedHost?{hostId:this.c.selectedHost}:{}),...(this.c.beta?{reviewPolicy:g.manifest.mode.review,...(selection?{reviewSelection:selection}:{}),workerProfile:g.manifest.workerProfile??null}:{}),environment:g.manifest.environment,deadline:g.deadline,maxTasks:g.manifest.limits.maxTasks,taskCount:counts.get(g.id)??0};
+   return {id:g.id,objective:trim(g.manifest.objective),status:g.status,mode:g.manifest.mode.id,...(this.c.selectedHost?{hostId:this.c.selectedHost}:{}),...(this.c.beta?{reviewPolicy:g.manifest.mode.review,controlBinding:controlBinding(this.c.store,g),...(selection?{reviewSelection:selection}:{}),workerProfile:g.manifest.workerProfile??null}:{}),environment:g.manifest.environment,deadline:g.deadline,maxTasks:g.manifest.limits.maxTasks,taskCount:counts.get(g.id)??0};
   });
   const cursor=Number(this.c.store.db.prepare('SELECT COALESCE(MAX(seq),0) AS n FROM events').get().n);
   const reviewers=this.c.beta?this.c.store.db.prepare("SELECT data FROM records WHERE kind='reviewer' AND (? IS NULL OR json_extract(data,'$.goalId')=?) ORDER BY rowid DESC LIMIT 100").all(q.goalId,q.goalId).map(r=>{const {id,taskId,goalId,status,at,finishedAt}=JSON.parse(r.data);return {id,taskId,goalId,status,at:finishedAt??at};}):undefined;

@@ -1,4 +1,4 @@
-import {actionContext,ownerInbox} from './owner-inbox.mjs';
+import {actionContext,ownerGoalView,ownerInbox} from './owner-inbox.mjs';
 import {bindingFields} from './review/contracts.mjs';
 import {randomUUID} from 'node:crypto';
 import {setTimeout as delay} from 'node:timers/promises';
@@ -72,6 +72,7 @@ export class Dispatcher {
   add('task_get','Inspect a task, its checkpoint and counters.',{taskId:str},['taskId'],false,i=>({...c.getTask(i.taskId),observerCursor:Number(c.store.db.prepare('SELECT COALESCE(MAX(seq),0) AS n FROM events').get().n)}));
   add('artifacts_list','List only saved allowlisted artifacts with checksums; no arbitrary paths.',{taskId:str},['taskId'],false,i=>this.artifacts.list(i.taskId));
   if(config.beta)add('owner_inbox','List up to 50 saved owner decisions and handoffs without dispatching work.',{goalId:str,itemId:str},[],false,i=>ownerInbox(c,i));
+  if(config.beta)add('owner_goal_view','Inspect a compact saved goal with scopes, limits and assignment status.',{goalId:str},['goalId'],false,i=>ownerGoalView(c,i.goalId));
   if(config.beta)add('owner_action_context','Inspect exact operator scope and saved evidence for one decision.',{goalId:str,taskId:str},['goalId'],false,i=>actionContext(c,i));
   add('observer_snapshot','Read bounded model/task/agent overviews. No execution controls.',{goalId:str,actor:{...str,enum:['codex','deepseek']}},[],false,i=>this.observer.snapshot(i));
   add('observer_timeline','Read chronological activity with a durable scan cursor; captured and reported provenance are explicit.',{goalId:str,actor:{...str,enum:['codex','deepseek']},after:number,recent:bool,limit:{...number,minimum:1,maximum:200}},[],false,i=>this.observer.timeline(i));
