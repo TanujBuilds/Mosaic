@@ -205,3 +205,75 @@ test('a superseded revision permits exact setup but a stopped approval blocks wo
  assert.equal(changed.status,0,changed.stderr);
  assert.equal((await bytes(paths.config)).worker,null);
 });
+
+function terminalSetup(steps,{width=72,terminal='xterm-256color',plain=false}={}){
+ const driver=fileURLToPath(new URL('./fixtures/mosaic-m021-terminal/drive.py',import.meta.url));
+ const subject=fileURLToPath(new URL('./fixtures/mosaic-m021-terminal/setup.mjs',import.meta.url));
+ const child=spawnSync('python3',[driver,process.execPath,subject,String(width),terminal,plain?'yes':'no',JSON.stringify(steps)],
+  {encoding:'utf8',timeout:10000,maxBuffer:1024*1024});
+ assert.equal(child.status,0,child.stderr||String(child.error));
+ const result=JSON.parse(child.stdout.split('MOSAIC_SETUP_RESULT ')[1].trim());
+ assert.equal(result.raw,false);
+ return {transcript:child.stdout,result};
+}
+
+test('portable setup uses the blue tiled welcome and arrow keys to go back, select a host and save', {skip:process.platform!=='darwin'},()=>{
+ const {transcript,result}=terminalSetup([
+  ['Pick your coding app','\x1b[B\x1b[B\r'],
+  ['Choose a worker','\x1b'],
+  ['Pick your coding app','\x1b[A\r'],
+  ['Choose a worker','\r'],
+  ['Show technical settings details?','\r'],
+  ['Save this setup?','\x1b'],
+  ['Choose a worker','\r'],
+  ['Show technical settings details?','\r'],
+  ['Save this setup?','\x1b[A\r']
+ ]);
+ assert.match(transcript,/\x1b\[34m■/u);
+ assert.match(transcript,/Welcome to Mosaic/);
+ assert.doesNotMatch(transcript,/\x1b\[(?:[4-5][0-9]|10[0-7])m/u);
+ assert.match(transcript,/actual host registration is unverified/i);
+ assert.equal(result.saved,true);
+ assert.equal(result.host,'claude-code');
+});
+
+for(const exit of ['q','\x03'])test(`narrow setup shows the compact mark and cancels safely with ${exit==='q'?'q':'Ctrl+C'}`,{skip:process.platform!=='darwin'},()=>{
+ const {transcript,result}=terminalSetup([['Pick your coding app',exit]],{width:38});
+ assert.match(transcript,/\x1b\[34m■ {3}■\r?\n■■ ■■\r?\n■ ■ ■/u);
+ assert.equal(result.host,undefined);
+ assert.equal(result.credentialsWritten,false);
+ assert.match(result.error??transcript,/Setup (?:interrupted|exited|cancelled)/i);
+});
+
+for(const policy of [{plain:true},{terminal:'dumb'}])test(`plain portable setup accepts numbered answers for ${policy.plain?'NO_COLOR':'TERM=dumb'}`,{skip:process.platform!=='darwin'},()=>{
+ const {transcript,result}=terminalSetup([
+  ['Choose host [1]: ','3\r'],
+  ['Choose worker setup [1]: ','4\r'],
+  ['Show technical settings details? [y/N] ','n\r'],
+  ['Run optional model discovery check? [y/N] ','n\r'],
+  ['Run optional inference connectivity test with that fixed setup-only message? [y/N] ','n\r'],
+  ['Apply this exact setup and managed host binding? [y/N] ','y\r']
+ ],policy);
+ assert.doesNotMatch(transcript,/\x1b\[34m|■/u);
+ assert.equal(result.host,'cursor');
+ assert.equal(result.saved,true);
+});
+
+test('pasted bearer key stays hidden after navigating with arrow keys', {skip:process.platform!=='darwin'},()=>{
+ const key='mosaic-fixture-secret-should-stay-hidden';
+ const {transcript,result}=terminalSetup([
+  ['Pick your coding app','\r'],
+  ['Choose a worker','\x1b[B\r'],
+  ['API base URL: ','http://127.0.0.1:1/v1\r'],
+  ['Model ID: ','demo-model\r'],
+  ['Does this endpoint require an API bearer key? [y/N] ','y\r'+key+'\r'],
+  ['Show technical settings details?','\r'],
+  ['Check the worker model list?','\r'],
+  ['Test the worker connection?','\r'],
+  ['Save this setup?','q']
+ ]);
+ assert.match(transcript,/Bearer key \(hidden\)/);
+ assert.ok(!transcript.includes(key));
+ assert.equal(result.host,undefined);
+ assert.equal(result.credentialsWritten,false);
+});

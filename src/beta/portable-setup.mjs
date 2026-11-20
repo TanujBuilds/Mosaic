@@ -74,7 +74,7 @@ async function finishPortable(paths,intent,{lifecycle,codexRegistrations}={}){
  if(!paths.isolated||intent.hadAgent)await controls.startLaunchAgent(paths,{allowUnrecorded:!intent.hadAgent});
  return withLock(paths,async()=>{await service.assertSettingsMaintenanceAllowed(paths,{kind:'setup'});if(canonical(await jsonFile(paths.setupIntent,{privateFile:true}))!==canonical(intent))throw Error('Setup intent changed during owned restart; preserve newer state.');if(!await portableReady(paths,intent,{codexRegistrations}))throw Error('Setup snapshot changed during owned restart; preserve newer settings.');if(!paths.isolated){const previous=await jsonFile(paths.ownership,{privateFile:true});await saveJson(paths.ownership,{...previous,schema:1,launchAgentHash:hash(service.launchAgent(paths)),complete:true});}await assertReadySnapshot(paths,intent);await rm(paths.setupIntent,{force:true});await rm(path.join(paths.configDir,'setup-credentials.json'),{force:true});return true;});
 }
-export async function setupPortable(paths,{ask,output,settings:provided,execution,nativeCheckRuntime,afterStep,verifyExecution,codexRegistrations,lifecycle,signal}={}){
+export async function setupPortable(paths,{ask,choose,output,settings:provided,execution,nativeCheckRuntime,afterStep,verifyExecution,codexRegistrations,lifecycle,signal}={}){
  const assertNotInterrupted=()=>{if(signal?.aborted)throw Error('Setup interrupted. Run mosaic setup to resume.');};
  assertNotInterrupted();
  const pending=await jsonFile(paths.setupIntent,{privateFile:true});if(pending?.schema===2){const plan=await withLock(paths,async()=>{const service=await import('./service.mjs');await service.assertSettingsMaintenanceAllowed(paths,{kind:'setup'});if(canonical(await jsonFile(paths.setupIntent,{privateFile:true}))!==canonical(pending))throw Error('Pending setup changed');return await portableReady(paths,pending,{codexRegistrations})?pending:apply(paths,pending,{afterStep,verifyExecution,codexRegistrations,lifecycle});});await finishPortable(paths,plan,{lifecycle,codexRegistrations});output.write('Resumed interrupted setup.\n'+formatHostReadiness(plan.settings.host.id,{configuration:'saved',instructions:!paths.isolated||plan.manualHost?'saved locally for manual registration':'generated and saved for the disposable fixture',registration:!paths.isolated||plan.manualHost?'unverified':'fixture'}));return true;}if(pending)throw Error('Legacy setup is pending; resume it before portable setup');
@@ -90,68 +90,89 @@ export async function setupPortable(paths,{ask,output,settings:provided,executio
   assertNotInterrupted();
  };
  const guardedAsk=async(...args)=>{await assertCurrentSetup();const answer=await ask(...args);await assertCurrentSetup();return answer;};
- await assertCurrentSetup();
- const configured=provided?{settings:normalizeSettings(provided),rawSettings:provided,entries:{}}:await collectPortableSetup(guardedAsk,output,{execution:execution??old?.execution,nativeCheckRuntime:nativeCheckRuntime??old?.nativeCheckRuntime,existingSettings:old,existingCredentialRefs:Object.keys(credentials.entries)});
- await assertCurrentSetup();
- const settings=configured.settings,nextCredentials={schema:1,entries:{...credentials.entries,...configured.entries}};
- // Validate secret-free public identity before publishing any preview or error.
- await validateSettingsCredentials(paths,settings,nextCredentials);
- // URL canonicalization can erase JSON backslashes before retained keys are known.
- // Every setup path checks both entered and normalized identities, transiently.
- await validateMultiWorkerCredentials(configured.rawSettings??settings,nextCredentials);
- await validateMultiWorkerCredentials(settings,nextCredentials);
- const withCurrentSetup=action=>withLock(paths,async()=>{
+ const guardedChoose=choose?async(...args)=>{
   await assertCurrentSetup();
-  const result=await action();
+  const value=await choose(...args);
   await assertCurrentSetup();
-  return result;
- });
- await (verifyExecution??(s=>assertExecutionAvailable({executionPolicy:{version:1,...s.execution}},s)))(settings);
- const adapter=getHost(settings.host.id),manualHost=!paths.isolated,io=await hostIo(paths,{...(settings.host.id==='codex'?{codexRegistrations,codexPath:settings.codexPath}:{})}),existing=manualHost?{}:await io.read(adapter.previewRegistration({paths,launcher:paths.launcher}).target);
- let hostPreview;const existingReceipt=await io.readReceipt(path.join(paths.configDir,`host-${settings.host.id}-binding.json`));if(existingReceipt&&!manualHost){const selected=settings.host.id==='codex'?existing.registration:existing.mcpServers?.['mosaic-beta'];if(fingerprint(selected??null)!==existingReceipt.entryHash)throw Error('Owned host entry was customized; preserve it before setup');const clean=structuredClone(existing);if(settings.host.id==='codex')clean.registration=null;else {delete clean.mcpServers['mosaic-beta'];if(!existingReceipt.hadMcpServers&&!Object.keys(clean.mcpServers).length)delete clean.mcpServers;}hostPreview=adapter.previewRegistration({paths,launcher:paths.launcher,existing:clean});hostPreview.resumeOwned=true;delete hostPreview.resumeOwned;}else hostPreview=adapter.previewRegistration({paths,launcher:paths.launcher,existing});
- await withCurrentSetup(()=>output.write('\n'+formatPortableSetupSummary(settings,{manualHost,workerLocation:configured.workerLocation})+'\n'));
- const showDetails=!['simple','guided'].includes(configured.presentation)||yes(await guardedAsk('Show technical settings details? [y/N] '));
- await withCurrentSetup(()=>{
- if(showDetails)output.write('Exact private setup preview (provider references only)\n'+JSON.stringify(settings,null,2)+'\n');
- if(manualHost)output.write('Host: '+adapter.displayName+' · manual configuration required. Until you connect the app, host discovery remains unverified.\n'+formatHostRegistrationGuide(hostPreview));
- else output.write('Host target: '+hostPreview.target+'\nReviewed entry: '+JSON.stringify(hostPreview.entry)+'\nHost: '+adapter.displayName+' · fixture-tested registration; actual host compatibility unprobed.\n');
- output.write('No fallback. Existing server only; no model installation.\n');
- });
- const workers=settings.providers.filter(profile=>profile.roles.includes('worker')),secrets=Object.values(nextCredentials.entries),reports=new Map(workers.map(profile=>[profile.id,createProviderDiagnostic(profile,{secrets})]));
- const registry=workers.length?ProviderRegistry({profiles:settings.providers,credentialResolver:async ref=>{await assertCurrentSetup();return nextCredentials.entries[ref];}}):null;
- const clientFor=profile=>registry.createClient({version:1,providerId:profile.id,revision:profile.revision,profileHash:digest(registry.get(profile.id,profile.revision)),policyHash:digest(configuredPolicies(settings).providerPolicy)});
- const publishReport=profile=>withCurrentSetup(()=>output.write(formatProviderDiagnostic(reports.get(profile.id),{secrets})));
- await withCurrentSetup(()=>output.write('Optional model discovery sends GET to each configured worker URL below, with configured authentication sent to that supplied endpoint. It sends no project files, task evidence, reviewer request or inference. One request per worker, at most 10 seconds each; no retries or fallback.\n'+workers.map(profile=>'GET '+profile.baseUrl+'/models').join('\n')+(workers.length?'\n':'No worker configured: zero provider requests.\n')));
- const guided=configured.presentation==='guided';
- const runDiscovery=guided?null:yes(await guardedAsk('Run optional model discovery check? [y/N] '));
- for(const [i,profile] of workers.entries()){
-  const selected=guided?yes(await guardedAsk(`Worker ${i+1}: run optional model discovery check? [y/N] `)):runDiscovery;
-  await withCurrentSetup(async()=>{
-   if(selected){const report=await discoverProvider(clientFor(profile),profile,{previous:reports.get(profile.id),secrets,beforeRequest:assertCurrentSetup,signal});await assertCurrentSetup();reports.set(profile.id,report);}
+  return value;
+ }:undefined;
+ let previousSelection;
+ for(;;){
+  await assertCurrentSetup();
+  const configured=provided?{settings:normalizeSettings(provided),rawSettings:provided,entries:{}}:await collectPortableSetup(guardedAsk,output,{execution:execution??old?.execution,nativeCheckRuntime:nativeCheckRuntime??old?.nativeCheckRuntime,existingSettings:old,existingCredentialRefs:Object.keys(credentials.entries),choose:guardedChoose,previousSelection});
+  await assertCurrentSetup();
+  const arrows=guardedChoose&&configured.presentation==='simple';
+  const confirm=async (prompt,title,affirmative,negative)=>yes(arrows
+   ?await guardedChoose(title,[{value:'n',label:negative},{value:'y',label:affirmative}])
+   :await guardedAsk(prompt));
+  const settings=configured.settings,nextCredentials={schema:1,entries:{...credentials.entries,...configured.entries}};
+  // Validate secret-free public identity before publishing any preview or error.
+  await validateSettingsCredentials(paths,settings,nextCredentials);
+  // URL canonicalization can erase JSON backslashes before retained keys are known.
+  // Every setup path checks both entered and normalized identities, transiently.
+  await validateMultiWorkerCredentials(configured.rawSettings??settings,nextCredentials);
+  await validateMultiWorkerCredentials(settings,nextCredentials);
+  const withCurrentSetup=action=>withLock(paths,async()=>{
+   await assertCurrentSetup();
+   const result=await action();
+   await assertCurrentSetup();
+   return result;
   });
-  if(selected)await publishReport(profile);
- }
- await withCurrentSetup(()=>output.write('Optional inference sends the exact fixed setup message below (setup-only) to each supplied worker endpoint, with configured authentication. It may incur provider cost. No project files, task evidence or reviewer request are sent. Maximum output: 16 tokens; one total 10-second deadline per worker, including any required fresh membership GET. No retries or fallback.\nMessage: '+SETUP_PROBE_MESSAGE+'\n'+workers.map(profile=>'POST '+profile.baseUrl+'/chat/completions'+(profile.capabilities.modelDiscovery==='advertised'?'\nRequired fresh membership GET '+profile.baseUrl+'/models before POST (included in the same total deadline).':'')).join('\n')+(workers.length?'\n':'No worker configured: zero provider requests.\n')));
- const runProbe=guided?null:yes(await guardedAsk('Run optional inference connectivity test with that fixed setup-only message? [y/N] '));
- let anyProbe=false;
- for(const [i,profile] of workers.entries()){
-  const selected=guided?yes(await guardedAsk(`Worker ${i+1}: run optional inference connectivity test with that fixed setup-only message? [y/N] `)):runProbe;
-  await withCurrentSetup(async()=>{
-   if(selected){
-    anyProbe=true;
-    const report=await probeProvider(clientFor(profile),profile,{previous:reports.get(profile.id),secrets,beforeRequest:assertCurrentSetup,signal});
-    // Revalidate before every publication, including failed diagnostic evidence.
-    await assertCurrentSetup();reports.set(profile.id,report);output.write(formatProviderDiagnostic(report,{secrets}));
-    if(report.failed)throw Error('Setup connectivity probe failed; saved settings remain unchanged');
-   }
+  await (verifyExecution??(s=>assertExecutionAvailable({executionPolicy:{version:1,...s.execution}},s)))(settings);
+  const adapter=getHost(settings.host.id),manualHost=!paths.isolated,io=await hostIo(paths,{...(settings.host.id==='codex'?{codexRegistrations,codexPath:settings.codexPath}:{})}),existing=manualHost?{}:await io.read(adapter.previewRegistration({paths,launcher:paths.launcher}).target);
+  let hostPreview;const existingReceipt=await io.readReceipt(path.join(paths.configDir,`host-${settings.host.id}-binding.json`));if(existingReceipt&&!manualHost){const selected=settings.host.id==='codex'?existing.registration:existing.mcpServers?.['mosaic-beta'];if(fingerprint(selected??null)!==existingReceipt.entryHash)throw Error('Owned host entry was customized; preserve it before setup');const clean=structuredClone(existing);if(settings.host.id==='codex')clean.registration=null;else {delete clean.mcpServers['mosaic-beta'];if(!existingReceipt.hadMcpServers&&!Object.keys(clean.mcpServers).length)delete clean.mcpServers;}hostPreview=adapter.previewRegistration({paths,launcher:paths.launcher,existing:clean});hostPreview.resumeOwned=true;delete hostPreview.resumeOwned;}else hostPreview=adapter.previewRegistration({paths,launcher:paths.launcher,existing});
+  await withCurrentSetup(()=>output.write('\n'+formatPortableSetupSummary(settings,{manualHost,workerLocation:configured.workerLocation})+'\n'));
+  const showDetails=!['simple','guided'].includes(configured.presentation)||await confirm('Show technical settings details? [y/N] ','Show technical settings details?','Show details','Continue');
+  await withCurrentSetup(()=>{
+  if(showDetails)output.write('Exact private setup preview (provider references only)\n'+JSON.stringify(settings,null,2)+'\n');
+  if(manualHost)output.write('Host: '+adapter.displayName+' · manual configuration required. Until you connect the app, host discovery remains unverified.\n'+formatHostRegistrationGuide(hostPreview));
+  else output.write('Host target: '+hostPreview.target+'\nReviewed entry: '+JSON.stringify(hostPreview.entry)+'\nHost: '+adapter.displayName+' · fixture-tested registration; actual host compatibility unprobed.\n');
+  output.write('No fallback. Existing server only; no model installation.\n');
   });
-  if(!selected)await publishReport(profile);
+  const workers=settings.providers.filter(profile=>profile.roles.includes('worker')),secrets=Object.values(nextCredentials.entries),reports=new Map(workers.map(profile=>[profile.id,createProviderDiagnostic(profile,{secrets})]));
+  const registry=workers.length?ProviderRegistry({profiles:settings.providers,credentialResolver:async ref=>{await assertCurrentSetup();return nextCredentials.entries[ref];}}):null;
+  const clientFor=profile=>registry.createClient({version:1,providerId:profile.id,revision:profile.revision,profileHash:digest(registry.get(profile.id,profile.revision)),policyHash:digest(configuredPolicies(settings).providerPolicy)});
+  const publishReport=profile=>withCurrentSetup(()=>output.write(formatProviderDiagnostic(reports.get(profile.id),{secrets})));
+  const showDiagnostics=!arrows||workers.length>0;
+  if(showDiagnostics)await withCurrentSetup(()=>output.write('Optional model discovery sends GET to each configured worker URL below, with configured authentication sent to that supplied endpoint. It sends no project files, task evidence, reviewer request or inference. One request per worker, at most 10 seconds each; no retries or fallback.\n'+workers.map(profile=>'GET '+profile.baseUrl+'/models').join('\n')+(workers.length?'\n':'No worker configured: zero provider requests.\n')));
+  const guided=configured.presentation==='guided';
+  const runDiscovery=guided||!showDiagnostics?null:await confirm('Run optional model discovery check? [y/N] ','Check the worker model list?','Request model list','Skip model discovery');
+  for(const [i,profile] of workers.entries()){
+   const selected=guided?yes(await guardedAsk(`Worker ${i+1}: run optional model discovery check? [y/N] `)):runDiscovery;
+   await withCurrentSetup(async()=>{
+    if(selected){const report=await discoverProvider(clientFor(profile),profile,{previous:reports.get(profile.id),secrets,beforeRequest:assertCurrentSetup,signal});await assertCurrentSetup();reports.set(profile.id,report);}
+   });
+   if(selected)await publishReport(profile);
+  }
+  if(showDiagnostics)await withCurrentSetup(()=>output.write('Optional inference sends the exact fixed setup message below (setup-only) to each supplied worker endpoint, with configured authentication. It may incur provider cost. No project files, task evidence or reviewer request are sent. Maximum output: 16 tokens; one total 10-second deadline per worker, including any required fresh membership GET. No retries or fallback.\nMessage: '+SETUP_PROBE_MESSAGE+'\n'+workers.map(profile=>'POST '+profile.baseUrl+'/chat/completions'+(profile.capabilities.modelDiscovery==='advertised'?'\nRequired fresh membership GET '+profile.baseUrl+'/models before POST (included in the same total deadline).':'')).join('\n')+(workers.length?'\n':'No worker configured: zero provider requests.\n')));
+  const runProbe=guided||!showDiagnostics?null:await confirm('Run optional inference connectivity test with that fixed setup-only message? [y/N] ','Test the worker connection?','Send one test prompt','Skip inference test');
+  let anyProbe=false;
+  for(const [i,profile] of workers.entries()){
+   const selected=guided?yes(await guardedAsk(`Worker ${i+1}: run optional inference connectivity test with that fixed setup-only message? [y/N] `)):runProbe;
+   await withCurrentSetup(async()=>{
+    if(selected){
+     anyProbe=true;
+     const report=await probeProvider(clientFor(profile),profile,{previous:reports.get(profile.id),secrets,beforeRequest:assertCurrentSetup,signal});
+     // Revalidate before every publication, including failed diagnostic evidence.
+     await assertCurrentSetup();reports.set(profile.id,report);output.write(formatProviderDiagnostic(report,{secrets}));
+     if(report.failed)throw Error('Setup connectivity probe failed; saved settings remain unchanged');
+    }
+   });
+   if(!selected)await publishReport(profile);
+  }
+  if(showDiagnostics&&!anyProbe)await withCurrentSetup(()=>output.write('Connectivity/inference: untested; zero setup POSTs.\n'));
+  await withCurrentSetup(()=>{
+   for(const profile of settings.providers)if(!profile.roles.includes('worker'))output.write('API reviewer '+profile.id+': configured; inference untested (review requires bound task evidence).\n');
+   if(!workers.length)output.write('No worker diagnostics: discovery/inference untested; zero provider requests.\n');
+  });
+  if(arrows){
+   const decision=await guardedChoose('Save this setup?',[
+    {value:'y',label:manualHost?'Save local setup':'Save setup'},
+    {value:'n',label:'Exit without saving'}
+   ],{value:'n',back:true});
+   if(decision===null){previousSelection={hostId:settings.host.id,workerChoice:configured.workerChoice};continue;}
+   if(decision!=='y')return false;
+  }else if(!yes(await guardedAsk(manualHost?'Save this local setup and reviewed manual host instructions? [y/N] ':'Apply this exact setup and managed host binding? [y/N] ')))return false;
+  const plan=await withLock(paths,async()=>{await assertCurrentSetup();const service=await import('./service.mjs'),controls={...service,...lifecycle};await service.assertSettingsMaintenanceAllowed(paths,{kind:'setup'});await service.assertMaintenanceIdle(paths,{settingsChange:fingerprint(old)!==fingerprint(settings)});if(fingerprint(await readSettings(paths))!==fingerprint(old)||fingerprint(await readCredentials(paths))!==fingerprint(credentials))throw Error('Settings or credentials changed while preview was open');if(await entry(paths.setupIntent))throw Error('Another setup is pending');const hadAgent=await controls.verifyLaunchAgent(paths);await controls.stopForMaintenance(paths,{allowUnrecorded:!hadAgent,recovering:true});await service.assertMaintenanceIdle(paths,{settingsChange:fingerprint(old)!==fingerprint(settings),offline:true});assertNotInterrupted();const intent={schema:2,settings,hostPreview,...(manualHost?{manualHost:true}:existingReceipt?{reuseHostReceipt:true}:{}),hadAgent,previousConfigHash:fingerprint(old),previousCredentialsHash:fingerprint(credentials),credentialsHash:fingerprint(nextCredentials)};await saveJson(path.join(paths.configDir,'setup-credentials.json'),nextCredentials);await saveJson(paths.setupIntent,intent);await afterStep?.('intent');return apply(paths,intent,{afterStep,verifyExecution,codexRegistrations,lifecycle});});await finishPortable(paths,plan,{lifecycle,codexRegistrations});output.write((manualHost?'Local setup saved. ':'Setup saved. ')+ 'Review delivery is pull; closed hosts wait durably.\n'+formatHostReadiness(settings.host.id,{configuration:'saved',instructions:manualHost?'saved locally for manual registration':'generated and saved for the disposable fixture',registration:manualHost?'unverified':'fixture'}));return true;
  }
- if(!anyProbe)await withCurrentSetup(()=>output.write('Connectivity/inference: untested; zero setup POSTs.\n'));
- await withCurrentSetup(()=>{
-  for(const profile of settings.providers)if(!profile.roles.includes('worker'))output.write('API reviewer '+profile.id+': configured; inference untested (review requires bound task evidence).\n');
-  if(!workers.length)output.write('No worker diagnostics: discovery/inference untested; zero provider requests.\n');
- });
- if(!yes(await guardedAsk(manualHost?'Save this local setup and reviewed manual host instructions? [y/N] ':'Apply this exact setup and managed host binding? [y/N] ')))return false;
- const plan=await withLock(paths,async()=>{await assertCurrentSetup();const service=await import('./service.mjs'),controls={...service,...lifecycle};await service.assertSettingsMaintenanceAllowed(paths,{kind:'setup'});await service.assertMaintenanceIdle(paths,{settingsChange:fingerprint(old)!==fingerprint(settings)});if(fingerprint(await readSettings(paths))!==fingerprint(old)||fingerprint(await readCredentials(paths))!==fingerprint(credentials))throw Error('Settings or credentials changed while preview was open');if(await entry(paths.setupIntent))throw Error('Another setup is pending');const hadAgent=await controls.verifyLaunchAgent(paths);await controls.stopForMaintenance(paths,{allowUnrecorded:!hadAgent,recovering:true});await service.assertMaintenanceIdle(paths,{settingsChange:fingerprint(old)!==fingerprint(settings),offline:true});assertNotInterrupted();const intent={schema:2,settings,hostPreview,...(manualHost?{manualHost:true}:existingReceipt?{reuseHostReceipt:true}:{}),hadAgent,previousConfigHash:fingerprint(old),previousCredentialsHash:fingerprint(credentials),credentialsHash:fingerprint(nextCredentials)};await saveJson(path.join(paths.configDir,'setup-credentials.json'),nextCredentials);await saveJson(paths.setupIntent,intent);await afterStep?.('intent');return apply(paths,intent,{afterStep,verifyExecution,codexRegistrations,lifecycle});});await finishPortable(paths,plan,{lifecycle,codexRegistrations});output.write((manualHost?'Local setup saved. ':'Setup saved. ')+ 'Review delivery is pull; closed hosts wait durably.\n'+formatHostReadiness(settings.host.id,{configuration:'saved',instructions:manualHost?'saved locally for manual registration':'generated and saved for the disposable fixture',registration:manualHost?'unverified':'fixture'}));return true;
 }

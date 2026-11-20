@@ -25,6 +25,8 @@ The subshell keeps the archive's packaged file permissions during extraction. If
 
 The installer checks package integrity and offers to append a managed PATH block to `~/.zshrc` when needed. Use `./install --no-path` to skip that prompt. Open a fresh terminal after accepting a PATH change. Setup previews the selected host, profiles, review source, routing, concurrency and exact native artifact identity. Private configuration lives under `~/Library/Application Support/Mosaic Beta/config`; bearer values use a separate owned `0600` credentials file. Existing schema-1 settings remain readable until explicit preview/cancel/apply migration. Migration does not rewrite saved goal identities or approvals.
 
+First interactive setup opens with a blue tiled Mosaic wordmark using your Terminal profile’s background. The mark compacts to a tiled M in narrower windows. Use Up/Down and Enter to choose an app, pick a worker, skip or run optional checks, and confirm the save. Esc goes back from the worker and save menus. Press q in a menu or Ctrl+C during setup to exit. Before saving, you can restart with `~/.local/bin/mosaic setup`. With `NO_COLOR`, `TERM=dumb` or redirected input/output, setup offers numbered prompts.
+
 First setup asks for your coding app and an existing worker on this Mac, another computer, or a hosted API; you can also choose no worker yet. For a hosted worker, choose OpenAI Platform, Kimi Platform or Z.ai GLM, or supply the base URL of a custom OpenAI-compatible endpoint. Enter the exact Chat Completions model ID your account can access. The named services use their own Platform API keys and billing. Enter a key only at the hidden prompt.
 
 | Preset | API base URL | Account to use |

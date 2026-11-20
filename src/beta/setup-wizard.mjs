@@ -57,11 +57,37 @@ async function advanced(ask,output,hostId,{execution,nativeCheckRuntime,existing
  return {settings:normalizeSettings(rawSettings),rawSettings,entries,presentation:'advanced',workerLocation:null};
 }
 
-export async function collectPortableSetup(ask,output,{execution,nativeCheckRuntime,existingSettings=null,existingCredentialRefs=[]}={}){
- output.write('Mosaic coordinates work. Your coding app is the conversation and default review surface; a worker is an existing compatible local or API model server.\nApproved task context goes to the supplied worker endpoint. Remote and hosted endpoints send it off this Mac. Even a local worker does not make app review local: review may use the app\'s cloud service. Separate reviewer APIs are an advanced choice.\nNo automatic server discovery, model installation or inference. Choosing an app does not prove it is connected.\n');
+export async function collectPortableSetup(ask,output,{execution,nativeCheckRuntime,existingSettings=null,existingCredentialRefs=[],choose,previousSelection}={}){
+ if(choose)output.write('Use your coding app for the conversation and review.\n\n');
+ else output.write('Mosaic coordinates work. Your coding app is the conversation and default review surface; a worker is an existing compatible local or API model server.\nApproved task context goes to the supplied worker endpoint. Remote and hosted endpoints send it off this Mac. Even a local worker does not make app review local: review may use the app\'s cloud service. Separate reviewer APIs are an advanced choice.\nNo automatic server discovery, model installation or inference. Choosing an app does not prove it is connected.\n');
  if(existingSettings)output.write('Existing settings detected: advanced setup will collect an explicit replacement. Cancelling preserves your current workers and review settings; inspect the exact replacement before applying.\n');
- const hostChoice=await ask('Mosaic portable setup\n  1. Codex\n  2. Claude Code\n  3. Cursor\n  4. Antigravity\nChoose host [1]: ')||'1',hostId=HOST_IDS[integer(hostChoice,1,4,'host choice')-1];
- const choice=existingSettings?5:integer(await ask('Worker setup\n  1. Model on this Mac\n  2. Model on another computer (for example a Spark)\n  3. Hosted API\n  4. No worker yet / use the coding app only\n  5. Advanced setup\n  6. Guided setup for two or three workers\nChoose worker setup [1]: ')||'1',1,6,'worker setup choice');
+ const hosts=HOST_IDS.map((id,i)=>({value:String(i+1),label:getHost(id).displayName}));
+ const workers=[
+  {value:'4',label:'No worker yet'},
+  {value:'1',label:'Model on this Mac'},
+  {value:'2',label:'Model on another computer'},
+  {value:'3',label:'Hosted model API'},
+  {value:'5',label:'Advanced setup'},
+  {value:'6',label:'Two or three workers'}
+ ];
+ let hostId,choice;
+ if(choose){
+  let hostChoice=String(Math.max(0,HOST_IDS.indexOf(previousSelection?.hostId??existingSettings?.host.id))+1);
+  if(previousSelection){
+   hostId=previousSelection.hostId;
+   choice=await choose('Choose a worker',workers,{value:previousSelection.workerChoice,back:true});
+  }
+  while(choice==null){
+   hostChoice=await choose('Pick your coding app',hosts,{value:hostChoice});
+   hostId=HOST_IDS[Number(hostChoice)-1];
+   choice=existingSettings?'5':await choose('Choose a worker',workers,{back:true});
+  }
+  choice=Number(choice);
+ }else{
+  const hostChoice=await ask('Mosaic portable setup\n  1. Codex\n  2. Claude Code\n  3. Cursor\n  4. Antigravity\nChoose host [1]: ')||'1';
+  hostId=HOST_IDS[integer(hostChoice,1,4,'host choice')-1];
+  choice=existingSettings?5:integer(await ask('Worker setup\n  1. Model on this Mac\n  2. Model on another computer (for example a Spark)\n  3. Hosted API\n  4. No worker yet / use the coding app only\n  5. Advanced setup\n  6. Guided setup for two or three workers\nChoose worker setup [1]: ')||'1',1,6,'worker setup choice');
+ }
  if(choice===6)return collectMultiWorkerSetup(ask,output,{hostId,execution,nativeCheckRuntime,createProfile:profile});
  if(choice===5)return advanced(ask,output,hostId,{execution,nativeCheckRuntime,existingSettings,existingCredentialRefs});
  const workerLocation=['local','remote','api','none'][choice-1],providers=[],entries={};
@@ -77,7 +103,7 @@ export async function collectPortableSetup(ask,output,{execution,nativeCheckRunt
   providers.push(profile({id:'worker-1',displayName:preset?.displayName??'Worker 1',baseUrl,model,credentialRef}));
  }
  const rawSettings={schema:2,host:{id:hostId,options:{}},providers,defaults:{workerId:providers.length?'worker-1':null,plannerWorkerId:providers.length?'worker-1':null,review:{source:'host',hostId}},execution,...(nativeCheckRuntime?{nativeCheckRuntime}:{}),serviceMaxConcurrentTasks:1,capacityGroups:providers.length?[{id:'worker-1',limit:1}]:[]};
- return {settings:normalizeSettings(rawSettings),rawSettings,entries,presentation:'simple',workerLocation};
+ return {settings:normalizeSettings(rawSettings),rawSettings,entries,presentation:'simple',workerLocation,workerChoice:String(choice)};
 }
 
 /** Call only after validating settings against the private credential store. */

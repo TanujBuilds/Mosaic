@@ -20,6 +20,7 @@ import {canonical,digest} from '../harness/contracts.mjs';
 import {ProviderRegistry} from '../harness/providers/registry.mjs';
 import {discoverProvider,formatProviderDiagnostic} from './provider-diagnostics.mjs';
 import {getHost,normalizeHostSettings,formatHostReadiness} from './hosts/index.mjs';
+import {supportsSetupMenus,terminalSetupInput,welcomeSetup} from './terminal-setup.mjs';
 
 const exec=promisify(execFile);
 const mcpName='mosaic-beta';
@@ -132,21 +133,23 @@ export async function setupComplete(paths){
 export const readSettings=readPrivateSettings;
 export {previewSettingsMigration,applySettingsMigration,resumeSettingsMigration};
 
-async function askSession(input,output,work){
+async function askSession(input,output,work,{firstRun=false}={}){
  const queue=[],interrupted=new AbortController();
  let waiter,closed=false,echo=false;
  const sink=new Writable({write(chunk,_,callback){if(echo)output.write(chunk);callback();}});
  if(output.isTTY){
   sink.isTTY=true;sink.columns=output.columns;sink.rows=output.rows;
  }
- const rl=createInterface({input,output:sink,terminal:!!input.isTTY&&!!output.isTTY,historySize:0});
+ const interrupt=()=>{interrupted.abort();queue.length=0;rl.close();};
+ const menus=firstRun&&supportsSetupMenus(input,output)?terminalSetupInput(input,output,interrupted.signal,interrupt):null;
+ const rl=createInterface({input:menus?.lines??input,output:sink,terminal:!!input.isTTY&&!!output.isTTY,historySize:0});
  rl.on('line',line=>{
   // readline can process more pasted characters before an awaiting prompt resumes.
   echo=false;
   if(waiter){const next=waiter;waiter=null;next(line);}else queue.push(line);
  });
  const finish=()=>{closed=true;const next=waiter;waiter=null;next?.(null);};
- rl.on('SIGINT',()=>{interrupted.abort();queue.length=0;rl.close();});rl.on('close',finish);
+ rl.on('SIGINT',interrupt);rl.on('close',finish);
  const ask=async(prompt,{secret=false}={})=>{
   if(interrupted.signal.aborted)throw Error('Setup interrupted. Run mosaic setup to resume.');
   if(secret&&(!input.isTTY||!output.isTTY))throw Error('Bearer keys can only be entered in an interactive terminal with terminal output.');
@@ -157,7 +160,27 @@ async function askSession(input,output,work){
    return answer.trim();
   }finally{echo=false;if(secret)output.write('\n');}
  };
- try{return await work(ask,interrupted.signal);}finally{rl.close();}
+ const choose=menus?async(...args)=>{
+  queue.length=0;
+  const answer=await menus.choose(...args);
+  if(interrupted.signal.aborted)throw Error('Setup interrupted. Run mosaic setup to resume.');
+  return answer;
+ }:undefined;
+ const signals=['SIGINT','SIGTERM','SIGHUP'];
+ try{
+  if(menus){
+   for(const name of signals)process.on(name,interrupt);
+   menus.start();
+  }
+  if(firstRun)welcomeSetup(output,!!menus);
+  return await work(ask,interrupted.signal,choose);
+ }finally{
+  rl.close();
+  if(menus){
+   menus.close();
+   for(const name of signals)process.off(name,interrupt);
+  }
+ }
 }
 
 const WORKER_PROBE_TIMEOUT_MS=10000;
@@ -292,7 +315,11 @@ export async function setup(paths,options={}){
  if(options.portable||options.settings||old?.schema===2||pending?.schema===2||manifest?.layout==='terminal-beta-v2'){
   let execution=options.execution??(old?.schema===2?old.execution:undefined),nativeCheckRuntime=options.nativeCheckRuntime??(old?.schema===2?old.nativeCheckRuntime:undefined);
   if(!execution&&!options.settings&&!pending){nativeCheckRuntime=await (await import('./package-contract.mjs')).readBundledNativeCheckRuntime(runtimeRoot);execution={backend:'darwin-seatbelt',backendRevision:2,runtimeFingerprint:nativeCheckRuntime.artifactManifestSha256};}
-  return askSession(input,output,(ask,signal)=>setupPortable(paths,{...options,ask,output,execution,nativeCheckRuntime,codexRegistrations:registrations,signal:options.signal?AbortSignal.any([options.signal,signal]):signal}));
+  const firstRun=!old&&!pending&&!options.settings;
+  return askSession(input,output,(ask,signal,choose)=>setupPortable(paths,{
+   ...options,ask,choose,output,execution,nativeCheckRuntime,codexRegistrations:registrations,
+   signal:options.signal?AbortSignal.any([options.signal,signal]):signal
+  }),{firstRun});
  }
  if(old?.host&&old.host.id!=='codex'){
   output.write(`The current host is ${old.host.id}. This interactive setup configures Codex only; existing settings and registrations are preserved. Use mosaic host-preview --host ${old.host.id} for that host's manual configuration path.\n`);
