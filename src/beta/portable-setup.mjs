@@ -15,6 +15,8 @@ const fingerprint=value=>hash(canonical(value));
 const yes=value=>/^y(es)?$/i.test(value);
 const credentialFile=paths=>path.join(paths.configDir,'credentials.json');
 const receiptFile=paths=>path.join(paths.configDir,'portable-binding.json');
+const stagedCredentialsFile=paths=>path.join(paths.configDir,'setup-credentials.json');
+const checkExecution=settings=>assertExecutionAvailable({executionPolicy:{version:1,...settings.execution}},settings);
 async function hostIo(paths,{codexRegistrations,codexPath}={}){
  const cli=codexRegistrations;
  return {async read(target){if(!paths.isolated)throw Error('Real host registration is manual; no conditional host mutation is available');return cli?{registration:await cli.get(codexPath)}:await jsonFile(target)??{};},
@@ -33,52 +35,133 @@ export async function portableSetupComplete(paths,options={}){
  if(await entry(paths.setupIntent))return false;
  return portableBindingMatches(paths,await jsonFile(receiptFile(paths),{privateFile:true}),options);
 }
+function portableReceipt(paths,intent){
+ const manualHost=!paths.isolated||intent.manualHost;
+ return {schema:1,hostId:intent.settings.host.id,...(manualHost?{manualHost:true}:{}),
+  hostReceipt:intent.hostPreview.receiptFile,intentHash:fingerprint(intent),settingsHash:fingerprint(intent.settings),complete:true};
+}
+
+async function inspectPortableRepairBinding(paths,settings,options){
+ const preview=getHost(settings.host.id).previewRegistration({paths,launcher:paths.launcher});
+ const binding=await jsonFile(receiptFile(paths),{privateFile:true});
+ const own=await jsonFile(preview.receiptFile,{privateFile:true});
+ if(binding?.schema!==1||!binding.complete||binding.hostId!==settings.host.id||binding.hostReceipt!==preview.receiptFile||
+    own?.schema!==1||own.hostId!==settings.host.id||own.target!==preview.target||
+    (!paths.isolated&&!binding.manualHost)||Boolean(binding.manualHost)!==Boolean(own.manualHost)||
+    (binding.manualHost?own.state!=='manual'||own.previewHash!==preview.previewHash:own.state!=='complete'||own.entryHash!==fingerprint(preview.ownedEntry))||
+    !await portableBindingMatches(paths,binding,{...options,codexPath:settings.codexPath}))
+  throw Error('The saved coding app binding needs attention. Run mosaic repair --host to review it and mosaic setup to recover the saved setup.');
+ return {preview,binding,hostReceiptHash:fingerprint(own)};
+}
+
+export async function readPortableRepairBinding(paths,settings,options){
+ const {preview,binding,hostReceiptHash}=await inspectPortableRepairBinding(paths,settings,options);
+ if(binding.settingsHash!==fingerprint(settings))throw Error('The saved coding app binding differs from the current settings. Run mosaic setup to review configuration before repairing a worker.');
+ return {preview,manualHost:binding.manualHost===true,repair:{previousBindingHash:fingerprint(binding),hostReceiptHash}};
+}
+
+async function assertRepairBinding(paths,intent,options){
+ if(!intent.repair)return;
+ const {preview,binding,hostReceiptHash}=await inspectPortableRepairBinding(paths,intent.settings,options);
+ if(fingerprint(preview)!==fingerprint(intent.hostPreview)||hostReceiptHash!==intent.repair.hostReceiptHash||
+    ![intent.repair.previousBindingHash,fingerprint(portableReceipt(paths,intent))].includes(fingerprint(binding)))
+  throw Error('The saved coding app binding changed during worker repair. Newer state and recovery evidence are preserved.');
+}
+
+export async function applyPortableWorkerRepair(paths,change,options={}){
+ const {settings,nextCredentials,previousSettings,previousCredentials,preview,manualHost,repair,assertCurrent}=change;
+ const plan=await withLock(paths,async()=>{
+  const service=await import('./service.mjs'),controls={...service,...options.lifecycle};
+  const assertSnapshot=async()=>{
+   await assertCurrent();
+   if(await entry(paths.setupIntent))throw Error('Another setup or repair is pending.');
+  };
+  await assertSnapshot();
+  await (options.verifyExecution??checkExecution)(settings);
+  await assertSnapshot();
+  const hadAgent=await controls.verifyLaunchAgent(paths);
+  await assertSnapshot();
+  await controls.stopForMaintenance(paths,{allowUnrecorded:!hadAgent,recovering:true});
+  await service.assertMaintenanceIdle(paths,{settingsChange:true,offline:true});
+  await assertSnapshot();
+  const intent={schema:2,settings,hostPreview:preview,repair,hadAgent,...(manualHost?{manualHost:true}:{}),
+   previousConfigHash:fingerprint(previousSettings),previousCredentialsHash:fingerprint(previousCredentials),credentialsHash:fingerprint(nextCredentials)};
+  await saveJson(stagedCredentialsFile(paths),nextCredentials);
+  await saveJson(paths.setupIntent,intent);
+  await options.afterStep?.('intent');
+  return apply(paths,intent,{...options,repairAlreadyStopped:true});
+ });
+ await finishPortable(paths,plan,options);
+ return true;
+}
+
+export async function resumePortableSetup(paths,pending,options={}){
+ const plan=await withLock(paths,async()=>{
+  const service=await import('./service.mjs');
+  await service.assertSettingsMaintenanceAllowed(paths,{kind:'setup'});
+  if(canonical(await jsonFile(paths.setupIntent,{privateFile:true}))!==canonical(pending))throw Error('Pending setup changed');
+  return await portableReady(paths,pending,options)?pending:apply(paths,pending,options);
+ });
+ await finishPortable(paths,plan,options);
+ return plan;
+}
+
 export async function removePortableBindings(paths,output,{codexRegistrations:explicitRegistrations,codexPath}={}){let found=false;for(const id of HOST_IDS){const file=path.join(paths.configDir,`host-${id}-binding.json`),receipt=await jsonFile(file,{privateFile:true});if(!receipt)continue;found=true;if(receipt.manualHost||!paths.isolated){output.write('Manual '+id+' configuration was preserved. Remove only the reviewed mosaic-beta entry from '+receipt.target+' if desired; preserve other host settings.\n');continue;}const codexRegistrations=id==='codex'?explicitRegistrations:null;if(id==='codex'&&!codexRegistrations){output.write('Preserved Codex binding for its explicit CLI ownership cleanup.\n');continue;}const io=await hostIo(paths,{codexRegistrations,codexPath}),result=await getHost(id).removeRegistration({io,receiptFile:file});if(!result.removed)output.write('Preserved modified '+id+' Mosaic MCP registration.\n');}if(found){const receipt=await jsonFile(receiptFile(paths),{privateFile:true});if(receipt)await saveJson(receiptFile(paths),{...receipt,complete:false});}return found;}
-async function apply(paths,intent,{afterStep=async()=>{},codexRegistrations,verifyExecution,lifecycle}={}){
+async function apply(paths,intent,{afterStep=async()=>{},codexRegistrations,verifyExecution,lifecycle,repairAlreadyStopped=false}={}){
  const service=await import('./service.mjs'),{assertMaintenanceIdle}=service,controls={...service,...lifecycle};
  await service.assertSettingsMaintenanceAllowed(paths,{kind:'setup'});
  const manualHost=!paths.isolated||intent.manualHost;
  const settings=normalizeSettings(intent.settings),old=await readSettings(paths),credentials=await readCredentials(paths);if(![intent.previousConfigHash,fingerprint(settings)].includes(fingerprint(old)))throw Error('Setup settings changed; newer configuration is preserved');if(![intent.previousCredentialsHash,intent.credentialsHash].includes(fingerprint(credentials)))throw Error('Setup credentials changed; newer credentials are preserved');
- const staged=await jsonFile(path.join(paths.configDir,'setup-credentials.json'),{privateFile:true});if(staged&&fingerprint(staged)!==intent.credentialsHash)throw Error('Pending credential identity changed');await validateSettingsCredentials(paths,settings,staged??credentials);
+ const staged=await jsonFile(stagedCredentialsFile(paths),{privateFile:true});if(staged&&fingerprint(staged)!==intent.credentialsHash)throw Error('Pending credential identity changed');await validateSettingsCredentials(paths,settings,staged??credentials);
  let currentSettingsHash=fingerprint(old),currentCredentialsHash=fingerprint(credentials);
  const assertApplySnapshot=async()=>{
   if(fingerprint(await readSettings(paths))!==currentSettingsHash||fingerprint(await readCredentials(paths))!==currentCredentialsHash)throw Error('Setup settings or credentials changed during apply; newer state and the pending intent are preserved. Inspect the retained setup before resuming.');
   if(fingerprint(await jsonFile(paths.setupIntent,{privateFile:true}))!==fingerprint(intent))throw Error('Pending setup changed during apply; newer intent is preserved.');
-  if(fingerprint(await jsonFile(path.join(paths.configDir,'setup-credentials.json'),{privateFile:true}))!==fingerprint(staged))throw Error('Pending credentials changed during apply; newer credentials are preserved.');
+  if(fingerprint(await jsonFile(stagedCredentialsFile(paths),{privateFile:true}))!==fingerprint(staged))throw Error('Pending credentials changed during apply; newer credentials are preserved.');
+  await assertRepairBinding(paths,intent,{codexRegistrations});
  };
- const settingsChange=fingerprint(old)!==fingerprint(settings);
- await assertMaintenanceIdle(paths,{settingsChange});
- await (verifyExecution??(s=>assertExecutionAvailable({executionPolicy:{version:1,...s.execution}},s)))(settings);
- await assertApplySnapshot();
- await controls.stopForMaintenance(paths,{allowUnrecorded:!intent.hadAgent,recovering:true});
- await assertMaintenanceIdle(paths,{settingsChange});
+ const settingsChange=Boolean(intent.repair)||fingerprint(old)!==fingerprint(settings);
+ if(!repairAlreadyStopped){
+  await assertMaintenanceIdle(paths,{settingsChange});
+  await (verifyExecution??checkExecution)(settings);
+  await assertApplySnapshot();
+  await controls.stopForMaintenance(paths,{allowUnrecorded:!intent.hadAgent,recovering:true});
+ }
+ await assertMaintenanceIdle(paths,{settingsChange,offline:Boolean(intent.repair)});
  await assertApplySnapshot();
  // Credentials were staged privately before the approval intent. Neither intent
  // nor host receipt ever contains bearer values.
  if(fingerprint(credentials)!==intent.credentialsHash){if(!staged)throw Error('Pending credentials unavailable');await saveJson(credentialFile(paths),staged);currentCredentialsHash=intent.credentialsHash;}await afterStep('credentials');await assertApplySnapshot();
  if(fingerprint(old)!==fingerprint(settings)){await saveJson(paths.config,settings);currentSettingsHash=fingerprint(settings);}await afterStep('settings');await assertApplySnapshot();
- const io=await hostIo(paths,{...(settings.host.id==='codex'?{codexRegistrations,codexPath:settings.codexPath}:{})});if(manualHost){await saveJson(intent.hostPreview.receiptFile,{schema:1,hostId:settings.host.id,target:intent.hostPreview.target,manualHost:true,state:'manual',previewHash:intent.hostPreview.previewHash});}else if(intent.reuseHostReceipt){const receipt=await io.readReceipt(intent.hostPreview.receiptFile),current=await io.read(intent.hostPreview.target),selected=settings.host.id==='codex'?current.registration:current.mcpServers?.['mosaic-beta'];if(!receipt||receipt.state!=='complete'||fingerprint(selected??null)!==receipt.entryHash)throw Error('Owned host binding changed during setup');}else await getHost(settings.host.id).applyRegistration(intent.hostPreview,{io});await afterStep('binding');
- await assertApplySnapshot();await saveJson(receiptFile(paths),{schema:1,hostId:settings.host.id,...(manualHost?{manualHost:true}:{}),hostReceipt:intent.hostPreview.receiptFile,intentHash:fingerprint(intent),settingsHash:fingerprint(settings),complete:true});await afterStep('complete');await assertApplySnapshot();return intent;
+ if(!intent.repair){
+  const io=await hostIo(paths,{...(settings.host.id==='codex'?{codexRegistrations,codexPath:settings.codexPath}:{})});
+  if(manualHost)await saveJson(intent.hostPreview.receiptFile,{schema:1,hostId:settings.host.id,target:intent.hostPreview.target,manualHost:true,state:'manual',previewHash:intent.hostPreview.previewHash});
+  else if(intent.reuseHostReceipt){const receipt=await io.readReceipt(intent.hostPreview.receiptFile),current=await io.read(intent.hostPreview.target),selected=settings.host.id==='codex'?current.registration:current.mcpServers?.['mosaic-beta'];if(!receipt||receipt.state!=='complete'||fingerprint(selected??null)!==receipt.entryHash)throw Error('Owned host binding changed during setup');}
+  else await getHost(settings.host.id).applyRegistration(intent.hostPreview,{io});
+ }
+ await afterStep('binding');
+ await assertApplySnapshot();await saveJson(receiptFile(paths),portableReceipt(paths,intent));await afterStep('complete');await assertApplySnapshot();return intent;
 }
 async function assertReadySnapshot(paths,intent){
  if(fingerprint(await readSettings(paths))!==fingerprint(intent.settings)||fingerprint(await readCredentials(paths))!==intent.credentialsHash)throw Error('Setup settings or credentials changed during readiness; newer state and the pending intent are preserved. Inspect the retained setup before resuming.');
  if(fingerprint(await jsonFile(paths.setupIntent,{privateFile:true}))!==fingerprint(intent))throw Error('Pending setup changed during readiness; newer intent is preserved.');
- const staged=await jsonFile(path.join(paths.configDir,'setup-credentials.json'),{privateFile:true});
+ const staged=await jsonFile(stagedCredentialsFile(paths),{privateFile:true});
  if(staged&&fingerprint(staged)!==intent.credentialsHash)throw Error('Pending credentials changed during readiness; newer credentials are preserved.');
 }
 async function portableReady(paths,intent,options={}){
  const service=await import('./service.mjs');if(canonical(await readSettings(paths))!==canonical(intent.settings))return false;
+ await assertRepairBinding(paths,intent,options);
  try{await service.assertBetaStartupReady(paths,intent.settings);if(!await portableBindingMatches(paths,await jsonFile(receiptFile(paths),{privateFile:true}),{...options,codexPath:intent.settings.codexPath}))throw Error('Owned host binding changed during interrupted setup; preserve it and inspect the selected host entry before resuming.');await assertReadySnapshot(paths,intent);return true;}catch(error){if(/incomplete/.test(error.message))return false;throw error;}
 }
 async function finishPortable(paths,intent,{lifecycle,codexRegistrations}={}){
  const service=await import('./service.mjs'),controls={...service,...lifecycle};
- if(!paths.isolated||intent.hadAgent)await controls.startLaunchAgent(paths,{allowUnrecorded:!intent.hadAgent});
- return withLock(paths,async()=>{await service.assertSettingsMaintenanceAllowed(paths,{kind:'setup'});if(canonical(await jsonFile(paths.setupIntent,{privateFile:true}))!==canonical(intent))throw Error('Setup intent changed during owned restart; preserve newer state.');if(!await portableReady(paths,intent,{codexRegistrations}))throw Error('Setup snapshot changed during owned restart; preserve newer settings.');if(!paths.isolated){const previous=await jsonFile(paths.ownership,{privateFile:true});await saveJson(paths.ownership,{...previous,schema:1,launchAgentHash:hash(service.launchAgent(paths)),complete:true});}await assertReadySnapshot(paths,intent);await rm(paths.setupIntent,{force:true});await rm(path.join(paths.configDir,'setup-credentials.json'),{force:true});return true;});
+ if(intent.hadAgent||!paths.isolated&&!intent.repair)await controls.startLaunchAgent(paths,{allowUnrecorded:!intent.hadAgent});
+ return withLock(paths,async()=>{await service.assertSettingsMaintenanceAllowed(paths,{kind:'setup'});if(canonical(await jsonFile(paths.setupIntent,{privateFile:true}))!==canonical(intent))throw Error('Setup intent changed during owned restart; preserve newer state.');if(!await portableReady(paths,intent,{codexRegistrations}))throw Error('Setup snapshot changed during owned restart; preserve newer settings.');if(!paths.isolated&&!intent.repair){const previous=await jsonFile(paths.ownership,{privateFile:true});await saveJson(paths.ownership,{...previous,schema:1,launchAgentHash:hash(service.launchAgent(paths)),complete:true});}await assertReadySnapshot(paths,intent);await rm(paths.setupIntent,{force:true});await rm(stagedCredentialsFile(paths),{force:true});return true;});
 }
 export async function setupPortable(paths,{ask,choose,output,settings:provided,execution,nativeCheckRuntime,afterStep,verifyExecution,codexRegistrations,lifecycle,signal}={}){
  const assertNotInterrupted=()=>{if(signal?.aborted)throw Error('Setup interrupted. Run mosaic setup to resume.');};
  assertNotInterrupted();
- const pending=await jsonFile(paths.setupIntent,{privateFile:true});if(pending?.schema===2){const plan=await withLock(paths,async()=>{const service=await import('./service.mjs');await service.assertSettingsMaintenanceAllowed(paths,{kind:'setup'});if(canonical(await jsonFile(paths.setupIntent,{privateFile:true}))!==canonical(pending))throw Error('Pending setup changed');return await portableReady(paths,pending,{codexRegistrations})?pending:apply(paths,pending,{afterStep,verifyExecution,codexRegistrations,lifecycle});});await finishPortable(paths,plan,{lifecycle,codexRegistrations});output.write('Resumed interrupted setup.\n'+formatHostReadiness(plan.settings.host.id,{configuration:'saved',instructions:!paths.isolated||plan.manualHost?'saved locally for manual registration':'generated and saved for the disposable fixture',registration:!paths.isolated||plan.manualHost?'unverified':'fixture'}));return true;}if(pending)throw Error('Legacy setup is pending; resume it before portable setup');
+ const pending=await jsonFile(paths.setupIntent,{privateFile:true});if(pending?.schema===2){const plan=await resumePortableSetup(paths,pending,{afterStep,verifyExecution,codexRegistrations,lifecycle});output.write((plan.repair?'Resumed the approved worker repair.\n':'Resumed interrupted setup.\n')+formatHostReadiness(plan.settings.host.id,{configuration:'saved',instructions:!paths.isolated||plan.manualHost?'saved locally for manual registration':'generated and saved for the disposable fixture',registration:!paths.isolated||plan.manualHost?'unverified':'fixture'}));return true;}if(pending)throw Error('Legacy setup is pending; resume it before portable setup');
  const old=await readSettings(paths);if(old?.schema===1)throw Error('Legacy schema1 settings are readable. Run mosaic migrate to preview and explicitly apply a lossless migration first.');
  // Snapshot private credentials before the first awaited configuration prompt.
  // A concurrent rotation is a conflict, never a new baseline to overwrite.

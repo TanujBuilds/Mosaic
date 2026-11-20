@@ -91,7 +91,7 @@ function expectedRegistration(server,paths){
 }
 
 function fingerprint(value){return hash(canonical(value));}
-function codexRegistrations(paths){
+export function codexRegistrations(paths){
  if(paths.isolated)return {
   get:()=>jsonFile(paths.isolatedMcp,{privateFile:true,max:8192}),
   add:()=>saveJson(paths.isolatedMcp,{name:mcpName,enabled:true,transport:{type:'stdio',command:paths.launcher,args:['mcp']}}),
@@ -134,7 +134,7 @@ export async function setupComplete(paths){
 export const readSettings=readPrivateSettings;
 export {previewSettingsMigration,applySettingsMigration,resumeSettingsMigration};
 
-async function askSession(input,output,work,{firstRun=false}={}){
+export async function askSession(input,output,work,{firstRun=false,interruptMessage='Setup interrupted. Run mosaic setup to resume.'}={}){
  const queue=[],interrupted=new AbortController();
  let waiter,closed=false,echo=false;
  const sink=new Writable({write(chunk,_,callback){if(echo)output.write(chunk);callback();}});
@@ -152,19 +152,19 @@ async function askSession(input,output,work,{firstRun=false}={}){
  const finish=()=>{closed=true;const next=waiter;waiter=null;next?.(null);};
  rl.on('SIGINT',interrupt);rl.on('close',finish);
  const ask=async(prompt,{secret=false}={})=>{
-  if(interrupted.signal.aborted)throw Error('Setup interrupted. Run mosaic setup to resume.');
+  if(interrupted.signal.aborted)throw Error(interruptMessage);
   if(secret&&(!input.isTTY||!output.isTTY))throw Error('Bearer keys can only be entered in an interactive terminal with terminal output.');
   output.write(prompt);
   try{
    const answer=queue.length?queue.shift():closed?null:await new Promise(resolve=>{waiter=resolve;echo=!secret;});
-   if(answer===null||interrupted.signal.aborted)throw Error('Setup interrupted. Run mosaic setup to resume.');
+   if(answer===null||interrupted.signal.aborted)throw Error(interruptMessage);
    return answer.trim();
   }finally{echo=false;if(secret)output.write('\n');}
  };
  const choose=menus?async(...args)=>{
   queue.length=0;
   const answer=await menus.choose(...args);
-  if(interrupted.signal.aborted)throw Error('Setup interrupted. Run mosaic setup to resume.');
+  if(interrupted.signal.aborted)throw Error(interruptMessage);
   return answer;
  }:undefined;
  const signals=['SIGINT','SIGTERM','SIGHUP'];

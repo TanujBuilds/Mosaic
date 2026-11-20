@@ -7,8 +7,8 @@ const yes=value=>/^y(es)?$/i.test(value);
 function integer(raw,min,max,label){const n=Number(raw);if(!/^\d+$/.test(String(raw))||!Number.isSafeInteger(n)||n<min||n>max)throw Error('Invalid '+label);return n;}
 
 /** Also check rendered scalar values: JSON serialization can escape an already escaped key twice. */
-export async function validateMultiWorkerCredentials(settings,proposedCredentials){
- const credentials=await validateSettingsCredentials(null,settings,proposedCredentials),secrets=Object.values(credentials.entries).flatMap(value=>[value,JSON.stringify(value).slice(1,-1)]);
+export async function validateMultiWorkerCredentials(settings,proposedCredentials,options){
+ const credentials=await validateSettingsCredentials(null,settings,proposedCredentials,options),secrets=Object.values(credentials.entries).flatMap(value=>[value,JSON.stringify(value).slice(1,-1)]);
  const visit=value=>{
   if(typeof value==='string'){
    for(let decoded=value;;){
