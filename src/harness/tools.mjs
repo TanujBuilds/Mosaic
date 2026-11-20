@@ -1,3 +1,4 @@
+import {actionContext,ownerInbox} from './owner-inbox.mjs';
 import {bindingFields} from './review/contracts.mjs';
 import {randomUUID} from 'node:crypto';
 import {setTimeout as delay} from 'node:timers/promises';
@@ -70,6 +71,8 @@ export class Dispatcher {
   add('task_submit','Submit a narrower assignment within the active approved goal. Collaborative consult/coding candidates wait for supervisor review; DeepSeek-only uses checks without Codex.',{goalId:str,task:taskSchema,expectedGoalHash:str,expectedGoalVersion:{...number,minimum:1}},['goalId','task'],true,(i,k)=>{if(isOvernightV2(c.store.get('goal',i.goalId).manifest))throw Error('Overnight v2 stages require an atomically validated planner graph');return c.submitTask({...i.task,goalId:i.goalId,...(i.expectedGoalHash!==undefined?{expectedGoalHash:i.expectedGoalHash}:{}),...(i.expectedGoalVersion!==undefined?{expectedGoalVersion:i.expectedGoalVersion}:{})},k);});
   add('task_get','Inspect a task, its checkpoint and counters.',{taskId:str},['taskId'],false,i=>({...c.getTask(i.taskId),observerCursor:Number(c.store.db.prepare('SELECT COALESCE(MAX(seq),0) AS n FROM events').get().n)}));
   add('artifacts_list','List only saved allowlisted artifacts with checksums; no arbitrary paths.',{taskId:str},['taskId'],false,i=>this.artifacts.list(i.taskId));
+  if(config.beta)add('owner_inbox','List up to 50 saved owner decisions and handoffs without dispatching work.',{goalId:str,itemId:str},[],false,i=>ownerInbox(c,i));
+  if(config.beta)add('owner_action_context','Inspect exact operator scope and saved evidence for one decision.',{goalId:str,taskId:str},['goalId'],false,i=>actionContext(c,i));
   add('observer_snapshot','Read bounded model/task/agent overviews. No execution controls.',{goalId:str,actor:{...str,enum:['codex','deepseek']}},[],false,i=>this.observer.snapshot(i));
   add('observer_timeline','Read chronological activity with a durable scan cursor; captured and reported provenance are explicit.',{goalId:str,actor:{...str,enum:['codex','deepseek']},after:number,recent:bool,limit:{...number,minimum:1,maximum:200}},[],false,i=>this.observer.timeline(i));
   add('observer_artifacts','Discover allowlisted saved evidence IDs and checksums. No arbitrary paths or execution authority.',{taskId:str},['taskId'],false,i=>this.observer.artifactsList(i));
@@ -91,7 +94,7 @@ export class Dispatcher {
   add('help_link','Link an existing ordinary helper assignment to a live supervisor question; helper must be accepted before the answer resumes its parent.',{version:{...number,enum:[1]},taskId:str,questionId:str,helperTaskId:str,reason:str},['version','taskId','questionId','helperTaskId','reason'],true,(i,k)=>this.agents.linkHelp(i,k));
   for(const [name,method,description,extra,required]of [
    ['task_integration_repair','repair','Supervised inverse of a saved failed import; preserve evidence and return the same task to its remaining correction budget.',{reason:str},['reason']],
-   ['task_integrate','accept','Main operator integrates a reviewed, checked candidate.',{feedback:str},['feedback']],
+   ['task_integrate','accept','Main operator integrates a reviewed, checked candidate.',{feedback:str,expectedIntegrationBinding:str},['feedback']],
    ['task_takeover','takeover','Transfer verified quiescent worker edits; candidate_v1 keeps the worker checkout frozen.',{reason:str,layout:{...str,enum:['candidate_v1']},registration:registrationSchema},['reason']],
    ['native_start','startNative','Reserve native ownership. Explicit candidate_v1 isolates this task; omitted layout preserves legacy behavior.',{layout:{...str,enum:['candidate_v1']},registration:registrationSchema},[]],
    ['native_finish','finishNative','Host confirms editing ended; validate/checkpoint candidate_v1 for separate main review.',{summary:str},['summary']],
@@ -110,10 +113,10 @@ export class Dispatcher {
   add('native_text_finish','Record a native Codex consult or finalized protected learning result under its original task.',{taskId:str,content:str},['taskId','content'],true,(i,k)=>c.finishNativeText(i,k));
   add('operation_get','Inspect a long operation.',{operationId:str},['operationId'],false,i=>({...c.store.get('operation',i.operationId),observerCursor:Number(c.store.db.prepare('SELECT COALESCE(MAX(seq),0) AS n FROM events').get().n)}));
   add('questions_list','List unresolved task questions.',{goalId:str},[],false,i=>c.store.all('task').filter(t=>(!i.goalId||t.goalId===i.goalId)&&['awaiting_supervisor','awaiting_user'].includes(t.status)).map(t=>({taskId:t.id,goalId:t.goalId,status:t.status,question:t.questions.at(-1)})));
-  add('question_answer','Answer within scope; DeepSeek-only requires a user answer.',{taskId:str,answer:str,responder:{...str,enum:['user','codex']}},['taskId','answer','responder'],true,(i,k)=>c.answer(i,k));
+  add('question_answer','Answer within scope; DeepSeek-only requires a user answer.',{taskId:str,answer:str,expectedQuestionId:str,expectedGoalHash:str,responder:{...str,enum:['user','codex']}},['taskId','answer','responder'],true,(i,k)=>c.answer(i,k));
   add('task_priority','Set scheduling priority with a recorded reason.',{taskId:str,priority:{...str,enum:['blocking','normal','background']},reason:str},['taskId','priority','reason'],true,(i,k)=>c.setPriority(i,k));
   add('queue_get','Inspect execution queue and separate review inbox.',{goalId:str},[],false,i=>{const p=c.effectivePriorities(),tasks=c.store.all('task').filter(t=>!i.goalId||t.goalId===i.goalId);return {execution:tasks.filter(t=>['queued','suspended','running','uncertain','codex_ready','codex_active'].includes(t.status)).sort((a,b)=>p.get(b.id)-p.get(a.id)||a.sequence-b.sequence).map(t=>({...c.getTask(t.id),effectivePriority:p.get(t.id)})),review:tasks.filter(t=>['awaiting_review','awaiting_legacy_review','legacy_reviewing','ready_to_integrate'].includes(t.status))};});
-  add('work_control','Pause, stop or resume a goal or task. Limits never refresh.',{goalId:str,taskId:str,action:{...str,enum:['pause','stop','resume']}},['action'],true,(i,k)=>{if(!!i.goalId===!!i.taskId)throw Error('Provide exactly one goalId or taskId');return c.control(i,k);});
+  add('work_control','Pause, stop or resume a goal or task. Limits never refresh.',{goalId:str,taskId:str,expectedControlBinding:str,action:{...str,enum:['pause','stop','resume']}},['action'],true,(i,k)=>{if(!!i.goalId===!!i.taskId)throw Error('Provide exactly one goalId or taskId');return c.control(i,k);});
   registerBacklogTools({add,c,worker,beta:config.beta??c.beta});
   add('reviewer_reserve','Reserve one bounded read-only reviewer assignment.',{taskId:str},['taskId'],true,(i,k)=>c.reserveReviewer(i,k));
   add('reviewer_finish','Save evidence from a reserved native reviewer; main Codex retains acceptance.',{reservationId:str,result:obj,error:str},['reservationId'],true,(i,k)=>c.finishReviewer(i,k));

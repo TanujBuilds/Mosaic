@@ -1,3 +1,4 @@
+import {controlBinding} from './owner-inbox.mjs';
 import {ExecutionOwnership,executionHolds} from './execution-ownership.mjs';
 import {assertNativePreflight,preflightNativeExecution} from './native-preflight.mjs';
 import {normalizeExecutionPolicy,assertExecutionAvailable,assertExecutionConfiguration,assertExecutionRuntime,isNativeExecution,normalizeNativeCheckRuntime} from './execution.mjs';
@@ -574,6 +575,8 @@ export class Coordinator {
  });}
  answer(input,key){return this.store.command(key,{op:'task.answer',...input},()=>{const t=this.store.get('task',input.taskId),g=this.store.get('goal',t.goalId);this.liveGoal(g);
   if(!['awaiting_supervisor','awaiting_user'].includes(t.status))throw Error('Task is not waiting for an answer');
+  if(input.expectedGoalHash!==undefined&&g.hash!==input.expectedGoalHash)throw Error('The approved goal changed. Refresh the inbox.');
+  if(input.expectedQuestionId!==undefined&&input.expectedQuestionId!==t.questions.at(-1)?.id)throw Error('The saved question changed. Refresh the inbox.');
   if(t.status==='awaiting_user'&&input.responder!=='user')throw Error('This mode requires a user answer');
   this.liveTask(t);const help=this.store.all('help_link').find(l=>l.taskId===t.id&&l.questionId===t.questions.at(-1)?.id);if(help&&this.getTask(help.helperTaskId).status!=='accepted')throw Error('Linked helper must be accepted before answering');
   text(input.answer,'answer',8000);const answer={questionId:t.questions.at(-1).id,text:input.answer,responder:input.responder,at:this.now()};if(help){answer.helperTaskId=help.helperTaskId;answer.helperResultHash=digest(this.getTask(help.helperTaskId).result);help.status='answered';help.answeredAt=this.now();help.resultHash=answer.helperResultHash;this.store.put('help_link',help);}t.answers.push(answer);t.status=t.spec.actor==='codex'?'codex_ready':'queued';this.store.put('task',t);this.emit('task.answered',t.goalId,t.id,answer);this.requestUrgentYield();return this.getTask(t.id);
@@ -593,6 +596,7 @@ export class Coordinator {
  control(input,key){return this.store.command(key,{op:'control',...input},()=>{
   if(!['pause','stop','resume'].includes(input.action))throw Error('Invalid control');
   const g=input.goalId?this.store.get('goal',input.goalId):this.store.get('goal',this.store.get('task',input.taskId).goalId);
+  if(input.expectedControlBinding!==undefined&&input.expectedControlBinding!==controlBinding(this.store,g,input.taskId?this.store.get('task',input.taskId):null))throw Error('Control state changed. Refresh the inbox.');
   if(input.action==='resume'&&executionHolds(this,{goalId:g.id}).some(row=>!input.taskId||!row.taskId||row.taskId===input.taskId))throw Error('Native execution remains held; exact quiescence required before resume');
   if(input.action==='resume'&&g.status==='draft'&&isOvernightV2(g.manifest))throw Error('Use exact goal_activate after successful preflight');
   if(input.action==='resume'&&this.now()>=g.deadline)throw Error('Original deadline exceeded');

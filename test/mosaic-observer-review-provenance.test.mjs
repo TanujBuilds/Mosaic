@@ -69,7 +69,12 @@ for(const [hostId,want] of [['codex','Codex'],['claude-code','Claude Code'],['cu
  const event=f.observer.timeline({goalId:f.g.id}).events.findLast(e=>e.type==='task.reviewed');
  assert.equal(event.actor,hostId==='codex'?'codex':null);assert.match(event.summary,new RegExp(want+' review accepted'));
  assert.equal(f.reviewRow().actor,want);
- await f.integration.accept({taskId:f.task.id,feedback:'Owned import'},'integrate');
+ const item=f.snapshot().needsYou.items.find(item=>item.taskId===f.task.id);
+ assert.equal(item.action,'integrate');
+ await assert.rejects(f.integration.accept({taskId:f.task.id,feedback:'Stale',expectedIntegrationBinding:'stale'},'stale-integrate'),/candidate or goal changed/);
+ const approved={taskId:f.task.id,feedback:'Owned import',expectedIntegrationBinding:item.binding};
+ const integrated=await f.integration.accept(approved,'integrate');
+ assert.equal((await f.integration.accept(approved,'integrate')).integration.commit,integrated.integration.commit);
  assert.equal(f.observer.timeline({goalId:f.g.id}).events.findLast(e=>e.type==='task.integrated').actor,hostId==='codex'?'codex':null);
  assert.equal(f.snapshot().tasks[0].review.status,'integrated');assert.equal(f.snapshot().tasks[0].outcome.integrated,true);
  assert.doesNotMatch(JSON.stringify(f.snapshot().tasks[0].review),/worktree|credential|baseUrl|Owned fixture verdict/);

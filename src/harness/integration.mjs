@@ -1,3 +1,4 @@
+import {integrationBinding} from './owner-inbox.mjs';
 import {AsyncLocalStorage} from 'node:async_hooks';
 import path from 'node:path';
 import {access,readFile} from 'node:fs/promises';
@@ -307,6 +308,11 @@ export class Integration {
  }
  async accept(input,key){return this.effect(key,{op:'integration.accept',...input},async()=>{
   let t=this.c.getTask(input.taskId),g=this.c.store.get('goal',t.goalId);
+  const verifyBinding=current=>{
+   if(input.expectedIntegrationBinding!==undefined&&input.expectedIntegrationBinding!==integrationBinding(this.c.store.get('goal',current.goalId),current))
+    throw Error('Reviewed candidate or goal changed. Refresh the inbox.');
+  };
+  verifyBinding(t);
   if(t.status==='accepted'&&t.integration)return t;
   this.c.liveGoal(g);
   this.c.liveTask(t);
@@ -316,7 +322,7 @@ export class Integration {
   if(g.integrationOwner&&g.integrationOwner!==t.id)throw Error('Native Codex task owns integration workspace');
   const candidate=await this.candidate(t),releaseCandidate=await candidate.journal.lock();
   try{
-   t=this.currentCandidate(t);await candidate.workspace.recover();if(g.manifest.reviewPolicy)await this.c.reviewService.assertCandidate(t,{lock:false});
+   t=this.currentCandidate(t);verifyBinding(t);await candidate.workspace.recover();if(g.manifest.reviewPolicy)await this.c.reviewService.assertCandidate(t,{lock:false});
    const project=g.manifest.project,candidateSnapshot=project.behavioralChecks||g.manifest.reviewPolicy?await candidate.workspace.snapshot():null;
    const candidateModes=candidateSnapshot?await checkedFileModes(candidate.workspace,candidateSnapshot):null;
    const checkedSnapshot=candidateSnapshot?await this.checkedCandidateSnapshot(candidate,t,g,candidateSnapshot,candidateModes):null;
@@ -330,14 +336,14 @@ export class Integration {
    if(g.manifest.reviewPolicy)await this.c.reviewService.assertCandidate(t,{lock:false});
    const candidateBehavioralEvidence=behavioralEvidenceFor(project,candidateCheckSpecs,candidateChecks,checkedSnapshot,candidateModes);
    assertBehavioralChecks(candidateBehavioralEvidence);
-   t=this.currentCandidate(t);const candidateStage=t.integrationFailures?.length?`candidate-repair-${t.integrationFailures.length}`:'candidate';
+   t=this.currentCandidate(t);verifyBinding(t);const candidateStage=t.integrationFailures?.length?`candidate-repair-${t.integrationFailures.length}`:'candidate';
    if(candidateSnapshot&&t.native?.layout!=='candidate_v1')await checkedBlobIds(candidate.workspace,candidateSnapshot,candidateModes,{beforeCommit:true});
    const checkpoint=t.native?.layout==='candidate_v1'?{commit:t.native.commit,snapshot:await candidate.workspace.snapshot()}:await candidate.journal.memo(`${candidateStage}/checkpoint`,()=>candidate.workspace.checkpoint({id:candidateStage,writePaths:t.spec.permissions.writePaths}));
    if(candidateSnapshot)await assertCheckedCommit(candidate.workspace,checkpoint,candidateSnapshot,candidateModes);
    if(!candidate.journal.events.some(e=>e.type==='stage.accepted'&&e.data.commit===checkpoint.commit))await candidate.journal.append('stage.accepted',{stageId:candidateStage,...checkpoint});
    const target=await this.lockedGoal(g.id,{refuseLegacy:true,integrationTaskId:t.id}),release=target.release;
    try{
-    t=this.currentCandidate(t);await target.workspace.recover();const changes=await this.changes(candidate.workspace,candidate.manifest.baseCommit,t.spec.permissions.writePaths);
+    t=this.currentCandidate(t);verifyBinding(t);await target.workspace.recover();const changes=await this.changes(candidate.workspace,candidate.manifest.baseCommit,t.spec.permissions.writePaths);
     if(candidateSnapshot){
      await candidate.workspace.assertSnapshot(candidateSnapshot);
      await assertCheckedModes(candidate.workspace,candidateSnapshot,candidateModes);
@@ -347,7 +353,7 @@ export class Integration {
     // Fence the async preparation against approval/rebind before reserving the
     // target. The persisted reservation then prevents either change during import.
     const importKey=this.c.store.tx(()=>{
-     t=this.currentCandidate(t);
+     t=this.currentCandidate(t);verifyBinding(t);
      if(g.manifest.reviewPolicy)this.c.reviewService.assertAccepted(t);
      if(t.status==='awaiting_review'){this.c.review({taskId:t.id,decision:'accept',feedback:text(input.feedback,'review feedback')},`review-${key}`);t=this.c.getTask(t.id);}
      const goal=this.c.store.get('goal',g.id),importKey=goal.integrationPending?.importKey??`import-${t.id}-${checkpoint.commit}`;

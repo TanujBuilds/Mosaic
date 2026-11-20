@@ -1,3 +1,4 @@
+import {ownerInbox} from './owner-inbox.mjs';
 import {createHash} from 'node:crypto';
 import {keys,identifier,integer,canonical,digest} from './contracts.mjs';
 import {normalizeObserverQuery,normalizeActivityEvent,OBSERVER_LIMITS} from './collaboration-contracts.mjs';
@@ -5,7 +6,7 @@ import {storedWorkerAttribution} from './outcomes/attribution.mjs';
 import {normalizeReviewPolicy,assertReviewMode,reviewerIdentity} from './review/contracts.mjs';
 import {savedCandidateIdentity,reviewRubric} from './review/evidence.mjs';
 
-export const OBSERVER_TOOLS=new Set(['tools_list','observer_snapshot','observer_timeline','observer_evidence','observer_artifacts']);
+export const OBSERVER_TOOLS=new Set(['tools_list','observer_snapshot','observer_timeline','observer_evidence','observer_artifacts','owner_inbox']);
 const terminal=new Set(['accepted','failed','partial','cancelled']);
 const queueStates=new Set(['queued','codex_ready','suspended','running','uncertain','codex_active']);
 const attentionStates=new Set(['awaiting_supervisor','awaiting_user','awaiting_review','awaiting_legacy_review','blocked','uncertain']);
@@ -277,7 +278,7 @@ export class Observer {
   const cursor=Number(this.c.store.db.prepare('SELECT COALESCE(MAX(seq),0) AS n FROM events').get().n);
   const reviewers=this.c.beta?this.c.store.db.prepare("SELECT data FROM records WHERE kind='reviewer' AND (? IS NULL OR json_extract(data,'$.goalId')=?) ORDER BY rowid DESC LIMIT 100").all(q.goalId,q.goalId).map(r=>{const {id,taskId,goalId,status,at,finishedAt}=JSON.parse(r.data);return {id,taskId,goalId,status,at:finishedAt??at};}):undefined;
   const planning=this.c.beta?this.c.store.db.prepare("SELECT data FROM records WHERE kind='planning' AND (? IS NULL OR json_extract(data,'$.goalId')=?) ORDER BY rowid DESC LIMIT 100").all(q.goalId,q.goalId).map(r=>{const {goalId,status,reason}=JSON.parse(r.data);const event=this.c.store.db.prepare("SELECT at FROM events WHERE goal_id=? AND type LIKE 'planning.%' ORDER BY seq DESC LIMIT 1").get(goalId);return {goalId,status,reason,at:event?.at??null};}):undefined;
-  return {version:1,...(this.c.beta?{reviewers,planning,connections:connections(this.c)}:{}),cursor,goals,tasks:rows,agents,queue:rows.filter(t=>queueStates.has(t.status)),attention:rows.filter(t=>attentionStates.has(t.status)).map(t=>({taskId:t.id,goalId:t.goalId,status:t.status,objective:t.objective,instruction:'Continue in Codex to inspect and decide.'})),overflow:{tasks:tasks.length>500},limits:{goals:100,tasks:500,agents:500},nativeAccounting:'unavailable unless supplied by the native host'};
+  return {version:1,...(this.c.beta?{reviewers,planning,connections:connections(this.c),needsYou:ownerInbox(this.c,q)}:{}),cursor,goals,tasks:rows,agents,queue:rows.filter(t=>queueStates.has(t.status)),attention:rows.filter(t=>attentionStates.has(t.status)).map(t=>({taskId:t.id,goalId:t.goalId,status:t.status,objective:t.objective,instruction:'Continue in Codex to inspect and decide.'})),overflow:{tasks:tasks.length>500},limits:{goals:100,tasks:500,agents:500},nativeAccounting:'unavailable unless supplied by the native host'};
  }
  async artifactsList(raw){keys(raw,['taskId'],'artifact query');identifier(raw.taskId,'task ID');return (await this.artifacts.list(raw.taskId,{limit:100})).map(a=>({...a,reference:'artifact-'+a.id}));}
  async evidence(raw){
