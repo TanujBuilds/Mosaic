@@ -10,11 +10,43 @@ import {Dispatcher} from '../src/harness/tools.mjs';
 import {Artifacts} from '../src/harness/artifacts.mjs';
 import {Observer} from '../src/harness/observer.mjs';
 import {startApi} from '../src/harness/api.mjs';
+import {normalizeLegacyWorkerProfile,profileIdentity} from '../src/harness/providers/contracts.mjs';
+import {ProviderRegistry} from '../src/harness/providers/registry.mjs';
 function fixture(t){const root=mkdtempSync(path.join(os.tmpdir(),'harness-observer-')),c=new Coordinator({root});t.after(()=>{c.close();rmSync(root,{recursive:true,force:true});});const g=c.prepareGoal({submissionId:'observer',objective:'Observe useful work',acceptance:['Evidence'],environment:'fixture'},'prepare');c.activateGoal({goalId:g.id,hash:g.hash},'activate');const ds=c.submitTask({goalId:g.id,submissionId:'ds',kind:'consult',objective:'DeepSeek task',acceptance:['Useful']},'ds'),native=c.submitTask({goalId:g.id,submissionId:'native',kind:'consult',actor:'codex',objective:'Codex task',acceptance:['Useful']},'native');return {root,c,g,ds,native,observer:new Observer({c,artifacts:new Artifacts(c)})};}
 async function apiFixture(t,options={}){const f=fixture(t),dispatcher=new Dispatcher({c:f.c}),token='o'.repeat(64),viewerToken='v'.repeat(64),api=await startApi({dispatcher,token,viewerToken,...options});t.after(()=>api.close());const call=(name,input={},credential=viewerToken,extra={})=>fetch(api.url+'/api/invoke',{method:'POST',headers:{authorization:'Bearer '+credential,'content-type':'application/json',...extra},body:JSON.stringify({name,input})});return {...f,dispatcher,token,viewerToken,api,call};}
 test('observer snapshots distinguish captured execution and reported native work without fabricated accounting',t=>{
  const f=fixture(t);f.c.claimNext('worker');f.c.emit('model.request.started',f.g.id,f.ds.id,{version:1,actor:'deepseek',provenance:'captured',requestId:'request-1'});f.c.store.put('agent',{id:'agent-1',goalId:f.g.id,taskId:f.native.id,actor:'codex',role:'implementer',model:{requested:null,resolved:null},modelSource:'inherited',registeredAt:0,lastReport:{summary:'Editing scoped file',status:'running',at:0}});
  const x=f.observer.snapshot({goalId:f.g.id});assert.equal(x.goals[0].mode,'collaborative');assert.equal(x.tasks.find(t=>t.id===f.ds.id).provenance,'captured');assert.equal(x.agents[0].provenance,'reported');assert.equal(x.agents[0].stale,true);assert.equal(x.agents[0].accounting.tokens,null);assert.equal(x.tasks.find(t=>t.id===f.native.id).model.resolved,null);assert.equal(x.operatorToken,undefined);assert.equal(x.goals[0].manifest,undefined);
+});
+for(const schema of ['legacy','portable'])test(`beta viewer projects ${schema} display identity and the last saved live response`,t=>{
+ const root=mkdtempSync(path.join(os.tmpdir(),'harness-observer-connections-'));
+ let now=1000;
+ const workerProfile={baseUrl:'https://private-worker.example/v1',model:'private-model',displayName:'Selected Worker',revision:'private-revision',streaming:false};
+ const profile=normalizeLegacyWorkerProfile({schema:1,worker:{profile:workerProfile}},{id:'private-worker-id',capacityGroup:'private-capacity',credentialRef:'private-key'});
+ const providerRegistry=ProviderRegistry({profiles:[profile]});
+ const workerOptions=schema==='legacy'?{workerProfile}:{providerRegistry,configuredPolicies:{providerPolicy:{
+  version:1,workers:[profileIdentity(profile)],plannerWorkerId:profile.id,defaultWorkerId:profile.id,capacityGroups:[{id:profile.capacityGroup,limit:1}]
+ }}};
+ const c=new Coordinator({root,now:()=>now,beta:true,selectedHost:'cursor',...workerOptions});
+ t.after(()=>{c.close();rmSync(root,{recursive:true,force:true});});
+ const observer=new Observer({c});
+ const configured={host:{id:'cursor',lastConnection:null},worker:{displayName:'Selected Worker',lastConnection:null}};
+ assert.deepEqual(observer.snapshot().connections,configured);
+ function saveResponse(environment,at){
+  const g=c.prepareGoal({submissionId:environment,objective:'Connect',acceptance:['Evidence'],mode:'deepseek_only',environment},'prepare-'+environment);
+  c.activateGoal({goalId:g.id,hash:g.hash},'activate-'+environment);
+  const task=c.submitTask({goalId:g.id,submissionId:'response',kind:'consult',objective:'Answer',acceptance:['Evidence']},'task-'+environment);
+  assert.equal(c.claimNext('owner').id,task.id);
+  const request=c.reserve(task.id,{key:'request',kind:'model'},'owner');
+  now=at;c.saveRequest(request.id,{content:'private-result',model:'private-model'},'owner');
+  c.completeTask(task.id,{summary:'Saved response'},'owner');
+  return g;
+ }
+ const live=saveResponse('live',2000);
+ saveResponse('fixture',3000);
+ const result=observer.snapshot({goalId:live.id}).connections;
+ assert.deepEqual(result,{...configured,worker:{displayName:'Selected Worker',lastConnection:{kind:'worker_response',at:2000}}});
+ assert.doesNotMatch(JSON.stringify(result),/private-/);
 });
 test('timeline uses global scan cursors through filters and excludes chunk/checkpoint noise',t=>{
  const f=fixture(t),after=f.c.store.events(0,1000).at(-1).seq;

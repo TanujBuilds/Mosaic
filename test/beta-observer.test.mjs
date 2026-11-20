@@ -16,6 +16,92 @@ const task={id:'task-1',goalId:goal.id,actor:'deepseek',kind:'coding',objective:
 const native={id:'task-2',goalId:goal.id,actor:'codex',objective:'Independent implementation',status:'codex_active',provenance:'reported',lastActivityAt:1000};
 const snapshot={goals:[goal],tasks:[task,native],agents:[{id:'a',goalId:goal.id,taskId:native.id,actor:'codex',role:'implementer',lastReport:{status:'running',at:1000}}],reviewers:[],cursor:101};
 
+test('Connections separates saved configuration from historical evidence and stale data',()=>{
+ const connections={host:{id:'cursor',lastConnection:null},worker:{displayName:'Local Worker',lastConnection:{kind:'worker_response',at:1000}}};
+ const state={snapshot:{...snapshot,goals:[],connections},events:[]};
+ const view={view:'connections',interactive:true,width:90,height:24};
+ const frame=renderTerminal(state,view);
+ assert.match(frame,/Connections/);
+ assert.match(frame,/Cursor · configured/);
+ assert.match(frame,/Local Worker · configured/);
+ assert.match(frame,/Last connection · unverified/);
+ assert.match(frame,/Last response · /);
+ assert.doesNotMatch(frame,/Offline|Detected/i);
+ const observed={...state.snapshot,connections:{...connections,host:{...connections.host,lastConnection:{kind:'registry_call',at:1000}}}};
+ const receipt=renderTerminal({...state,snapshot:observed},view);
+ assert.match(receipt,/Bridge registry call · /);
+ assert.doesNotMatch(receipt,/Last connection · unverified|Online/i);
+ assert.match(renderTerminal({...state,stale:true},view),/Disconnected.*stale/);
+ assert.match(renderTerminal({...state,stale:true},{...view,width:24,height:18}),/Disconnected.*stale/);
+ assert.match(renderTerminal({snapshot:null,stale:true,events:[]},view),/Configuration unavailable/);
+ const empty=renderTerminal({snapshot:{...snapshot,goals:[],connections:{host:null,worker:null}},events:[]},view);
+ assert.match(empty,/No coding app selected/);
+ assert.match(empty,/No API worker configured/);
+});
+
+test('a goal-scoped refresh preserves the connection evidence from the source snapshot',async()=>{
+ const connections={host:{id:'cursor',lastConnection:{kind:'registry_call',at:1000}},worker:null};
+ const scoped={...snapshot,connections:{host:{id:'cursor',lastConnection:null},worker:null}};
+ const observer=new TerminalObserver(async(name,input)=>
+  name==='observer_snapshot'?input.goalId?scoped:{...snapshot,connections,overflow:{tasks:true}}:{events:[],cursor:101});
+ const state=await observer.poll();
+ assert.deepEqual(state.snapshot.connections,connections);
+});
+
+test('Activity shows distinct lifecycle states and preserves handoffs and navigation',()=>{
+ const statuses=[['queued','Queued task'],['running','Running task'],['blocked','Blocked task'],['awaiting_review','Review task'],['accepted','Finished task'],['stopped','Stopped task']];
+ const tasks=statuses.map(([status,objective],i)=>({...task,id:'lifecycle-'+i,status,objective}));
+ const events=[{seq:42,at:1000,provenance:'coordinator',type:'work.control',summary:'Execution control recorded'}];
+ const state={snapshot:{...snapshot,tasks},goalId:goal.id,events};
+ for(const [width,height] of [[90,32],[24,18]]){
+  const frame=renderTerminal(state,{view:'activity',interactive:true,width,height});
+  assert.match(frame,/Activity/);
+  assert.match(frame,/Queued/);
+  assert.match(frame,/Running/);
+  assert.match(frame,/Blocked/);
+  assert.match(frame,/Needs review/);
+  assert.match(frame,/Completed/);
+  assert.match(frame,/Stopped/);
+  assert.match(frame,/Handoff feed/);
+  assert.ok(frame.split('\n').length<=height);
+  assert.ok(frame.split('\n').every(line=>[...line].length<=width));
+  assert.match(frame.split('\n').at(-1),/q/);
+ }
+ assert.match(renderTerminal(state,{view:'activity',interactive:true,width:90,height:32}),/Execution control recorded/);
+ assert.match(renderTerminal({snapshot:{...snapshot,goals:[]},events:[]},{view:'activity'}),/No saved goals/);
+});
+
+test('Connections actions guide users to existing commands without invoking them',async()=>{
+ const input=new EventEmitter();input.isTTY=true;input.isRaw=false;
+ input.setRawMode=value=>{input.isRaw=value;};input.resume=()=>{};input.pause=()=>{};
+ const {promise:ready,resolve:firstFrame}=Promise.withResolvers();
+ const frames=[];
+ const output={isTTY:true,columns:24,rows:14,write(value){if(value.includes('Mosaic Beta')){frames.push(stripVTControlCharacters(value));firstFrame();}}};
+ const calls=[];
+ const invoke=async name=>{calls.push(name);return name==='observer_snapshot'?snapshot:{events:[],cursor:101,hasMore:false};};
+ const pending=runObserver({input,output,invoke,pollMs:1000,noColor:false});
+ const press=name=>input.emit('keypress',name,{name});
+ try{
+  await ready;
+  press('c');
+  assert.match(frames.at(-1),/Connections/);
+  assert.match(frames.at(-1).split('\n').at(-1),/e.*h.*q/);
+  press('e');
+  assert.match(frames.at(-1),/Edit setup/);
+  assert.match(frames.at(-1),/mosaic setup/);
+  press('escape');
+  press('h');
+  assert.match(frames.at(-1),/Connection help/);
+  assert.match(frames.at(-1),/mosaic connect/);
+  press('escape');
+  press('v');
+  assert.match(frames.at(-1),/Activity/);
+  press('escape');
+  assert.doesNotMatch(frames.at(-1),/^(Connections|Activity)$/m);
+  assert.ok(calls.every(name=>['observer_snapshot','observer_timeline'].includes(name)));
+ }finally{press('q');await pending;}
+});
+
 test('narrow plain observer strips terminal injection and distinguishes running actors from waiting reviewer',()=>{
  const terminal=renderTerminal({snapshot,goalId:goal.id,events:[]},{width:31,height:60,color:false});
  assert.match(terminal,/Fixture Model/);

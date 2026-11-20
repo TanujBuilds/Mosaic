@@ -1,5 +1,5 @@
 import {createHash} from 'node:crypto';
-import {keys,identifier,integer,digest} from './contracts.mjs';
+import {keys,identifier,integer,canonical,digest} from './contracts.mjs';
 import {normalizeObserverQuery,normalizeActivityEvent,OBSERVER_LIMITS} from './collaboration-contracts.mjs';
 import {storedWorkerAttribution} from './outcomes/attribution.mjs';
 import {normalizeReviewPolicy,assertReviewMode,reviewerIdentity} from './review/contracts.mjs';
@@ -110,6 +110,28 @@ function taskProfile(store,task) {
  if(task.workerProfile)return task.workerProfile;
  const goal=store.get('goal',task.goalId);
  return (task.goalVersion===goal.version?goal:store.maybe('goal_history',`${goal.id}-${task.goalVersion}`))?.manifest.workerProfile;
+}
+function connections(c){
+ const policy=c.configuredPolicies?.providerPolicy;
+ const selected=policy?.workers.find(p=>p.id===policy.defaultWorkerId)??c.workerProfile;
+ const host=c.selectedHost?{id:c.selectedHost,lastConnection:null}:null;
+ if(!selected)return {host,worker:null};
+ // A saved response from the exact selected profile is historical evidence.
+ // Fixture responses and responses from a previous profile cannot prove it.
+ const binding=selected.id?"json_extract(r.data,'$.providerBinding.profileHash')":"json_extract(r.data,'$.workerProfile')";
+ const match=selected.id?digest(selected):canonical(selected);
+ const previous=c.store.db.prepare(`
+  SELECT MAX(json_extract(r.data,'$.savedAt')) AS at
+  FROM requests r
+  JOIN records t ON t.kind='task' AND t.id=r.task_id
+  JOIN records g ON g.kind='goal' AND g.id=json_extract(t.data,'$.goalId')
+  WHERE r.kind='model' AND r.status='completed'
+    AND json_extract(g.data,'$.manifest.environment')='live'
+    AND json_type(r.data,'$.savedAt')='integer'
+    AND json_type(r.data,'$.result.content')='text' AND ${binding}=?
+ `).get(match);
+ const lastConnection=Number.isSafeInteger(previous.at)?{kind:'worker_response',at:previous.at}:null;
+ return {host,worker:{displayName:selected.displayName,lastConnection}};
 }
 function outcome(t,common){
  const result=t.result??{},integration=t.integration,checks=integration?.checks??result.checks;
@@ -255,7 +277,7 @@ export class Observer {
   const cursor=Number(this.c.store.db.prepare('SELECT COALESCE(MAX(seq),0) AS n FROM events').get().n);
   const reviewers=this.c.beta?this.c.store.db.prepare("SELECT data FROM records WHERE kind='reviewer' AND (? IS NULL OR json_extract(data,'$.goalId')=?) ORDER BY rowid DESC LIMIT 100").all(q.goalId,q.goalId).map(r=>{const {id,taskId,goalId,status,at,finishedAt}=JSON.parse(r.data);return {id,taskId,goalId,status,at:finishedAt??at};}):undefined;
   const planning=this.c.beta?this.c.store.db.prepare("SELECT data FROM records WHERE kind='planning' AND (? IS NULL OR json_extract(data,'$.goalId')=?) ORDER BY rowid DESC LIMIT 100").all(q.goalId,q.goalId).map(r=>{const {goalId,status,reason}=JSON.parse(r.data);const event=this.c.store.db.prepare("SELECT at FROM events WHERE goal_id=? AND type LIKE 'planning.%' ORDER BY seq DESC LIMIT 1").get(goalId);return {goalId,status,reason,at:event?.at??null};}):undefined;
-  return {version:1,...(this.c.beta?{reviewers,planning}:{}),cursor,goals,tasks:rows,agents,queue:rows.filter(t=>queueStates.has(t.status)),attention:rows.filter(t=>attentionStates.has(t.status)).map(t=>({taskId:t.id,goalId:t.goalId,status:t.status,objective:t.objective,instruction:'Continue in Codex to inspect and decide.'})),overflow:{tasks:tasks.length>500},limits:{goals:100,tasks:500,agents:500},nativeAccounting:'unavailable unless supplied by the native host'};
+  return {version:1,...(this.c.beta?{reviewers,planning,connections:connections(this.c)}:{}),cursor,goals,tasks:rows,agents,queue:rows.filter(t=>queueStates.has(t.status)),attention:rows.filter(t=>attentionStates.has(t.status)).map(t=>({taskId:t.id,goalId:t.goalId,status:t.status,objective:t.objective,instruction:'Continue in Codex to inspect and decide.'})),overflow:{tasks:tasks.length>500},limits:{goals:100,tasks:500,agents:500},nativeAccounting:'unavailable unless supplied by the native host'};
  }
  async artifactsList(raw){keys(raw,['taskId'],'artifact query');identifier(raw.taskId,'task ID');return (await this.artifacts.list(raw.taskId,{limit:100})).map(a=>({...a,reference:'artifact-'+a.id}));}
  async evidence(raw){
