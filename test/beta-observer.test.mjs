@@ -69,6 +69,8 @@ test('Activity shows distinct lifecycle states and preserves handoffs and naviga
  }
  assert.match(renderTerminal(state,{view:'activity',interactive:true,width:90,height:32}),/Execution control recorded/);
  assert.match(renderTerminal({snapshot:{...snapshot,goals:[]},events:[]},{view:'activity'}),/No saved goals/);
+ const uncertain=renderTerminal({...state,snapshot:{...snapshot,tasks:[native],agents:[]}},{view:'activity',interactive:true,color:true,width:90,height:24});
+ assert.match(uncertain,/\x1b\[33mNative owner · activity unknown\x1b\[0m/);
 });
 
 test('Connections actions guide users to existing commands without invoking them',async()=>{

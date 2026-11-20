@@ -345,8 +345,9 @@ function secondaryScreen(state,goal,{view,width,height,color,interactive,activit
   out.push(heading(taskRoom&&tasks.length>taskRoom?`Assignments ${start+1}–${start+taskRoom}/${tasks.length}`:'Assignments'));
   for(const [index,task] of tasks.slice(start,start+taskRoom).entries()){
    const marker=interactive?(index+start===selected?'› ':'  '):'';
-   const label=lifecycle(task,nativeRows?.get(task.id)),badge=clip(label,space-cells(marker));
-   const tone=color?statusColor(badge,task.status):badge;
+   const nativeRow=task.status==='codex_active'?nativeRows?.get(task.id):null;
+   const label=lifecycle(task,nativeRow),badge=clip(label,space-cells(marker));
+   const tone=color?statusColor(badge,nativeRow?.state??task.status):badge;
    const available=space-cells(marker)-cells(badge)-3;
    out.push(marker+tone+(available>0?' · '+clip(task.objective,available):''));
   }
