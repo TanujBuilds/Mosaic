@@ -126,6 +126,8 @@ test('demo records real fixture checks, reviews and commits in its own store and
   assert.equal(await runFirstTask(f.paths, ['--demo'], {...io, cwd: f.root, demoParent: f.root, invoke: unexpected, loadSettings: unexpected}), 0);
   assert.match(io.read(), /scripted demo/i);
   assert.match(io.read(), /no live providers/i);
+  assert.match(io.read(), /Goal ID: [a-z0-9-]+ · Complete/);
+  assert.doesNotMatch(io.read(), / · (blocked|queued)/);
   assert.match(io.read(), /Candidate checks.*verify.*passed/i);
   assert.match(io.read(), /Review.*accepted/i);
   assert.match(io.read(), /Candidate commit.*[0-9a-f]{40}/i);
@@ -137,6 +139,7 @@ test('demo records real fixture checks, reviews and commits in its own store and
     ...result, demoParent: f.root, invoke: unexpected, loadSettings: unexpected,
   }), 0);
   assert.match(result.read(), /Integrated commit.*[0-9a-f]{40}/i);
+  assert.match(result.read(), /Goal ID: [a-z0-9-]+ · Complete/);
   assert.deepEqual(f.c.store.all('goal'), []);
 });
 

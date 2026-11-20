@@ -324,7 +324,7 @@ async function runDemo(output, parent) {
   const run = path.basename(root).slice(demoPrefix.length);
   // Keep the literal import visible to the installed package's source closure.
   const script = `import {createOutcomeDemo} from '../harness/outcomes/demo.mjs';
-    const {goalId} = await createOutcomeDemo(process.argv[1]);
+    const {goalId} = await createOutcomeDemo(process.argv[1], {firstTask: true});
     process.stdout.write(goalId);`;
   const {stdout: goalId} = await runProcess(process.execPath, ['--input-type=module', '--eval', script, root], {
     cwd: import.meta.dirname,
