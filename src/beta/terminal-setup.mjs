@@ -33,17 +33,20 @@ export function terminalSetupInput(input, output, signal, interrupt) {
   const lines = new PassThrough();
   const keys = new PassThrough();
   let menu;
-  let height = 0;
+  let renderedRows = [];
   const originalRaw = !!input.isRaw;
   const wasFlowing = input.readableFlowing === true;
   const forward = data => (menu ? keys : lines).write(data);
 
   function erase() {
-    if (!height) return;
+    if (!renderedRows.length) return;
+    // A terminal may reflow the previous menu before delivering the resize.
+    const columns = output.columns || 80;
+    const height = renderedRows.reduce((total, row) => total + Math.max(1, Math.ceil(row.length / columns)), 0);
     cursorTo(output, 0);
     moveCursor(output, 0, -height);
     clearScreenDown(output);
-    height = 0;
+    renderedRows = [];
   }
 
   function draw() {
@@ -65,8 +68,8 @@ export function terminalSetupInput(input, output, signal, interrupt) {
       help += (help ? ' | ' : '') + control;
     }
     rows.push(help);
-    height = rows.length;
-    output.write(rows.map(row => row.slice(0, width)).join('\n') + '\n');
+    renderedRows = rows.map(row => row.slice(0, width));
+    output.write(renderedRows.join('\n') + '\n');
   }
 
   function finish(value) {

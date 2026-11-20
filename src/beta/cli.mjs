@@ -12,7 +12,7 @@ import {runObserver} from './observer.mjs';
 import {observerClient} from './sources.mjs';
 import {installedLauncher,uninstall,verifyVersion} from './install.mjs';
 import {formatHostReadiness,formatHostRegistrationGuide} from './hosts/index.mjs';
-import {readHostConnection,recordHostConnection} from './hosts/connection-evidence.mjs';
+import {hostConnectionIdentity,readHostConnection,recordHostConnection} from './hosts/connection-evidence.mjs';
 
 const help=`Mosaic Beta
 
@@ -112,11 +112,11 @@ export async function main(args=process.argv.slice(2)){
  }
  if(command==='serve')return serveBeta(paths,await readSettings(paths));
  if(command==='mcp'){
-  const invoke=client(paths),settings=await readSettings(paths);
+  const invoke=client(paths),identity=hostConnectionIdentity(await readSettings(paths));
   const tools=(await invoke('tools_list')).filter(tool=>tool.name!=='service_stop');
   return startMcp({name:'mosaic-beta',tools,invoke:async(name,input)=>{
    const result=await invoke(name,input);
-   if(name==='registry_list')await recordHostConnection(paths,settings).catch(()=>{});
+   if(name==='registry_list')await recordHostConnection(paths,identity).catch(()=>{});
    return result;
   }});
  }

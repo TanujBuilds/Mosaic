@@ -9,7 +9,8 @@ import {locations,privateDirectories,saveJson} from '../src/beta/files.mjs';
 import {Coordinator} from '../src/harness/coordinator.mjs';
 import {Goals} from '../src/harness/goals.mjs';
 import {detectCodingApps} from '../src/beta/hosts/detection.mjs';
-import {readHostConnection,recordHostConnection} from '../src/beta/hosts/connection-evidence.mjs';
+import {hostConnectionIdentity,readHostConnection,recordHostConnection} from '../src/beta/hosts/connection-evidence.mjs';
+import {readSettings} from '../src/beta/settings.mjs';
 
 const cli=fileURLToPath(new URL('../src/beta/cli.mjs',import.meta.url));
 const setupModule=new URL('../src/beta/setup.mjs',import.meta.url).href;
@@ -224,6 +225,10 @@ test('host detection finds known executables and app bundles without running the
  t.after(()=>rm(home,{recursive:true,force:true}));
  const paths=locations(home,true),bin=path.join(home,'.local','bin');
  assert.deepEqual(await detectCodingApps(paths),[]);
+ const chatgpt=path.join(home,'Applications','ChatGPT.app','Contents');
+ await mkdir(chatgpt,{recursive:true});
+ await writeFile(path.join(chatgpt,'Info.plist'),'no bundled Codex CLI');
+ assert.deepEqual(await detectCodingApps(paths),[]);
  await mkdir(bin,{recursive:true});
  await writeFile(path.join(bin,'codex'),'#!/bin/sh\nexit 9\n',{mode:0o755});
  await writeFile(path.join(bin,'agy'),'#!/bin/sh\nexit 9\n',{mode:0o755});
@@ -236,17 +241,22 @@ test('host detection finds known executables and app bundles without running the
 
 test('registry call evidence belongs to the saved settings and is invalidated by a host change',async t=>{
  const {paths}=await fixture(t);
- const initial=run(paths);
- assert.equal(initial.status,0,initial.stderr);
- const settings=await bytes(paths.config);
+ await saveJson(paths.config,{schema:2,host:{id:'codex',options:{}},providers:[],
+  defaults:{workerId:null,plannerWorkerId:null,review:{source:'host',hostId:'codex'}},
+  execution:{backend:'darwin-seatbelt',backendRevision:2,runtimeFingerprint:'a'.repeat(64)},
+  nativeCheckRuntime:{schema:1,artifactManifestPath:'/fixture/runtime/check-artifact/artifact-manifest.json',artifactManifestSha256:'a'.repeat(64)},
+  serviceMaxConcurrentTasks:1,capacityGroups:[]});
+ const settings=await readSettings(paths),identity=hostConnectionIdentity(settings);
+ assert.equal(hostConnectionIdentity({schema:1,worker:{apiKey:'private'}}),null);
  assert.equal(await readHostConnection(paths),null);
- await recordHostConnection(paths,settings);
+ await recordHostConnection(paths,identity);
  const receipt=await readHostConnection(paths);
  assert.equal(receipt.kind,'registry_call');
  assert.equal(receipt.hostId,'codex');
  assert.ok(Number.isSafeInteger(receipt.at));
- await saveJson(paths.config,{...settings,host:{id:'cursor',options:{}}});
- await recordHostConnection(paths,settings);
+ await saveJson(paths.config,{...settings,host:{id:'cursor',options:{}},
+  defaults:{...settings.defaults,review:{source:'host',hostId:'cursor'}}});
+ await recordHostConnection(paths,identity);
  assert.equal(await readHostConnection(paths),null);
 });
 
@@ -279,11 +289,12 @@ for(const exit of ['q','\x03'])test(`narrow setup shows the compact mark and can
 });
 
 test('an open setup menu redraws at the new width without a navigation key', {skip:process.platform!=='darwin'},()=>{
- const {result}=terminalSetup([
+ const {transcript,result}=terminalSetup([
   ['q / Ctrl+C exit',76],
   ['Up/Down move | Enter confirm | q / Ctrl+C exit',38],
   ['q / Ctrl+C exit','q']
  ],{width:38});
+ assert.match(transcript,/q \/ Ctrl\+C exit\r?\n\x1b\[1G\x1b\[7A/u);
  assert.equal(result.host,undefined);
  assert.equal(result.credentialsWritten,false);
 });
