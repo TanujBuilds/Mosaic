@@ -86,6 +86,8 @@ test('guided task prepares an exact draft from the current Git project and print
   assert.match(io.read(), /Last bridge registry call/);
   assert.match(io.read(), /Cursor/);
   assert.match(io.read(), /goal_get/);
+  assert.match(io.read(), /After I approve activation and work, run one coding assignment/);
+  assert.match(io.read(), /saved check, review, and integration state/);
   assert.match(io.read(), new RegExp(goal.id));
   assert.match(io.read(), new RegExp(goal.hash));
   assert.match(io.read(), /mosaic first-task result --goal/);
@@ -178,6 +180,7 @@ test('preset worker, literal checks and overnight preflight are recorded only in
   assert.match(io.read(), /Saved protected check suggestions: old-check/);
   assert.doesNotMatch(io.read(), /a{64}/);
   assert.match(io.read(), /before running overnight_preflight/);
+  assert.match(io.read(), /let the coordinator's overnight planner/);
   assert.deepEqual(await readFile(f.paths.config), before);
   await assert.rejects(access(repo.marker), {code: 'ENOENT'});
 });
@@ -203,11 +206,13 @@ for (const [mode, reviewerRuns] of [['collaborative', 1], ['deepseek_only', 0]])
     const f = await fixture(t, [profile('default-worker')]);
     const repo = await repository(f);
     const prompts = [mode, ...answers().slice(1)];
-    assert.equal(await runFirstTask(f.paths, [repo.root], {...terminal(prompts), invoke: f.invoke}), 0);
+    const io = terminal(prompts);
+    assert.equal(await runFirstTask(f.paths, [repo.root], {...io, invoke: f.invoke}), 0);
     const [goal] = f.c.store.all('goal');
     assert.equal(goal.manifest.limits.reviewAgentRuns, reviewerRuns);
     assert.equal(goal.manifest.limits.taskLimits.coding.reviews, reviewerRuns);
     assert.equal(goal.manifest.reviewPolicy?.source, reviewerRuns ? 'host' : undefined);
+    assert.match(io.read(), reviewerRuns ? /run one coding assignment/ : /let the coordinator's API-worker planner/);
     assert.deepEqual(f.calls, ['assignment_prepare', 'goal_get']);
   });
 }

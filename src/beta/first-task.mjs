@@ -172,12 +172,17 @@ function showDraft(output, goal, summary) {
 }
 
 function handoff(output, goal, host) {
-  const instructions = goal.manifest.overnightPolicy
+  const overnight = !!goal.manifest.overnightPolicy;
+  const approval = overnight
     ? 'Ask for explicit authorization before running overnight_preflight on this hash and before activation.'
-    : 'Ask for my explicit approval before activating this hash.';
+    : 'Ask for my explicit approval before activating this hash or starting work.';
+  const runAssignment = {
+    deepseek_only: "let the coordinator's API-worker planner create the one allowed coding assignment after activation",
+    overnight_review: "let the coordinator's overnight planner create the one allowed coding stage after preflight and activation",
+  }[goal.manifest.mode.id] ?? 'run one coding assignment after activation using the saved workflow';
   line(output);
   line(output, `Paste into ${host.displayName} with mosaic-beta available`);
-  line(output, `Open my Mosaic draft with mosaic-beta goal_get ${exact({goalId: goal.id})}. Confirm its status is draft and its approval hash is ${goal.hash}. Show me the scope, checks and limits. ${instructions}`);
+  line(output, `Open my Mosaic draft with mosaic-beta goal_get ${exact({goalId: goal.id})}. Confirm its status is draft and its approval hash is ${goal.hash}. Show me the scope, checks and limits. ${approval} After I approve activation and work, ${runAssignment} within the approved bounds. Follow the saved review policy and show the saved check, review, and integration state.`);
   line(output, `See saved result: mosaic first-task result --goal ${goal.id}`);
 }
 
