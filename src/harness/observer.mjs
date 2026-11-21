@@ -6,7 +6,7 @@ import {storedWorkerAttribution} from './outcomes/attribution.mjs';
 import {normalizeReviewPolicy,assertReviewMode,reviewerIdentity} from './review/contracts.mjs';
 import {savedCandidateIdentity,reviewRubric} from './review/evidence.mjs';
 
-export const OBSERVER_TOOLS=new Set(['tools_list','observer_snapshot','observer_timeline','observer_evidence','observer_artifacts','owner_inbox']);
+export const OBSERVER_TOOLS=new Set(['tools_list','observer_snapshot','observer_timeline','observer_current_activity','observer_evidence','observer_artifacts','owner_inbox']);
 const terminal=new Set(['accepted','failed','partial','cancelled']);
 const queueStates=new Set(['queued','codex_ready','suspended','running','uncertain','codex_active']);
 const attentionStates=new Set(['awaiting_supervisor','awaiting_user','awaiting_review','awaiting_legacy_review','blocked','uncertain']);
@@ -24,6 +24,7 @@ const label=type=>({
  })[type]??type.replaceAll('.',' ');
 const trim=value=>String(value).slice(0,2000);
 const snapshotCacheLimit=8;
+const timelineScanLimit=1000;
 const hostNames={codex:'Codex','claude-code':'Claude Code',cursor:'Cursor',antigravity:'Antigravity'};
 // Project only approved identities, never provider endpoints, credentials or
 // candidate source. The legacy reviewPolicy string remains a separate field.
@@ -191,7 +192,7 @@ export class Observer {
    return {events,cursor,scanned:events.length,hasMore:false};
   }
   const events=[];let cursor=q.after,scanned=0;
-  for(const event of this.c.store.events(q.after,1000)){
+  for(const event of this.c.store.events(q.after,timelineScanLimit)){
    cursor=event.seq;scanned++;
    if(q.goalId&&event.goal_id!==q.goalId)continue;
    if(event.type==='model.output'||event.type==='execution.checkpoint'||event.type==='task.checkpoint'&&event.data.status==='running')continue;
@@ -200,6 +201,35 @@ export class Observer {
   }
   const hasMore=!!this.c.store.db.prepare('SELECT 1 FROM events WHERE seq>? LIMIT 1').get(cursor);
   return {events,cursor,scanned,hasMore};
+ }
+ currentActivity(raw={}){
+  keys(raw,['after'],'current activity query');
+  let cursor=integer(raw.after??0,'after',0,Number.MAX_SAFE_INTEGER);
+  const db=this.c.store.db,activity=new Map();
+  const scan=db.prepare(`SELECT seq,goal_id,at,type,
+   CASE
+    WHEN type IN ('model.output','execution.checkpoint') THEN 0
+    WHEN type='task.checkpoint' THEN json_extract(data,'$.status') IS NOT 'running'
+    ELSE 1
+   END AS visible
+   FROM events WHERE seq>? ORDER BY seq LIMIT ?`);
+  // Match the older terminal's 32 chronological pages. Suppressed rows
+  // consume scan slots, and visible housekeeping consumes visible slots.
+  for(let page=0;page<32;page++){
+   let scanned=0,visible=0;
+   for(const event of scan.iterate(cursor,timelineScanLimit)){
+    cursor=event.seq;scanned++;
+    if(!event.visible)continue;
+    if(event.goal_id&&event.type!=='task.expired'&&event.type!=='goal.expired'){
+     const id=identifier(event.goal_id,'goalId'),at=integer(event.at,'timestamp',0,Number.MAX_SAFE_INTEGER);
+     activity.set(id,Math.max(activity.get(id)??0,at));
+    }
+    if(++visible>=OBSERVER_LIMITS.pageMax)break;
+   }
+   if(scanned<timelineScanLimit&&visible<OBSERVER_LIMITS.pageMax)break;
+  }
+  const hasMore=!!db.prepare('SELECT 1 FROM events WHERE seq>? LIMIT 1').get(cursor);
+  return {cursor,hasMore,activity:[...activity].map(([goalId,at])=>({goalId,at}))};
  }
  usage(taskId){
   return tokenTotal(this.c.store.db.prepare("SELECT data FROM requests WHERE task_id=? AND kind='model' AND status='completed'").all(taskId).map(row=>JSON.parse(row.data).result?.usage?.total_tokens));

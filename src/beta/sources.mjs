@@ -75,11 +75,13 @@ export function observerClient(paths,{source='auto'}={}){
   if(!candidates.length)throw Error('No coordinator is available');
   candidates.sort((a,b)=>currentRank(b)-currentRank(a)||b.at-a.at);
   const choice=candidates[0],uncertain=results.some(r=>r.status==='rejected')||candidates.some(c=>c.incomplete);
-  selected=choice.id;pinned=true;
   let notice=choice.kind==='running'?'Current project · working now':choice.kind==='unknown'?'Current project · native activity is unconfirmed':choice.kind==='recent'?'No work currently running · most recent project':'No work currently running · no saved projects';
   if(choice.kind==='recent'&&candidates.some(c=>c.unconfirmed))notice='Most recent project · no confirmed running work; native activity is unconfirmed';
   if(uncertain)notice='Showing available activity · some service history is unavailable or still loading';
-  return {...choice,notice,snapshot:await decorate(choice.id,choice.snapshot,candidates.filter(c=>c.id!==choice.id&&c.snapshot.goals.length).map(c=>c.id))};
+  const snapshot=await decorate(choice.id,choice.snapshot,candidates.filter(c=>c.id!==choice.id&&c.snapshot.goals.length).map(c=>c.id));
+  bounded.throwIfAborted();
+  selected=choice.id;pinned=true;
+  return {...choice,notice,snapshot};
  };
  return invoke;
 }

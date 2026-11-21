@@ -72,6 +72,53 @@ test('viewer can discover only observer reads and is denied every mutation befor
  assert.equal((await f.call('goal_get')).status,403);assert.equal(f.c.store.events(0,1000).length,before);assert.equal((await f.call('observer_snapshot')).status,200);
  assert.equal((await f.call('goal_get',{},f.token)).status,200);
 });
+test('viewer current activity preserves bounded history cursors without returning event payloads',async t=>{
+ const f=await apiFixture(t),store=f.c.store;
+ const early='activity-early',later='activity-later';
+ store.tx(()=>{
+  // These rows consume the scan budget without consuming a visible event slot.
+  for(let i=0;i<1100;i++){
+   const type=['model.output','execution.checkpoint','task.checkpoint'][i%3];
+   store.event(type,{goalId:early,at:50000,data:{status:'running',summary:'Filtered payload'}});
+  }
+  for(let i=0;i<6600;i++){
+   const goalId=i%5===0?null:i%2?early:later;
+   const type=i%13===0?'goal.expired':i%17===0?'task.checkpoint':'task.result';
+   store.event(type,{goalId,at:i===6599?70000:type==='goal.expired'?60000:1000+i,
+    data:{summary:'Visible payload',...(i%17===0?{status:'saved'}:{})}});
+  }
+ });
+ function legacy(after){
+  let cursor=after,hasMore=false;const activity=new Map();
+  for(let i=0;i<32;i++){
+   const page=f.observer.timeline({after:cursor,limit:200});
+   cursor=page.cursor;hasMore=page.hasMore;
+   for(const e of page.events)if(e.goalId&&!['task.expired','goal.expired'].includes(e.type)){
+    activity.set(e.goalId,Math.max(activity.get(e.goalId)??0,e.at));
+   }
+   if(!hasMore)break;
+  }
+  return {cursor,hasMore,activity:[...activity].map(([goalId,at])=>({goalId,at}))};
+ }
+ const discover=await f.call('tools_list');
+ const tools=await discover.json();
+ assert.equal(tools.find(tool=>tool.name==='observer_current_activity')?.annotations.readOnlyHint,true);
+ const read=async after=>{
+  const response=await f.call('observer_current_activity',{after});
+  assert.equal(response.status,200);
+  return response.json();
+ };
+ const first=await read(0);
+ assert.deepEqual(first,legacy(0));
+ assert.equal(first.hasMore,true);
+ assert.ok(first.activity.find(e=>e.goalId===early).at<50000);
+ const second=await read(first.cursor);
+ assert.deepEqual(second,legacy(first.cursor));
+ assert.equal(second.hasMore,false);
+ assert.deepEqual(second.activity.find(e=>e.goalId===early),{goalId:early,at:70000});
+ assert.deepEqual(await read(second.cursor),{cursor:second.cursor,hasMore:false,activity:[]});
+ assert.equal((await f.call('observer_current_activity',{after:-1})).status,400);
+});
 test('viewer login role is derived from its key, cannot be promoted, and sessions retain CSRF checks',async t=>{
  const f=await apiFixture(t);const login=await fetch(f.api.url+'/login',{method:'POST',headers:{origin:f.api.url,'content-type':'application/x-www-form-urlencoded'},body:new URLSearchParams({token:f.viewerToken,role:'operator'}),redirect:'manual'});assert.equal(login.status,303);const cookie=login.headers.get('set-cookie').split(';')[0];const session=await fetch(f.api.url+'/api/session',{headers:{cookie}}).then(r=>r.json());assert.equal(session.role,'viewer');assert.ok(session.csrf);
  const send=(name,csrf)=>fetch(f.api.url+'/api/invoke',{method:'POST',headers:{cookie,origin:f.api.url,'content-type':'application/json',...(csrf?{'x-csrf-token':csrf}:{})},body:JSON.stringify({name,input:{}})});assert.equal((await send('observer_snapshot')).status,403);assert.equal((await send('observer_snapshot',session.csrf)).status,200);assert.equal((await send('service_stop',session.csrf)).status,403);
