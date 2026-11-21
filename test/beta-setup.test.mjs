@@ -5,6 +5,7 @@ import {mkdir,mkdtemp,readFile,rm,symlink,writeFile} from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import {fileURLToPath} from 'node:url';
+import {stripVTControlCharacters} from 'node:util';
 import {locations,privateDirectories,saveJson} from '../src/beta/files.mjs';
 import {Coordinator} from '../src/harness/coordinator.mjs';
 import {Goals} from '../src/harness/goals.mjs';
@@ -270,7 +271,13 @@ test('portable setup uses the blue Mosaic mark and arrow keys to go back, select
   ['Choose a worker','\r'],
   ['Finish setup','\x1b[A\x1b[A\r']
  ]);
- assert.match(transcript,/\x1b\[1;94m▛▚  ▞▜/u);
+ assert.match(transcript,/\x1b\[1;94m▛▀▖     ▗▀▜/u);
+ const plain=stripVTControlCharacters(transcript);
+ assert.match(plain,/╭─{44}╮/u);
+ assert.match(plain,/1\/3  Pick your coding app/u);
+ assert.match(plain,/2\/3  Choose a worker/u);
+ assert.match(plain,/3\/3  Finish setup/u);
+ assert.match(plain,/│  › /u);
  assert.match(transcript,/First-time setup/);
  assert.doesNotMatch(transcript,/\x1b\[(?:[4-5][0-9]|10[0-7])m/u);
  assert.match(transcript,/Start the trial coordinator/);
@@ -307,7 +314,7 @@ for(const policy of [{plain:true},{terminal:'dumb'}])test(`plain portable setup 
   ['Run optional inference connectivity test with that fixed setup-only message? [y/N] ','n\r'],
   ['Apply this exact setup and managed host binding? [y/N] ','y\r']
  ],policy);
- assert.doesNotMatch(transcript,/\x1b\[1;94m|▛▚/u);
+ assert.doesNotMatch(transcript,/\x1b\[1;94m|▛▚|╭|1\/3/u);
  assert.equal(result.host,'cursor');
  assert.equal(result.saved,true);
 });

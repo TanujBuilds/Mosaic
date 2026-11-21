@@ -2,7 +2,9 @@ import {clearScreenDown, cursorTo, emitKeypressEvents, moveCursor} from 'node:re
 import {PassThrough} from 'node:stream';
 
 const mark = ['▛▚  ▞▜', '▌ ▚▞ ▐', '▌    ▐'];
+const tiles = ['▛▀▖     ▗▀▜', '▌ ▝▚   ▞▘ ▐', '▌   ▚▄▞   ▐', '▙         ▟'];
 const blue = '\x1b[1;94m';
+const cyan = '\x1b[36m';
 const bold = '\x1b[1m';
 const reset = '\x1b[0m';
 
@@ -13,7 +15,21 @@ export function supportsSetupMenus(input, output) {
 
 export function welcomeSetup(output, color) {
   const width = output.columns || 80;
-  if (color && width >= 27 && (output.rows || 24) >= 10) {
+  const height = output.rows || 24;
+  if (color && width >= 50 && height >= 16) {
+    const inner = 44;
+    const rule = '─'.repeat(inner);
+    const labels = ['Mosaic', 'First-time setup', 'App  /  Worker  /  Review', ''];
+    output.write('\n  ' + cyan + '╭' + rule + '╮' + reset + '\n');
+    for (const [index, row] of tiles.entries()) {
+      const label = labels[index];
+      const text = index === 0 ? bold + label + reset : label;
+      const padding = ' '.repeat(inner - row.length - label.length - 5);
+      output.write('  ' + cyan + '│' + reset + '  ' + blue + row + reset
+        + '   ' + text + padding + cyan + '│' + reset + '\n');
+    }
+    output.write('  ' + cyan + '╰' + rule + '╯' + reset + '\n');
+  } else if (color && width >= 27 && height >= 10) {
     output.write('\n');
     const labels = [bold + 'Mosaic' + reset, 'First-time setup', ''];
     for (const [row, tiles] of mark.entries()) {
@@ -23,6 +39,10 @@ export function welcomeSetup(output, color) {
     output.write('Welcome to Mosaic\n');
   }
   output.write('\n');
+}
+
+export function setupSection(title) {
+  return '  ' + cyan + '──' + reset + ' ' + bold + title + reset + '\n';
 }
 
 // Route a whole input chunk to exactly one reader. Readline handles text and
@@ -50,12 +70,15 @@ export function terminalSetupInput(input, output, signal, interrupt) {
   function draw() {
     if (!menu) return;
     erase();
-    const {title, options, selected, back} = menu;
+    const {title, options, selected, back, stage} = menu;
     const width = Math.max(1, (output.columns || 80) - 1);
     const limit = Math.max(1, (output.rows || 24) - 6);
     const start = Math.min(Math.max(0, selected - limit + 1), Math.max(0, options.length - limit));
-    const rows = [title, ...options.slice(start, start + limit).map(({label}, i) =>
-      (i + start === selected ? '› ' : '  ') + label)];
+    const frame = width >= 26;
+    const stageLabel = frame && stage ? stage + '/3  ' : '';
+    const rows = [(frame ? '  ' : '') + stageLabel + title,
+      ...options.slice(start, start + limit).map(({label}, i) =>
+        (frame ? '  │  ' : '') + (i + start === selected ? '› ' : '  ') + label)];
     const controls = ['Up/Down move', 'Enter confirm', ...(back ? ['Esc back'] : []), 'q / Ctrl+C exit'];
     let help = '';
     for (const control of controls) {
@@ -68,9 +91,15 @@ export function terminalSetupInput(input, output, signal, interrupt) {
     rows.push(help);
     renderedRows = rows.map(row => row.slice(0, width));
     output.write(renderedRows.map((row, index) => {
-      if (index === 0) return bold + row + reset;
-      if (index === selected - start + 1) return blue + row + reset;
-      return row;
+      if (index === 0) {
+        if (!stageLabel) return bold + row + reset;
+        const prefix = ('  ' + stageLabel).length;
+        return cyan + row.slice(0, prefix) + reset + bold + row.slice(prefix) + reset;
+      }
+      if (index > Math.min(limit, options.length)) return row;
+      const rail = frame ? cyan + row.slice(0, 5) + reset : '';
+      const label = frame ? row.slice(5) : row;
+      return rail + (index === selected - start + 1 ? blue + label + reset : label);
     }).join('\n') + '\n');
   }
 
@@ -120,10 +149,10 @@ export function terminalSetupInput(input, output, signal, interrupt) {
       input.setRawMode(true);
       input.resume();
     },
-    choose(title, options, {value = options[0].value, back = false} = {}) {
+    choose(title, options, {value = options[0].value, back = false, stage} = {}) {
       if (signal.aborted) return Promise.resolve(null);
       return new Promise(resolve => {
-        menu = {title, options, selected: Math.max(0, options.findIndex(option => option.value === value)), back, resolve};
+        menu = {title, options, selected: Math.max(0, options.findIndex(option => option.value === value)), back, stage, resolve};
         draw();
       });
     },

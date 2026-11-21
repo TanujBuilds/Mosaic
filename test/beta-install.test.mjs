@@ -26,7 +26,8 @@ test('standalone installer verifies integrity, is idempotent and refuses a forei
  assert.doesNotMatch(listing.stdout,/dashboard|harness_rpc\.py|playwright/);
  const extracted=run('/usr/bin/tar',['-xzf',archive,'-C',fixture]);
  assert.equal(extracted.status,0,extracted.stderr);
- const install=()=>run(path.join(fixture,stem,'install'),['--home',home,'--no-path']);
+ const installer=path.join(fixture,stem,'install'),installArgs=['--home',home,'--no-path'];
+ const install=()=>run(installer,installArgs);
  const launcher=path.join(home,'.local','bin','mosaic');
  await mkdir(path.dirname(launcher),{recursive:true});
  await writeFile(launcher,'foreign\n',{mode:0o755});
@@ -37,6 +38,28 @@ test('standalone installer verifies integrity, is idempotent and refuses a forei
  await rm(launcher);
  const first=install();
  assert.equal(first.status,0,first.stderr);
+ const plain=`Mosaic Beta 0.1.0-beta.98 installed.\nRun '${launcher}' setup\n`;
+ assert.equal(first.stdout,plain);
+ const terminalInstall=(columns,{term='xterm-256color',noColor=false}={})=>{
+  const env={...process.env,TERM:term};
+  delete env.NO_COLOR;
+  if(noColor)env.NO_COLOR='';
+  const terminal=spawnSync('/usr/bin/script',['-q','/dev/null','/bin/sh','-c',
+   '/bin/stty cols "$1" rows 28; shift; exec "$@"','mosaic-install-test',String(columns),installer,...installArgs],
+   {cwd:project,encoding:'utf8',env,timeout:80000,stdio:['ignore','pipe','pipe']});
+  assert.equal(terminal.status,0,terminal.stdout+terminal.stderr);
+  return terminal.stdout.replaceAll('\r\n','\n');
+ };
+ const receiptOutput=terminalInstall(80);
+ assert.match(receiptOutput,/\x1b\[1;94m.*Mosaic Beta/);
+ assert.match(receiptOutput,/Installed.*0\.1\.0-beta\.98/);
+ const installLocation=path.join(home,'Library','Application Support','Mosaic Beta');
+ assert.ok(receiptOutput.includes(installLocation));
+ assert.ok(receiptOutput.includes(`'${launcher}' setup\n`));
+ for(const fallback of [terminalInstall(30),terminalInstall(80,{term:'dumb'}),terminalInstall(80,{noColor:true})]){
+  assert.doesNotMatch(fallback,/\x1b/);
+  assert.ok(fallback.endsWith(plain),fallback);
+ }
  const again=install();
  assert.equal(again.status,0,again.stderr);
  const help=run(launcher,['--help']);

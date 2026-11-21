@@ -9,6 +9,7 @@ import {getHost,HOST_IDS,formatHostReadiness,formatHostRegistrationGuide} from '
 import {detectCodingApps} from './hosts/detection.mjs';
 import {validateMultiWorkerCredentials} from './multi-worker-setup.mjs';
 import {collectPortableSetup,formatPortableSetupSummary} from './setup-wizard.mjs';
+import {setupSection} from './terminal-setup.mjs';
 import {SETUP_PROBE_MESSAGE,createProviderDiagnostic,discoverProvider,probeProvider,formatProviderDiagnostic} from './provider-diagnostics.mjs';
 import {atomic,entry,hash,jsonFile,localDirectory,saveJson,shellQuote,withLock} from './files.mjs';
 const fingerprint=value=>hash(canonical(value));
@@ -188,7 +189,7 @@ export async function setupPortable(paths,{ask,choose,output,settings:provided,e
   await assertCurrentSetup();
   const compact=Boolean(guardedChoose&&configured.presentation==='simple');
   const confirm=async (prompt,title,affirmative,negative)=>yes(compact
-   ?await guardedChoose(title,[{value:'n',label:negative},{value:'y',label:affirmative}])
+   ?await guardedChoose(title,[{value:'n',label:negative},{value:'y',label:affirmative}],{stage:3})
    :await guardedAsk(prompt));
   const settings=configured.settings,nextCredentials={schema:1,entries:{...credentials.entries,...configured.entries}};
   // Validate secret-free public identity before publishing any preview or error.
@@ -221,7 +222,7 @@ export async function setupPortable(paths,{ask,choose,output,settings:provided,e
     {value:'d',label:'Show technical details'},exit];
    let choice;
    do{
-    choice=await guardedChoose('Finish setup',options,{value:'n',back:true});
+    choice=await guardedChoose('Finish setup',options,{value:'n',back:true,stage:3});
     if(choice==='d')await showPreview(true);
    }while(choice==='d');
    return choice;
@@ -281,11 +282,11 @@ export async function setupPortable(paths,{ask,choose,output,settings:provided,e
   }else if(!yes(await guardedAsk(manualHost?'Save this local setup and reviewed manual host instructions? [y/N] ':'Apply this exact setup and managed host binding? [y/N] ')))return false;
   const plan=await withLock(paths,async()=>{await assertCurrentSetup();const service=await import('./service.mjs'),controls={...service,...lifecycle};await service.assertSettingsMaintenanceAllowed(paths,{kind:'setup'});await service.assertMaintenanceIdle(paths,{settingsChange:fingerprint(old)!==fingerprint(settings)});if(fingerprint(await readSettings(paths))!==fingerprint(old)||fingerprint(await readCredentials(paths))!==fingerprint(credentials))throw Error('Settings or credentials changed while preview was open');if(await entry(paths.setupIntent))throw Error('Another setup is pending');const hadAgent=await controls.verifyLaunchAgent(paths);await controls.stopForMaintenance(paths,{allowUnrecorded:!hadAgent,recovering:true});await service.assertMaintenanceIdle(paths,{settingsChange:fingerprint(old)!==fingerprint(settings),offline:true});assertNotInterrupted();const intent={schema:2,settings,hostPreview,...(manualHost?{manualHost:true}:existingReceipt?{reuseHostReceipt:true}:{}),hadAgent,previousConfigHash:fingerprint(old),previousCredentialsHash:fingerprint(credentials),credentialsHash:fingerprint(nextCredentials)};await saveJson(path.join(paths.configDir,'setup-credentials.json'),nextCredentials);await saveJson(paths.setupIntent,intent);await afterStep?.('intent');return apply(paths,intent,{afterStep,verifyExecution,codexRegistrations,lifecycle});});await finishPortable(paths,plan,{lifecycle,codexRegistrations});
   if(compact){
-   output.write('\nSetup saved.\n');
-   if(workers.length&&!showDiagnostics)output.write('Provider connection untested.\n');
-   output.write('Coding app connection still needs verification.\n\n');
+   output.write('\n'+setupSection('Setup saved.'));
+   if(workers.length&&!showDiagnostics)output.write('  Provider connection untested.\n');
+   output.write('  Coding app connection still needs verification.\n\n');
    const nextCommand=manualHost?'connect':'serve';
-   output.write((manualHost?'Connect '+adapter.displayName:'Start the trial coordinator')+':\n  '+shellQuote(paths.launcher)+' '+nextCommand+'\n');
+   output.write(setupSection(manualHost?'Connect '+adapter.displayName:'Start the trial coordinator')+shellQuote(paths.launcher)+' '+nextCommand+'\n');
   }else{
    output.write((manualHost?'Local setup saved. ':'Setup saved. ')+ 'Review delivery is pull; closed hosts wait durably.\n'+formatHostReadiness(settings.host.id,{configuration:'saved',instructions:manualHost?'saved locally for manual registration':'generated and saved for the disposable fixture',registration:manualHost?'unverified':'fixture'}));
   }

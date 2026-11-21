@@ -2,6 +2,7 @@ import {collectMultiWorkerSetup} from './multi-worker-setup.mjs';
 import {normalizeSettings} from './settings.mjs';
 import {getHost,HOST_IDS} from './hosts/index.mjs';
 import {askWorkerEndpoint,readBearerKey,selectHostedWorkerEndpoint} from './hosted-worker-presets.mjs';
+import {setupSection} from './terminal-setup.mjs';
 
 const yes=value=>/^y(es)?$/i.test(value);
 const integer=(raw,min,max,label)=>{const n=Number(raw);if(!/^\d+$/.test(String(raw))||!Number.isSafeInteger(n)||n<min||n>max)throw Error('Invalid '+label);return n;};
@@ -67,24 +68,24 @@ export async function collectPortableSetup(ask,output,{execution,nativeCheckRunt
  }));
  const defaultHost=existingSettings?.host.id??HOST_IDS.find(id=>detected.has(id))??'codex';
  const workers=[
-  {value:'4',label:'No worker yet'},
+  {value:'4',label:'Use coding app only'},
   {value:'1',label:'Model on this Mac'},
   {value:'2',label:'Model on another computer'},
   {value:'3',label:'Hosted model API'},
-  {value:'5',label:'Advanced setup'},
-  {value:'6',label:'Two or three workers'}
+  {value:'6',label:'Two or three workers'},
+  {value:'5',label:'Advanced setup'}
  ];
  let hostId,choice;
  if(choose){
   let hostChoice=String(HOST_IDS.indexOf(previousSelection?.hostId??defaultHost)+1);
   if(previousSelection){
    hostId=previousSelection.hostId;
-   choice=await choose('Choose a worker',workers,{value:previousSelection.workerChoice,back:true});
+   choice=await choose('Choose a worker',workers,{value:previousSelection.workerChoice,back:true,stage:2});
   }
   while(choice==null){
-   hostChoice=await choose('Pick your coding app',hosts,{value:hostChoice});
+   hostChoice=await choose('Pick your coding app',hosts,{value:hostChoice,stage:1});
    hostId=HOST_IDS[Number(hostChoice)-1];
-   choice=existingSettings?'5':await choose('Choose a worker',workers,{back:true});
+   choice=existingSettings?'5':await choose('Choose a worker',workers,{back:true,stage:2});
   }
   choice=Number(choice);
  }else{
@@ -121,13 +122,13 @@ export function formatPortableSetupSummary(settings,{manualHost,workerLocation=n
  const host=getHost(settings.host.id),workers=settings.providers.filter(p=>p.roles.includes('worker'));
  if(compact){
   const [worker]=workers;
-  const fields=['Review your setup',`  Coding app  ${host.displayName}`];
+  const fields=[`  Coding app  ${host.displayName}`];
   if(worker)fields.push(`  Worker      ${worker.displayName}`,`  Model       ${worker.model}`,
    `  API URL     ${worker.baseUrl}`,`  API key     ${worker.credentialRef?'Entered privately':'None'}`);
   else fields.push('  Worker      None');
-  fields.push('  Review      In your coding app, which may use its cloud service.');
-  if(workerLocation==='remote'||workerLocation==='api')fields.push('Approved task context leaves this Mac for the endpoint above.');
-  return fields.join('\n')+'\n';
+  fields.push('', '  Review happens in your coding app, which may use its cloud service.');
+  if(workerLocation==='remote'||workerLocation==='api')fields.push('  Approved task context leaves this Mac for the endpoint above.');
+  return setupSection('Review your setup') + fields.join('\n')+'\n';
  }
  const lines=['\nMosaic setup summary',`Coding app: ${host.displayName}.`];
  if(workers.length){

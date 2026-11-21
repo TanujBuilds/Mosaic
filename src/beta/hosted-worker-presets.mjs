@@ -27,7 +27,7 @@ export async function selectHostedWorkerEndpoint(ask,output,prompt,{choose,retry
  if(choose){
   const options=hostedWorkerPresets.map(({displayName},index)=>({value:String(index+1),label:displayName}));
   options.push({value:String(options.length+1),label:'Custom API endpoint'});
-  input=await choose('Choose a hosted provider',options);
+  input=await choose('Choose a hosted provider',options,{stage:2});
   if(input===options.at(-1).value)return {baseUrl:await askWorkerEndpoint(ask,output,prompt,{retry:true}),preset:null};
  }else{
   output.write('Choose a hosted provider number or paste your own OpenAI-compatible API base URL.\n'+hostedWorkerChoices(1)+'\n');

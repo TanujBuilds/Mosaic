@@ -17,6 +17,23 @@ const header='# BEGIN MOSAIC BETA PATH v1';
 const footer='# END MOSAIC BETA PATH v1';
 const block=`${header}\nexport PATH="$HOME/.local/bin:$PATH"\n${footer}\n`;
 
+function writeInstallReceipt(output,paths,version){
+ const command=`${shellQuote(paths.launcher)} setup`;
+ const width=Math.min((output.columns??0)-1,50),status=`│  Installed  ${version}`;
+ if(!output.isTTY||width<43||status.length>width||process.env.TERM==='dumb'||Object.hasOwn(process.env,'NO_COLOR')){
+  output.write(`Mosaic Beta ${version} installed.\nRun ${command}\n`);
+  return;
+ }
+ const blue='\x1b[1;94m',bold='\x1b[1m',reset='\x1b[0m',title='╭─ Mosaic Beta ';
+ output.write([
+  '',blue+title+'─'.repeat(width-title.length)+reset,
+  `${blue}│${reset}  ${bold}Installed${reset}  ${version}`,
+  blue+'╰'+'─'.repeat(width-1)+reset,
+  '',`  ${bold}Install location${reset}`,`  ${paths.root}`,
+  '',`  ${bold}Run setup${reset}`,`  ${command}`,'',
+ ].join('\n'));
+}
+
 function launcherFor(paths,version,legacy=false){
  const installed=path.join(paths.versions,version,'runtime');
  const searchPath=shellQuote(path.join(installed,'bin'))+':'+shellQuote(path.dirname(paths.launcher))+(legacy?':/opt/homebrew/bin:/usr/local/bin':'');
@@ -255,7 +272,7 @@ export async function install(paths,payload,{noPath=false,afterStep=()=>{},lifec
   if(current.receipt?.version!==version||current.receipt.contentHash!==manifest.contentHash)throw Error('Installed version changed before PATH binding; preserve it for inspection.');
   try{await saveJson(paths.installation,await applyPath(paths,current.receipt));}catch(error){process.stderr.write('PATH unchanged or needs inspection. '+error.message+'\n');}
  });
- process.stdout.write(`Mosaic Beta ${version} installed.\nRun ${shellQuote(paths.launcher)} setup\n`);
+ writeInstallReceipt(process.stdout,paths,version);
 }
 export async function rollbackVersion(paths,version,options={}){
  if(!versionPattern.test(version??''))throw Error('Choose an installed version for rollback');
