@@ -24,6 +24,7 @@ test('actual native draft revision preflight preserves old proof, rejects stale/
  const root=await realpath(await mkdtemp(path.join(os.tmpdir(),'pb15-native-revision-')));let c;t.after(async()=>{c?.close();await rm(root,{recursive:true,force:true});});
  const artifact=await buildFixtureArtifact(root),repo=path.join(root,'repo');await mkdir(path.join(repo,'src'),{recursive:true});await writeFile(path.join(repo,'package.json'),'{"type":"module"}');await writeFile(path.join(repo,'src/value.mjs'),'export const value=1;\n');
  await git(repo,'init','-q');await git(repo,'add','.');await git(repo,'-c','user.name=Fixture','-c','user.email=fixture@example.invalid','commit','-qm','base');
+ await mkdir(path.join(repo,'.git/info'),{recursive:true});
  await writeFile(path.join(repo,'.git/info/exclude'),'node_modules/\n');await mkdir(path.join(repo,'node_modules'));const dependency=path.join(repo,'node_modules','fixture-tool');await writeFile(dependency,'unused dependency',{mode:0o644});
  c=new Coordinator({root:path.join(root,'state'),selectedHost:'cursor',nativeCheckRuntime:artifact.config});const config={nativeCheckRuntime:artifact.config};
  const raw={submissionId:'native-revision',objective:'Initial native approval',acceptance:['Bounded'],mode:'codex_only',environment:'fixture',executionPolicy:artifact.policy,project:{repo,baseCommit:await git(repo,'rev-parse','HEAD'),readPaths:['package.json','src/'],writePaths:['src/'],checks:[{id:'syntax',argv:[path.join(artifact.root,'node'),'--check','src/value.mjs']}]}};
