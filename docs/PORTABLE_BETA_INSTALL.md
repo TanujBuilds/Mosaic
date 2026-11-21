@@ -263,25 +263,22 @@ or uncertain work may still pin an old artifact. Resolve that work before a
 conflicting migration. Do not delete old versions manually while approvals or
 execution owners refer to them.
 
-A private `config/install-transaction.json` records the old/new owned pointer,
-receipt and each durable phase. Once this transaction is saved, recovery from
-an interruption before commit restores the prior compatible pointer and
-restarts its previously registered coordinator. After commit, recovery verifies
-and retains the new pointer. If a busy state database blocks recovery, wait for
-it to become available and run `mosaic recover`. The next installer invocation
-also attempts recovery automatically.
+After any interrupted installation, update, or recovery attempt, rerun the
+installer from the same verified target archive. It handles the pending
+transaction before attempting another version switch. This also works when the
+installed launcher still belongs to the previous version or when a first
+installation has yet to create a launcher.
 
-If an update is interrupted as it stops the registered coordinator, an older
-installed `mosaic recover` may report an invalid recovery transaction. Rerun
-the installer from the same verified update archive. It checks the previous
-installation and requests a guarded shutdown before restoring service. If the
-coordinator reports active work, resolve it in its host and retry the installer.
+A private `config/install-transaction.json` records the prior and target
+pointers, receipts and durable phases. Recovery before commit restores the
+prior compatible pointer and restarts its registered coordinator. After
+commit, recovery verifies and retains the new pointer. If a busy database
+blocks recovery, wait for it to become available and retry the same installer.
+If active work blocks shutdown, resolve it in the coding app before retrying.
 
-Only expected installer-owned bytes are restored; a user-modified pointer or
-receipt is preserved for inspection. Private state is never restored from an
-old snapshot. A compatible installed version can be selected with
-`mosaic rollback VERSION`; incompatible live schemas block it. In an interrupted
-first install without a launcher, rerun the original archive installer.
+Recovery preserves modified pointers, modified receipts and private state for
+inspection. Use `mosaic rollback VERSION` to select a compatible retained
+version. Incompatible live schemas block rollback.
 
 `mosaic uninstall` removes only unchanged owned host/launcher/PATH bindings.
 It preserves custom/unrelated entries, private settings, credentials, installed
