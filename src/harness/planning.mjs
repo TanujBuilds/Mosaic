@@ -69,7 +69,7 @@ export class Planner {
   const {c}=this,p=c.store.maybe('planning',goal.id);
   if(this.inflight.has(goal.id)||goal.status!=='active'||goal.deadline<=c.now()||goal.manifest.mode.planner!=='deepseek')return false;
   if(c.store.all('planning').some(other=>other.goalId!==goal.id&&['running','uncertain'].includes(other.status)&&!c.store.get('goal',other.goalId).manifest.providerPolicy))return false;
-  if(c.store.all('task').some(t=>['running','uncertain','taking_over'].includes(t.status)&&t.spec.actor==='deepseek'&&!c.store.get('goal',t.goalId).manifest.providerPolicy))return false;
+  if(c.store.unfinishedTasks().some(t=>['running','uncertain','taking_over'].includes(t.status)&&t.spec.actor==='deepseek'&&!c.store.get('goal',t.goalId).manifest.providerPolicy))return false;
   if(p&&!['queued','running'].includes(p.status)||!p&&c.store.all('task').some(t=>t.goalId===goal.id))return false;
   if(p?.status==='running'&&p.owner!==this.worker.owner)return false;
   if(p?.providerWait&&c.now()<Math.min(p.providerWait.retryAt,p.providerWait.until))return false;
@@ -83,11 +83,12 @@ export class Planner {
   const {c}=this,owner=this.worker.owner;
   const reserved=c.store.all('planning').find(p=>(!goalId||p.goalId===goalId)&&['running','uncertain'].includes(p.status));
   if(reserved&&(reserved.status==='uncertain'||reserved.owner!==owner))return {waiting:true,planning:reserved};
-  if(c.store.all('task').some(t=>['running','uncertain','taking_over'].includes(t.status)&&t.spec.actor==='deepseek'&&!c.store.get('goal',t.goalId).manifest.providerPolicy))return null;
-  if(!reserved&&c.store.all('task').some(t=>(!goalId||t.goalId===goalId)&&['queued','suspended'].includes(t.status)&&t.spec.actor==='deepseek'&&c.eligible(t)))return null;
+  const unfinished=c.store.unfinishedTasks();
+  if(unfinished.some(t=>['running','uncertain','taking_over'].includes(t.status)&&t.spec.actor==='deepseek'&&!c.store.get('goal',t.goalId).manifest.providerPolicy))return null;
+  if(!reserved&&unfinished.some(t=>(!goalId||t.goalId===goalId)&&['queued','suspended'].includes(t.status)&&t.spec.actor==='deepseek'&&c.eligible(t)))return null;
   const g=reserved?c.store.get('goal',reserved.goalId):c.store.all('goal').find(g=>(!goalId||g.id===goalId)&&g.status==='active'&&g.deadline>c.now()&&g.manifest.mode.planner==='deepseek'&&!c.store.all('task').some(t=>t.goalId===g.id)&&!['completed','blocked','partial'].includes(c.store.maybe('planning',g.id)?.status));
   if(!g)return null;
-  if(!g.manifest.providerPolicy&&c.store.all('task').some(t=>['running','uncertain','taking_over'].includes(t.status)&&t.spec.actor==='deepseek'))return null;
+  if(!g.manifest.providerPolicy&&unfinished.some(t=>['running','uncertain','taking_over'].includes(t.status)&&t.spec.actor==='deepseek'))return null;
   if(this.inflight.has(g.id))return {waiting:true,reasonCode:'planner_active',planning:c.store.maybe('planning',g.id)};
   const token=Symbol('planner owner');this.inflight.set(g.id,token);
   try{

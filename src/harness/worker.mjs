@@ -1,6 +1,6 @@
 import {claimAvailable,holdPinnedResource} from './routing/runtime.mjs';
 import {digest} from './contracts.mjs';
-import {capacitySnapshot,CapacityWaitError,canClaim} from './scheduling/capacity.mjs';
+import {capacitySnapshot,CapacityWaitError,canClaim,holdsPlanningSlot,holdsTaskSlot,serviceCapacity} from './scheduling/capacity.mjs';
 import { randomUUID } from 'node:crypto';
 import { CodingAdapter } from './coding.mjs';
 import { LocalProvider } from './provider.mjs';
@@ -156,8 +156,8 @@ export class Worker {
   // write (for example a legacy check error), so keep its outer wake bounded.
   if(this.runners.size||this.auxiliary.size)consider(startedAt+5000);
   for(const goal of store.all('goal'))consider(goal.deadline);
-  for(const task of store.all('task')){
-   if(!['accepted','failed','partial','cancelled'].includes(task.status))consider(task.deadline);
+  for(const task of store.unfinishedTasks()){
+   consider(task.deadline);
    if(['suspended','queued'].includes(task.status)){
     consider(task.providerWait?.retryAt);
     consider(task.routingWait?.retryAt);
@@ -172,13 +172,13 @@ export class Worker {
  }
  async tick(){await this.overnight.tick();try{return await this.executeTick();}finally{await this.overnight.tick();}}
  async executeTick(){
-  if(capacitySnapshot(this.c).serviceLimit>1){
+  if(serviceCapacity(this.c)>1){
    if(this.shutdown.signal.aborted)return {waiting:true,reasonCode:'service_stopping'};
    if(this.auxiliary.has('legacy'))return this.waitParallel();
    if(this.legacyWorkPending()){
     // Finish already admitted portable steps before entering the historical
     // global lane. Preparation/checks belong to that lane, not just inference.
-    if(this.runners.size||this.auxiliary.size||this.c.store.all('task').some(t=>t.status==='running'&&
+    if(this.runners.size||this.auxiliary.size||this.c.store.unfinishedTasks().some(t=>t.status==='running'&&
      (t.owner===this.owner||this.runnerContexts.has(t.id)||this.c.workerLease&&t.ownerLease===this.c.workerLease.generation)))return this.executeParallel({draining:true});
     this.launch(this.auxiliary,'legacy',()=>this.executeSequential());
     return this.waitParallel();
@@ -188,28 +188,30 @@ export class Worker {
   return this.executeSequential();
  }
  legacyWorkPending(){
-  const c=this.c,snapshot=capacitySnapshot(c),legacy=id=>!c.store.get('goal',id).manifest.providerPolicy;
-  if(snapshot.activeTasks.some(t=>legacy(t.goalId))||snapshot.planning.some(p=>legacy(p.goalId)))return true;
+  const c=this.c,tasks=c.store.unfinishedTasks(),activeTasks=tasks.filter(holdsTaskSlot),
+   planning=c.store.all('planning').filter(holdsPlanningSlot),legacy=id=>!c.store.get('goal',id).manifest.providerPolicy;
+  if(activeTasks.some(t=>legacy(t.goalId))||planning.some(p=>legacy(p.goalId)))return true;
   // Uncertain portable ownership is not an executable legacy turn. Keep its
   // durable holds, while allowing independent portable groups to make progress.
-  if(snapshot.activeTasks.some(t=>t.status!=='running')||snapshot.planning.some(p=>p.status==='uncertain'))return false;
-  if(snapshot.goals.some(g=>legacy(g.id)&&this.planner.schedulable(g)))return true;
-  return snapshot.tasks.some(t=>{
+  if(activeTasks.some(t=>t.status!=='running')||planning.some(p=>p.status==='uncertain'))return false;
+  if(c.store.all('goal').some(g=>!g.manifest.providerPolicy&&this.planner.schedulable(g)))return true;
+  let snapshot;
+  return tasks.some(t=>{
    if(!legacy(t.goalId)||!c.eligible(t))return false;
    const goal=c.store.get('goal',t.goalId);
    if(t.status==='ready_to_integrate'&&['checks','legacy'].includes(goal.manifest.mode.review))return true;
    if(['awaiting_legacy_review','legacy_reviewing'].includes(t.status))return true;
    if(this.legacyReview.schedulable(t))return true;
    return ['queued','suspended'].includes(t.status)&&t.spec.actor==='deepseek'&&t.executionActor!=='codex'&&
-    canClaim({task:t,goal,snapshot:{...snapshot,activeTasks:[],planning:[],autonomousParallelBusy:false}}).allowed;
+    canClaim({task:t,goal,snapshot:{...(snapshot??=capacitySnapshot(c)),activeTasks:[],planning:[],autonomousParallelBusy:false}}).allowed;
   });
  }
  async executeSequential(){
   this.c.expireQuiescent();
-  const automatic=this.c.store.all('task').find(t=>t.status==='ready_to_integrate'&&this.c.eligible(t)&&['checks','legacy'].includes(this.c.store.get('goal',t.goalId).manifest.mode.review));
+  const automatic=this.c.store.unfinishedTasks().find(t=>t.status==='ready_to_integrate'&&this.c.eligible(t)&&['checks','legacy'].includes(this.c.store.get('goal',t.goalId).manifest.mode.review));
   if(automatic){try{return await this.integration.accept({taskId:automatic.id,feedback:'Trusted checks passed; no Codex review'},`auto-integrate-${automatic.id}`);}catch(error){this.c.store.tx(()=>{const t=this.c.store.get('task',automatic.id);if(t.status==='ready_to_integrate'){t.status='blocked';t.reason=error.message;this.c.store.put('task',t);this.c.emit('task.blocked',t.goalId,t.id,{reason:t.reason});}});return this.c.getTask(automatic.id);}}
   const planning=await this.planner.tick();if(planning&&(!planning.waiting||!this.c.store.all('goal').filter(g=>g.status==='active').every(g=>g.manifest.providerPolicy)))return planning;
-  let task=this.c.store.all('task').find(t=>t.status==='running'&&t.owner===this.owner);
+  let task=this.c.store.unfinishedTasks().find(t=>t.status==='running'&&t.owner===this.owner);
   if(task)task=this.c.getTask(task.id);else task=await claimAvailable(this);
   if(task?.waiting)return task;
   if(!task)return this.legacyReview.tick();
@@ -270,11 +272,12 @@ export class Worker {
  async executeParallel({draining=false}={}){
   if(this.shutdown.signal.aborted)return {waiting:true,reasonCode:'service_stopping'};
   this.c.expireQuiescent();this.nextProbeAt=null;
-  const limit=capacitySnapshot(this.c).serviceLimit;
+  const limit=serviceCapacity(this.c);
   // Separate bounded lanes keep a slow planner/reviewer/import from holding the
   // autonomous dispatch loop. Their own durable reservation guards remain final.
+  const unfinished=this.c.store.unfinishedTasks();
   if(!draining){
-  const automatic=this.c.store.all('task').find(t=>t.status==='ready_to_integrate'&&this.c.eligible(t)&&['checks','legacy'].includes(this.c.store.get('goal',t.goalId).manifest.mode.review));
+  const automatic=unfinished.find(t=>t.status==='ready_to_integrate'&&this.c.eligible(t)&&['checks','legacy'].includes(this.c.store.get('goal',t.goalId).manifest.mode.review));
   if(automatic&&!this.auxiliary.has('integration'))this.launch(this.auxiliary,'integration',async()=>{
    try{return await this.integration.accept({taskId:automatic.id,feedback:'Trusted checks passed; no automatic host review'},`auto-integrate-${automatic.id}`);}
    catch(error){return this.c.store.tx(()=>{const t=this.c.getTask(automatic.id);if(t.status==='ready_to_integrate'){t.status='blocked';t.reason=error.message;this.c.store.put('task',t);this.c.emit('task.blocked',t.goalId,t.id,{reason:t.reason});}return t;});}
@@ -287,7 +290,7 @@ export class Worker {
    if([...this.auxiliary.keys()].filter(k=>k.startsWith('planning:')).length>=limit)break;
    if(!this.auxiliary.has(key))this.launch(this.auxiliary,key,()=>this.planner.tick({goalId:goal.id}));
   }
-  const reviews=this.c.store.all('task').filter(t=>this.legacyReview.schedulable(t));
+  const reviews=unfinished.filter(t=>this.legacyReview.schedulable(t));
   for(const candidate of reviews){
    const key=`review:${candidate.id}`;
    if([...this.auxiliary.keys()].filter(k=>k.startsWith('review:')).length>=limit)break;
@@ -297,7 +300,7 @@ export class Worker {
   }
   for(const [id,context] of this.runnerContexts){const current=this.c.store.maybe('task',id);if(!current||current.owner!==context.owner||current.status!=='running')this.runnerContexts.delete(id);}
   const mapped=new Set([...this.runners.values()].map(entry=>entry.taskId));
-  for(const running of this.c.store.all('task').filter(t=>t.status==='running'&&!mapped.has(t.id)&&
+  for(const running of unfinished.filter(t=>t.status==='running'&&!mapped.has(t.id)&&
    (t.owner===this.owner||this.runnerContexts.has(t.id)||this.c.workerLease&&t.ownerLease===this.c.workerLease.generation))){
    if(this.runners.size>=limit)break;
    const savedContext=this.runnerContexts.get(running.id),context=savedContext?.owner===running.owner?savedContext:this.taskContext(running.owner);this.runnerContexts.set(running.id,context);

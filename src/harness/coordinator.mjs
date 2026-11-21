@@ -8,7 +8,7 @@ import path from 'node:path';
 import {readFileSync} from 'node:fs';
 import {isOvernightV2,effectiveIntegrationChecks} from './overnight.mjs';
 import {assertOvernightPreflight} from './overnight-preflight.mjs';
-import { Store } from './store.mjs';
+import {Store,terminalTaskStatuses} from './store.mjs';
 import { Registry, normalizeGoal, normalizeTask, providerBinding as manifestProviderBinding, digest, text, identifier, keys } from './contracts.mjs';
 import {ReviewService} from './review/service.mjs';
 import {HOST_IDS,normalizeReviewPolicy} from './review/contracts.mjs';
@@ -25,7 +25,7 @@ import {capacitySnapshot,canClaim,configureServiceCapacity,assertCapacityConfigu
 import {orderedCandidates} from './scheduling/scheduler.mjs';
 import {reconnectRetryAt} from '../adapters/retry-after.mjs';
 
-const TERMINAL=new Set(['accepted','failed','partial','cancelled']);
+const TERMINAL=new Set(terminalTaskStatuses);
 const SLOT=new Set(['running','uncertain','taking_over']);
 const rank={background:0,normal:1,blocking:2};
 const RECONNECT_DELAY_MS=15000;
@@ -392,7 +392,7 @@ export class Coordinator {
   for(const stage of definition.tasks)submit(stage);
   const run=this.store.submission('workflow_run',g.id,input.submissionId,hash,id=>({id,goalId:g.id,workflowId:input.workflowId,version:input.version,definitionHash,goalVersion:g.version,tasks:[...ids.values()],at:this.now()}));this.emit('workflow.submitted',g.id,null,{id:run.id,definitionHash,tasks:run.tasks});return run;
  });}
- effectivePriorities(){const tasks=this.store.all('task'),p=new Map(tasks.map(t=>[t.id,rank[t.priority??t.spec.priority]]));let changed=true;
+ effectivePriorities(tasks=this.store.all('task')){const p=new Map(tasks.map(t=>[t.id,rank[t.priority??t.spec.priority]]));let changed=true;
   while(changed){changed=false;for(const t of tasks)if(!TERMINAL.has(t.status))for(const id of t.spec.dependsOn)if(p.get(id)<p.get(t.id)){p.set(id,p.get(t.id));changed=true;}}
   return p;
  }
@@ -406,9 +406,9 @@ export class Coordinator {
   this.emit(event,t.goalId,t.id,{reason,...data});return this.getTask(t.id);
  }
  expireQuiescent(){return this.store.tx(()=>{
-  for(const t of this.store.all('task')){
+  for(const t of this.store.unfinishedTasks()){
    const g=this.store.get('goal',t.goalId),now=this.now();
-   if(executionHolds(this,{goalId:g.id}).some(row=>!row.taskId||row.taskId===t.id)||TERMINAL.has(t.status)||t.owner||t.status==='legacy_reviewing'||t.executionActor==='codex'||g.integrationOwner===t.id)continue;
+   if(executionHolds(this,{goalId:g.id}).some(row=>!row.taskId||row.taskId===t.id)||t.owner||t.status==='legacy_reviewing'||t.executionActor==='codex'||g.integrationOwner===t.id)continue;
    if(now>=Math.min(g.deadline,t.deadline??g.deadline)){
     this.settleTask(t,'partial','Original deadline reached; saved evidence retained','task.expired');
    }else if(t.providerWait&&['queued','suspended'].includes(t.status)&&now>=t.providerWait.until){
@@ -416,14 +416,16 @@ export class Coordinator {
    }
   }
  });}
- requestUrgentYield(){const tasks=this.store.all('task'),p=this.effectivePriorities();for(const active of tasks.filter(t=>t.status==='running'&&t.spec.actor==='deepseek'))if(tasks.some(t=>['queued','suspended'].includes(t.status)&&this.eligible(t)&&p.get(t.id)>p.get(active.id))){active.yieldRequested=true;this.store.put('task',active);this.emit('task.yield_requested',active.goalId,active.id);}}
+ requestUrgentYield(){const tasks=this.store.unfinishedTasks(),p=this.effectivePriorities(tasks);for(const active of tasks.filter(t=>t.status==='running'&&t.spec.actor==='deepseek'))if(tasks.some(t=>['queued','suspended'].includes(t.status)&&this.eligible(t)&&p.get(t.id)>p.get(active.id))){active.yieldRequested=true;this.store.put('task',active);this.emit('task.yield_requested',active.goalId,active.id);}}
  claimNext(owner,readiness){identifier(owner,'owner');return this.store.tx(()=>{
   const lease=this.store.maybe('lease','coordinator');
   if(lease)this.currentLease(lease.token);
-  const tasks=this.store.all('task'),snapshot=capacitySnapshot(this);
+  const tasks=this.store.unfinishedTasks();
   const existing=tasks.find(t=>t.status==='running'&&t.owner===owner&&t.interruptedOwner!==owner&&this.store.get('goal',t.goalId).manifest.providerPolicy);if(existing){this.owned(existing.id,owner);return this.getTask(existing.id);}
   if(readiness){const target=this.store.get('task',readiness.taskId),goal=this.store.get('goal',target.goalId);if(target.hash!==readiness.taskHash||digest(target.spec)!==readiness.taskHash||goal.hash!==readiness.goalHash||goal.version!==readiness.goalVersion||target.goalVersion!==goal.version||(this.workerLease?.generation??null)!==readiness.lease||!this.eligible(target))return null;}
   const candidates=orderedCandidates(this,tasks);
+  if(!candidates.length)return null;
+  const snapshot=capacitySnapshot(this);
   for(const t of candidates){
    const g=this.store.get('goal',t.goalId);
    const admission=canClaim({task:t,goal:g,snapshot});if(!admission.allowed){this.lastCapacityWait={taskId:t.id,...admission};continue;}

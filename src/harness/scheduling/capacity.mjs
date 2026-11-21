@@ -5,6 +5,9 @@ import {digest} from '../contracts.mjs';
 import {repositoryGitCommonDirectory} from '../../project/git.mjs';
 
 const slots=new Set(['running','uncertain','taking_over']);
+export const holdsTaskSlot=task=>slots.has(task.status)&&task.spec.actor==='deepseek'&&task.executionActor!=='codex';
+export const holdsPlanningSlot=planning=>planning.status==='running'||planning.status==='uncertain';
+export const serviceCapacity=c=>c.store.maybe('capacity_config','service')?.limit??c.serviceMaxConcurrentTasks??1;
 const terminalGoals=new Set(['completed','partial']);
 // A local failure is not proof the remote request ended. Historical reviews may
 // omit outcome entirely; only positively certified completion/non-dispatch frees
@@ -137,7 +140,7 @@ export function capacitySnapshot(c){
   const data=requestData(row.data);
   return {...data,...row,resource:requestResource(data,row,approvals,tasks)};
  });
- return {executionOwners:executionHolds(c),serviceLimit:c.store.maybe('capacity_config','service')?.limit??c.serviceMaxConcurrentTasks??1,autonomousParallelBusy:c.autonomousParallelBusy===true,activeTasks:tasks.filter(t=>slots.has(t.status)&&t.spec.actor==='deepseek'&&t.executionActor!=='codex'),tasks,goals,planning:c.store.all('planning').filter(p=>['running','uncertain'].includes(p.status)),requests};
+ return {executionOwners:executionHolds(c),serviceLimit:serviceCapacity(c),autonomousParallelBusy:c.autonomousParallelBusy===true,activeTasks:tasks.filter(holdsTaskSlot),tasks,goals,planning:c.store.all('planning').filter(holdsPlanningSlot),requests};
 }
 export function canClaim({task,goal,route,snapshot}){
  const active=snapshot.activeTasks,policy=goal.manifest.providerPolicy,extra=(snapshot.executionOwners??[]).filter(owner=>!active.some(t=>t.id===owner.taskId));

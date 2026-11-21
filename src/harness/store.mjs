@@ -4,6 +4,12 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { canonical, digest, identifier } from './contracts.mjs';
 
+export const terminalTaskStatuses=Object.freeze(['accepted','failed','partial','cancelled']);
+// The partial index keeps historical task payloads off the scheduling path.
+// Include malformed or missing status data so the scheduler still sees it.
+const unfinishedTask="kind='task' AND CASE WHEN json_valid(data) THEN COALESCE(json_extract(data,'$.status') NOT IN ("+
+ terminalTaskStatuses.map(status=>"'"+status+"'").join(',')+"),1) ELSE 1 END";
+
 export class Store {
  constructor(root){
   this.root=path.resolve(root);mkdirSync(this.root,{recursive:true,mode:0o700});
@@ -15,6 +21,7 @@ export class Store {
    -- The kind-only index also orders matching rows by rowid. The primary
    -- key orders by id and requires a temporary sort of full record payloads.
    CREATE INDEX IF NOT EXISTS records_kind ON records(kind);
+   CREATE INDEX IF NOT EXISTS records_unfinished_tasks ON records(kind) WHERE ${unfinishedTask};
    CREATE TABLE IF NOT EXISTS submissions(kind TEXT NOT NULL,scope TEXT NOT NULL,key TEXT NOT NULL,id TEXT NOT NULL,hash TEXT NOT NULL,PRIMARY KEY(kind,scope,key));
    CREATE TABLE IF NOT EXISTS commands(key TEXT PRIMARY KEY,hash TEXT NOT NULL,result TEXT NOT NULL);
    CREATE TABLE IF NOT EXISTS events(seq INTEGER PRIMARY KEY AUTOINCREMENT,at INTEGER NOT NULL,goal_id TEXT,task_id TEXT,type TEXT NOT NULL,data TEXT NOT NULL);
@@ -24,6 +31,7 @@ export class Store {
    PRAGMA user_version=1;`);
   this.readChanges=this.db.prepare('SELECT total_changes() AS n');
   this.readDataVersion=this.db.prepare('PRAGMA data_version');
+  this.readUnfinishedTasks=this.db.prepare(`SELECT data FROM records INDEXED BY records_unfinished_tasks WHERE ${unfinishedTask} ORDER BY rowid`);
  }
  close(){if(this.db){this.db.close();this.db=null;}}
  tx(fn){
@@ -67,6 +75,7 @@ export class Store {
  get(kind,id){const row=this.db.prepare('SELECT data FROM records WHERE kind=? AND id=?').get(kind,id);if(!row)throw Error(`Unknown ${kind}: ${id}`);return JSON.parse(row.data);}
  maybe(kind,id){try{return this.get(kind,id);}catch(e){if(e.message.startsWith('Unknown '))return null;throw e;}}
  all(kind){return this.db.prepare('SELECT data FROM records WHERE kind=? ORDER BY rowid').all(kind).map(r=>JSON.parse(r.data));}
+ unfinishedTasks(){return this.readUnfinishedTasks.all().map(row=>JSON.parse(row.data));}
  put(kind,value){this.db.prepare('INSERT INTO records(kind,id,data) VALUES(?,?,?) ON CONFLICT(kind,id) DO UPDATE SET data=excluded.data').run(kind,value.id,canonical(value));return value;}
  event(type,{goalId=null,taskId=null,data={},at=Date.now()}={}){return Number(this.db.prepare('INSERT INTO events(at,goal_id,task_id,type,data) VALUES(?,?,?,?,?)').run(at,goalId,taskId,type,canonical(data)).lastInsertRowid);}
  events(after=0,limit=100){return this.db.prepare('SELECT * FROM events WHERE seq>? ORDER BY seq LIMIT ?').all(after,Math.min(1000,limit)).map(r=>({...r,data:JSON.parse(r.data)}));}
