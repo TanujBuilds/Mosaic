@@ -163,11 +163,13 @@ test('opening a saved database adds an indexed last-event seek that includes mod
  previous.close();
  const store=new Store(root);
  try{
-  const query='SELECT at FROM events WHERE task_id=? ORDER BY seq DESC LIMIT 1';
+  const query='SELECT at FROM events WHERE +task_id=? AND task_id IS NOT NULL ORDER BY seq DESC LIMIT 1';
   const plan=store.db.prepare('EXPLAIN QUERY PLAN '+query).all('saved-task').map(row=>row.detail).join(' ');
-  assert.match(plan,/SEARCH events USING INDEX events_task_last .*task_id=\?/);
+  assert.match(plan,/SEARCH events USING INDEX events_task_last .*<expr>=\?/);
   assert.equal(store.db.prepare(query).get('saved-task').at,900);
-  const nonOutput=query.replace('ORDER BY',"AND type!='model.output' ORDER BY");
+  const nonOutput="SELECT at FROM events WHERE task_id=? AND type!='model.output' ORDER BY seq DESC LIMIT 1";
+  const activityPlan=store.db.prepare('EXPLAIN QUERY PLAN '+nonOutput).all('saved-task').map(row=>row.detail).join(' ');
+  assert.match(activityPlan,/SEARCH events USING INDEX events_task_activity .*task_id=\?/);
   assert.equal(store.db.prepare(nonOutput).get('saved-task').at,990);
   assert.equal(store.db.prepare('PRAGMA user_version').get().user_version,1);
  }finally{store.close();}
