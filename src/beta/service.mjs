@@ -1,6 +1,6 @@
 import {normalizeSettings,readSettings,readSettingsSync,readCredentials,validateSettingsCredentials,validateSettingsCredentialsSync,configuredPolicies,assertMigrationStartupReady} from './settings.mjs';
 import {ProviderRegistry} from '../harness/providers/registry.mjs';
-import {normalizeExecutionPolicy,executionIdentity,assertExecutionAvailable} from '../harness/execution.mjs';
+import {normalizeExecutionPolicy,assertExecutionAvailable} from '../harness/execution.mjs';
 import {hostRegistry,normalizeHostSettings} from './hosts/index.mjs';
 import {existsSync} from 'node:fs';
 import {canonical} from '../harness/contracts.mjs';
