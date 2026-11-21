@@ -5,6 +5,7 @@ import {normalizeObserverQuery,normalizeActivityEvent,OBSERVER_LIMITS} from './c
 import {storedWorkerAttribution} from './outcomes/attribution.mjs';
 import {normalizeReviewPolicy,assertReviewMode,reviewerIdentity} from './review/contracts.mjs';
 import {savedCandidateIdentity,reviewRubric} from './review/evidence.mjs';
+import {taskGoalId} from './store.mjs';
 
 export const OBSERVER_TOOLS=new Set(['tools_list','observer_snapshot','observer_timeline','observer_current_activity','observer_evidence','observer_artifacts','owner_inbox']);
 const terminal=new Set(['accepted','failed','partial','cancelled']);
@@ -264,22 +265,31 @@ export class Observer {
  readSnapshot(q){
   if(q.goalId)this.c.store.get('goal',q.goalId);
   const db=this.c.store.db,readRecord=db.prepare('SELECT data FROM records WHERE rowid=?');
+  const goalFilter=q.goalId?` AND ${taskGoalId}=?`:'',goalArgs=q.goalId?[q.goalId]:[];
   // Sort row IDs, then fetch payloads in the requested order. Saved checks
   // and model output can make each payload larger than SQLite's sort buffer.
-  const tasks=Array.from(db.prepare("SELECT rowid FROM records WHERE kind='task' AND (? IS NULL OR json_extract(data,'$.goalId')=?) AND (? IS NULL OR COALESCE(json_extract(data,'$.executionActor'),json_extract(data,'$.spec.actor'))=?) ORDER BY json_extract(data,'$.status') NOT IN ('accepted','failed','partial','cancelled') DESC,rowid DESC LIMIT 501").iterate(q.goalId,q.goalId,q.actor,q.actor),row=>JSON.parse(readRecord.get(row.rowid).data));
+  const tasks=Array.from(db.prepare(`SELECT rowid FROM records WHERE kind='task'${goalFilter} AND (? IS NULL OR COALESCE(json_extract(data,'$.executionActor'),json_extract(data,'$.spec.actor'))=?) ORDER BY json_extract(data,'$.status') NOT IN ('accepted','failed','partial','cancelled') DESC,rowid DESC LIMIT 501`).iterate(...goalArgs,q.actor,q.actor),row=>JSON.parse(readRecord.get(row.rowid).data));
   const selected=tasks.slice(0,500);
   const agents=this.c.store.db.prepare("SELECT data FROM records WHERE kind='agent' AND (? IS NULL OR json_extract(data,'$.goalId')=?) ORDER BY rowid DESC LIMIT 500").all(q.goalId,q.goalId).map(r=>JSON.parse(r.data)).filter(a=>!q.actor||a.actor===q.actor).map(a=>({id:a.id,taskId:a.taskId,goalId:a.goalId,actor:a.actor,role:a.role,...(a.hostId?{hostId:a.hostId}:{}),hostAgentId:a.hostAgentId??null,model:a.model??{requested:null,resolved:null},modelSource:a.modelSource??'unknown',lastReport:a.lastReport??null,provenance:'reported',accounting:{tokens:null,source:'native host accounting unavailable'}}));
   const rows=selected.map(t=>{
    const actor=t.executionActor??t.spec.actor,event=this.c.store.db.prepare("SELECT seq,at,type,data FROM events WHERE task_id=? AND type!='model.output' AND (?!='deepseek' OR json_extract(data,'$.provenance')='captured') ORDER BY seq DESC LIMIT 1").get(t.id,actor),last=event?{...event,data:JSON.parse(event.data)}:null,registered=agents.find(a=>a.taskId===t.id&&a.actor===actor);
    return {id:t.id,goalId:t.goalId,objective:trim(t.spec.objective),objectiveTruncated:t.spec.objective.length>2000,kind:t.spec.kind,actor,status:t.status,phase:last?.data.phase??t.checkpoint?.phase??null,priority:t.priority??t.spec.priority,provenance:actor==='codex'?'reported':'captured',lastActivityAt:actor==='codex'?registered?.lastReport?.at??null:last?.at??null,lastActivity:actor==='codex'?registered?.lastReport?.summary??null:last?label(last.type):null,model:actor==='codex'?registered?.model??{requested:null,resolved:null}:{requested:null,resolved:typeof (t.providerModel??t.result?.model)==='string'?trim(t.providerModel??t.result.model):null},spent:this.c.getTask(t.id).spent,usage:actor==='codex'?{reportedTokens:null,completedModelRequests:0,usageUnavailable:null}:this.usage(t.id),deadline:t.deadline,question:t.questions?.length?{...t.questions.at(-1),text:trim(t.questions.at(-1).text??'')}:null,candidate:t.native?{layout:t.native.layout??'legacy',writerActive:t.native.writerActive??null,baseCommit:t.native.baseCommit??null,commit:t.native.commit??null}:null,evidenceRef:'task-'+t.id};
   });
+  // The latest event includes model output, so the partial activity index
+  // cannot answer this field. Read the scoped tasks' last sequences together.
+  const latestByTask=this.c.beta&&q.goalId&&selected.length?new Map(db.prepare(`
+   SELECT events.task_id,events.at FROM events JOIN (
+    SELECT MAX(seq) AS seq FROM events
+    WHERE task_id IN (SELECT value FROM json_each(?))
+    GROUP BY task_id
+   ) latest USING (seq)`).all(JSON.stringify(selected.map(task=>task.id))).map(row=>[row.task_id,row.at])):null;
   for(let index=0;index<rows.length;index++){
    const task=selected[index],row=rows[index],goal=this.c.store.get('goal',task.goalId),selection=reviewSelection(goal);
    const review=selection?commonReview(this.c.store,task,goal,selection):null;
    if(this.c.beta&&review)row.review=review;
    row.outcome=outcome(task,review);
    if(this.c.beta){
-    row.updatedAt=this.c.store.db.prepare('SELECT at FROM events WHERE task_id=? ORDER BY seq DESC LIMIT 1').get(task.id)?.at??null;
+    row.updatedAt=(latestByTask?latestByTask.get(task.id):db.prepare('SELECT at FROM events WHERE task_id=? ORDER BY seq DESC LIMIT 1').get(task.id)?.at)??null;
     if(task.spec.kind==='coding'){
      const check=this.c.store.db.prepare("SELECT at,type,json_extract(data,'$.attempt') AS attempt FROM events WHERE task_id=? AND type IN ('coding.checks.passed','coding.checks.failed','checks.failed') ORDER BY seq DESC LIMIT 1").get(task.id);
      row.lastCheck=check?{status:check.type==='coding.checks.passed'?'passed':'failed',at:check.at,attempt:check.attempt}:null;
@@ -297,8 +307,13 @@ export class Observer {
    }
   }
   const counts=new Map();
-  for(const {goal_id} of db.prepare("SELECT json_extract(data,'$.goalId') AS goal_id FROM records WHERE kind='task'").iterate()){
-   counts.set(goal_id,(counts.get(goal_id)??0)+1);
+  if(q.goalId){
+   const {count}=db.prepare(`SELECT COUNT(*) AS count FROM records WHERE kind='task'${goalFilter}`).get(...goalArgs);
+   counts.set(q.goalId,count);
+  }else{
+   for(const {goal_id} of db.prepare("SELECT json_extract(data,'$.goalId') AS goal_id FROM records WHERE kind='task'").iterate()){
+    counts.set(goal_id,(counts.get(goal_id)??0)+1);
+   }
   }
   const goals=Array.from(db.prepare("SELECT rowid FROM records WHERE kind='goal' AND (? IS NULL OR id=?) ORDER BY json_extract(data,'$.status')='active' DESC,rowid DESC LIMIT 100").iterate(q.goalId,q.goalId),row=>{
    const g=JSON.parse(readRecord.get(row.rowid).data);

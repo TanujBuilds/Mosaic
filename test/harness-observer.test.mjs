@@ -147,6 +147,43 @@ test('evidence never skips a multibyte character with a small or misaligned wind
 test('snapshot filters before limiting and prioritizes actionable work over history',t=>{
  const f=fixture(t);for(let i=0;i<501;i++)f.c.store.put('task',{...f.ds,id:'history-'+i,status:'accepted'});const filtered=f.observer.snapshot({actor:'codex'});assert.ok(filtered.tasks.some(t=>t.id===f.native.id));assert.ok(f.observer.snapshot({}).queue.some(t=>t.id===f.native.id));assert.equal(f.observer.snapshot({}).overflow.tasks,true);
 });
+test('goal-scoped view preserves ordering, total count and exact last event times',t=>{
+ const f=fixture(t),store=f.c.store;
+ f.c.beta=true;
+ const outside={...store.get('goal',f.g.id),id:'other-observer-goal'};
+ store.put('goal',outside);
+ const native=store.get('task',f.native.id);
+ native.status='awaiting_user';native.questions=[{id:'pending-answer',text:'Answer this question'}];
+ store.put('task',native);
+ const second={...native,id:'other-observer-task',goalId:outside.id};
+ store.put('task',second);
+ const closed=store.get('task',f.ds.id);
+ closed.status='accepted';store.put('task',closed);
+ store.event('task.result',{goalId:f.g.id,taskId:native.id,at:9000,data:{summary:'Saved first'}});
+ // Updated time follows the latest sequence, even when the event is a model
+ // output chunk and its wall-clock timestamp is earlier.
+ store.event('model.output',{goalId:f.g.id,taskId:native.id,at:4000,data:{content:'Hidden output'}});
+ store.event('task.result',{goalId:outside.id,taskId:second.id,at:9999,data:{summary:'Another goal'}});
+ for(let i=0;i<502;i++)store.put('task',{...closed,id:'prior-task-'+i});
+ const all=f.observer.snapshot({goalId:f.g.id});
+ assert.equal(all.goals.length,1);
+ assert.equal(all.goals[0].taskCount,504);
+ assert.equal(all.overflow.tasks,true);
+ assert.equal(all.tasks.length,500);
+ assert.equal(all.tasks[0].id,native.id);
+ assert.equal(all.tasks[0].updatedAt,4000);
+ assert.equal(all.tasks[1].id,'prior-task-501');
+ assert.equal(all.tasks[1].updatedAt,null);
+ assert.ok(all.tasks.every(task=>task.goalId===f.g.id));
+ assert.deepEqual(all.needsYou.items.map(item=>[item.taskId,item.action]),[[native.id,'answer']]);
+ assert.equal(all.needsYou.hasMore,false);
+ const codex=f.observer.snapshot({goalId:f.g.id,actor:'codex'});
+ assert.equal(codex.goals[0].taskCount,504);
+ assert.equal(codex.overflow.tasks,false);
+ assert.deepEqual(codex.tasks.map(task=>task.id),[native.id]);
+ const worker=f.observer.snapshot({goalId:f.g.id,actor:'deepseek'});
+ assert.deepEqual(worker.needsYou.items,[]);
+});
 test('viewer discovers saved artifact IDs without operator registration',async t=>{
  const f=await apiFixture(t),directory=path.join(f.root,'research',f.ds.id);await mkdir(directory,{recursive:true});await writeFile(path.join(directory,'report.md'),'# Available report');const task=f.c.store.get('task',f.ds.id);task.result={checksumsVerified:true,directory};f.c.store.put('task',task);const response=await f.call('observer_artifacts',{taskId:task.id});assert.equal(response.status,200);const [item]=await response.json();assert.equal(item.file,undefined);assert.equal(item.reference.startsWith('artifact-'),true);assert.match((await f.observer.evidence({reference:item.reference})).text,/Available report/);
 });

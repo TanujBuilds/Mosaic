@@ -1,5 +1,6 @@
 import {stripVTControlCharacters} from 'node:util';
 import {digest,identifier} from './contracts.mjs';
+import {taskGoalId} from './store.mjs';
 
 export function terminalText(value){
  return stripVTControlCharacters(String(value)).replace(/[\p{Cc}\p{Cf}]/gu,' ');
@@ -56,11 +57,12 @@ export function ownerInbox(c,{goalId=null,actor=null,itemId=null}={}){
  if(itemId!==null&&!selected)throw Error('Invalid inbox item ID.');
  const subjectId=selected?identifier(selected[2],'item subject ID'):null;
  const {db}=c.store;
+ const goalFilter=goalId?' AND id=?':'',taskFilter=goalId?` AND ${taskGoalId}=?`:'',scope=goalId?[goalId]:[];
  const rows=db.prepare(`SELECT rowid,kind FROM records WHERE
-  (? IS NULL OR id=?) AND ((kind='goal' AND (? IS NULL OR id=?) AND json_extract(data,'$.status') IN ('draft','paused','stopped'))
-  OR (kind='task' AND (? IS NULL OR json_extract(data,'$.goalId')=?) AND (? IS NULL OR COALESCE(json_extract(data,'$.executionActor'),json_extract(data,'$.spec.actor'))=?)
+  (? IS NULL OR id=?) AND ((kind='goal'${goalFilter} AND json_extract(data,'$.status') IN ('draft','paused','stopped'))
+  OR (kind='task'${taskFilter} AND (? IS NULL OR COALESCE(json_extract(data,'$.executionActor'),json_extract(data,'$.spec.actor'))=?)
     AND json_extract(data,'$.status') IN ('awaiting_user','awaiting_supervisor','awaiting_review','awaiting_legacy_review','ready_to_integrate','blocked','uncertain')))
-  ORDER BY rowid DESC LIMIT 51`).all(subjectId,subjectId,goalId,goalId,goalId,goalId,actor,actor);
+  ORDER BY rowid DESC LIMIT 51`).all(subjectId,subjectId,...scope,...scope,actor,actor);
  const record=db.prepare('SELECT data FROM records WHERE rowid=?');
  const items=rows.slice(0,50).map(({rowid,kind})=>{
   const value=JSON.parse(record.get(rowid).data);
