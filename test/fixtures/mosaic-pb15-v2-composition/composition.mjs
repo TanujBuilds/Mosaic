@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import os from 'node:os';
 import path from 'node:path';
 import {mkdir,readFile,writeFile,cp,chmod} from 'node:fs/promises';
 import {spawnSync} from 'node:child_process';
@@ -13,6 +12,7 @@ import {ProviderRegistry} from '../../../src/harness/providers/registry.mjs';
 import {WorkflowRecipes} from '../../../src/harness/workflow-recipes/service.mjs';
 import {Journal} from '../../../src/project/journal.mjs';
 import {git} from '../../../src/project/process.mjs';
+import {assertNoGitRepositoryOverride} from '../../../scripts/lib/git-environment.mjs';
 import {digest} from '../../../src/harness/contracts.mjs';
 
 const backend='src/export.mjs',frontend='src/csv.mjs';
@@ -39,9 +39,7 @@ export async function runComposition({root,review='host',beta=false}) {
  assert.equal(hash(checkText),protectedCheckHash);
  // Git repository overrides take precedence over cwd, including in downstream
  // workspace calls. Reject them at the exported entry before any fixture write.
- const gitVariables=(await git(os.tmpdir(),'rev-parse','--local-env-vars')).split('\n');
- const override=gitVariables.find(name=>Object.hasOwn(process.env,name));
- if(override)throw Error('Clear Git repository override before running the demo: '+override);
+ await assertNoGitRepositoryOverride('demo');
  await mkdir(root,{mode:0o700}); // Refuse existing roots; never overwrite state or reset spend.
  const artifact=await buildFixtureArtifact(root),nativeCheckRuntime=artifact.config,executionPolicy=artifact.policy;
  const repo=path.join(root,'repo'),state=path.join(root,'state'),servers=[],calls=[],errors=[];

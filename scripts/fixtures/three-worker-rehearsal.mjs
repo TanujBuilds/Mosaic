@@ -9,7 +9,7 @@ import {parts,checkText} from '../../test/fixtures/mosaic-three-worker-rehearsal
 import {freshRoot,runtimeConfiguration,bounded,endpoint,timeline,session,project,safeTask,requestRows,writeEvidence,sha256,git} from '../../test/fixtures/mosaic-three-worker-rehearsal/runtime.mjs';
 
 const sourceRoot=fileURLToPath(new URL('../../',import.meta.url));
-const sourceFiles=['scripts/demo-three-worker-rehearsal.mjs','scripts/fixtures/three-worker-rehearsal.mjs','test/fixtures/mosaic-three-worker-rehearsal/runtime.mjs','test/fixtures/mosaic-three-worker-rehearsal/project.mjs','test/mosaic-three-worker-rehearsal.test.mjs','docs/THREE_WORKER_REHEARSAL.md'];
+const sourceFiles=['scripts/demo-three-worker-rehearsal.mjs','scripts/fixtures/three-worker-rehearsal.mjs','scripts/lib/git-environment.mjs','test/fixtures/mosaic-three-worker-rehearsal/runtime.mjs','test/fixtures/mosaic-three-worker-rehearsal/project.mjs','test/mosaic-three-worker-rehearsal.test.mjs','docs/THREE_WORKER_REHEARSAL.md'];
 const endpointIdentity=p=>{const {credentialRef,...publicProfile}=p;return publicProfile;};
 async function sourceIdentity(){
   const files=[...new Set([...sourceFiles,...(await git(sourceRoot,'ls-files','src/')).split('\n').filter(Boolean)])].sort();
