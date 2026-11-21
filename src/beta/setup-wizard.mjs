@@ -1,7 +1,7 @@
 import {collectMultiWorkerSetup} from './multi-worker-setup.mjs';
 import {normalizeSettings} from './settings.mjs';
 import {getHost,HOST_IDS} from './hosts/index.mjs';
-import {readBearerKey,selectHostedWorkerEndpoint} from './hosted-worker-presets.mjs';
+import {askWorkerEndpoint,readBearerKey,selectHostedWorkerEndpoint} from './hosted-worker-presets.mjs';
 
 const yes=value=>/^y(es)?$/i.test(value);
 const integer=(raw,min,max,label)=>{const n=Number(raw);if(!/^\d+$/.test(String(raw))||!Number.isSafeInteger(n)||n<min||n>max)throw Error('Invalid '+label);return n;};
@@ -14,7 +14,7 @@ function profile({id,displayName,baseUrl,model,roles=['worker'],transport='opena
 async function configureProfile(ask,output,index,roles,existingSettings,reservedRefs){
  const id=await ask(`Profile ${index} identifier: `),name=await ask('Display name: ');
  const worker=roles.includes('worker'),urlPrompt='Already-running server API base URL (local or explicit remote): ';
- const {baseUrl,preset}=worker?await selectHostedWorkerEndpoint(ask,output,urlPrompt):{baseUrl:await ask(urlPrompt),preset:null};
+ const {baseUrl,preset}=worker?await selectHostedWorkerEndpoint(ask,output,urlPrompt):{baseUrl:await askWorkerEndpoint(ask,output,urlPrompt),preset:null};
  const model=await ask('Model ID (manual, no discovery required): ');
  const transport=worker?'openai-chat':['openai-chat','openai-responses','anthropic-messages'][integer(await ask('Reviewer API protocol: 1. OpenAI Chat  2. OpenAI Responses  3. Anthropic Messages [1]: ')||'1',1,3,'reviewer API protocol')-1];
  const previous=existingSettings?.providers.find(p=>p.id===id);
@@ -57,16 +57,14 @@ async function advanced(ask,output,hostId,{execution,nativeCheckRuntime,existing
  return {settings:normalizeSettings(rawSettings),rawSettings,entries,presentation:'advanced',workerLocation:null};
 }
 
-export async function collectPortableSetup(ask,output,{execution,nativeCheckRuntime,existingSettings=null,existingCredentialRefs=[],choose,previousSelection,detectedHosts}={}){
- if(choose)output.write('Use your coding app for the conversation and review.\n\n');
- else output.write('Mosaic coordinates work. Your coding app is the conversation and default review surface; a worker is an existing compatible local or API model server.\nApproved task context goes to the supplied worker endpoint. Remote and hosted endpoints send it off this Mac. Even a local worker does not make app review local: review may use the app\'s cloud service. Separate reviewer APIs are an advanced choice.\nNo automatic server discovery, model installation or inference. Choosing an app does not prove it is connected.\n');
+export async function collectPortableSetup(ask,output,{execution,nativeCheckRuntime,existingSettings=null,existingCredentialRefs=[],choose,previousSelection,detectedHosts,retryEndpoint=false}={}){
+ if(!choose)output.write('Mosaic coordinates work. Your coding app is the conversation and default review surface; a worker is an existing compatible local or API model server.\nApproved task context goes to the supplied worker endpoint. Remote and hosted endpoints send it off this Mac. Even a local worker does not make app review local: review may use the app\'s cloud service. Separate reviewer APIs are an advanced choice.\nNo automatic server discovery, model installation or inference. Choosing an app does not prove it is connected.\n');
  if(existingSettings)output.write('Existing settings detected: advanced setup will collect an explicit replacement. Cancelling preserves your current workers and review settings; inspect the exact replacement before applying.\n');
  const detected=new Set(detectedHosts);
  const hosts=HOST_IDS.map((id,i)=>({
   value:String(i+1),
   label:getHost(id).displayName+(detected.has(id)?id==='codex'?' (found, recommended)':' (found)':'')
  }));
- if(detectedHosts&&!detected.size)output.write('No supported coding app found in the usual locations. You can still choose one.\n');
  const defaultHost=existingSettings?.host.id??HOST_IDS.find(id=>detected.has(id))??'codex';
  const workers=[
   {value:'4',label:'No worker yet'},
@@ -96,18 +94,22 @@ export async function collectPortableSetup(ask,output,{execution,nativeCheckRunt
   hostId=HOST_IDS[integer(hostChoice,1,4,'host choice')-1];
   choice=existingSettings?5:integer(await ask('Worker setup\n  1. Model on this Mac\n  2. Model on another computer (for example a Spark)\n  3. Hosted API\n  4. No worker yet / use the coding app only\n  5. Advanced setup\n  6. Guided setup for two or three workers\nChoose worker setup [1]: ')||'1',1,6,'worker setup choice');
  }
- if(choice===6)return collectMultiWorkerSetup(ask,output,{hostId,execution,nativeCheckRuntime,createProfile:profile});
+ if(choice===6)return collectMultiWorkerSetup(ask,output,{hostId,execution,nativeCheckRuntime,createProfile:profile,retryEndpoint});
  if(choice===5)return advanced(ask,output,hostId,{execution,nativeCheckRuntime,existingSettings,existingCredentialRefs});
  const workerLocation=['local','remote','api','none'][choice-1],providers=[],entries={};
  if(choice!==4){
-  output.write('Copy the API base URL and exact model ID from your existing server or API provider configuration. Mosaic uses its supported OpenAI-compatible worker transport; it will not contact the endpoint until you explicitly choose optional model discovery or the separate inference test.\n');
+  if(choose)output.write(choice===1?'Use the URL of your running local model server.\n':
+   'Approved task context goes to this worker.\n');
+  else output.write('Copy the API base URL and exact model ID from your existing server or API provider configuration. Mosaic uses its supported OpenAI-compatible worker transport; it will not contact the endpoint until you explicitly choose optional model discovery or the separate inference test.\n');
   if(choice===2)output.write('For another computer, supply an address reachable from this Mac. localhost means the computer running Mosaic, not the other computer; no particular tunnel is required.\n');
   const urlPrompt='API base URL: ';
-  const {baseUrl,preset}=choice===3?await selectHostedWorkerEndpoint(ask,output,urlPrompt):{baseUrl:await ask(urlPrompt),preset:null};
-  const model=await ask('Model ID: ');
+  const {baseUrl,preset}=choice===3
+   ?await selectHostedWorkerEndpoint(ask,output,urlPrompt,{choose,retry:retryEndpoint})
+   :{baseUrl:await askWorkerEndpoint(ask,output,urlPrompt,{retry:retryEndpoint||!!choose}),preset:null};
+  const model=await ask(preset?.modelExample?`Model ID (e.g. ${preset.modelExample}): `:'Model ID: ');
   const needsKey=preset!==null||yes(await ask('Does this endpoint require an API bearer key? [y/N] '));
   const credentialRef=needsKey?'worker-1-key':null;
-  if(needsKey)entries[credentialRef]=await readBearerKey(ask,'Bearer key (hidden): ');
+  if(needsKey)entries[credentialRef]=await readBearerKey(ask,preset?.modelExample?`${preset.account} (hidden): `:'Bearer key (hidden): ');
   providers.push(profile({id:'worker-1',displayName:preset?.displayName??'Worker 1',baseUrl,model,credentialRef}));
  }
  const rawSettings={schema:2,host:{id:hostId,options:{}},providers,defaults:{workerId:providers.length?'worker-1':null,plannerWorkerId:providers.length?'worker-1':null,review:{source:'host',hostId}},execution,...(nativeCheckRuntime?{nativeCheckRuntime}:{}),serviceMaxConcurrentTasks:1,capacityGroups:providers.length?[{id:'worker-1',limit:1}]:[]};
@@ -115,8 +117,19 @@ export async function collectPortableSetup(ask,output,{execution,nativeCheckRunt
 }
 
 /** Call only after validating settings against the private credential store. */
-export function formatPortableSetupSummary(settings,{manualHost,workerLocation=null}={}){
- const host=getHost(settings.host.id),workers=settings.providers.filter(p=>p.roles.includes('worker')),lines=['\nMosaic setup summary',`Coding app: ${host.displayName}.`];
+export function formatPortableSetupSummary(settings,{manualHost,workerLocation=null,compact=false}={}){
+ const host=getHost(settings.host.id),workers=settings.providers.filter(p=>p.roles.includes('worker'));
+ if(compact){
+  const [worker]=workers;
+  const fields=['Review your setup',`  Coding app  ${host.displayName}`];
+  if(worker)fields.push(`  Worker      ${worker.displayName}`,`  Model       ${worker.model}`,
+   `  API URL     ${worker.baseUrl}`,`  API key     ${worker.credentialRef?'Entered privately':'None'}`);
+  else fields.push('  Worker      None');
+  fields.push('  Review      In your coding app, which may use its cloud service.');
+  if(workerLocation==='remote'||workerLocation==='api')fields.push('Approved task context leaves this Mac for the endpoint above.');
+  return fields.join('\n')+'\n';
+ }
+ const lines=['\nMosaic setup summary',`Coding app: ${host.displayName}.`];
  if(workers.length){
   if(workerLocation)lines.push('Worker location: '+({local:'this Mac',remote:'another computer',api:'hosted API'}[workerLocation]??workerLocation)+'.');
   for(const worker of workers){

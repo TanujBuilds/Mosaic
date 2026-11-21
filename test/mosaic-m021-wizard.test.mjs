@@ -7,7 +7,7 @@ const fingerprint='a'.repeat(64),runtime={execution:{backend:'darwin-seatbelt',b
 function simple({host='',location='',url='http://127.0.0.1:11434/v1',model='fixture-model',key=null}={}){
  const prompts=[];let text='';
  return {prompts,output:{write(value){text+=value;}},text:()=>text,ask:async(prompt,options)=>{
-  prompts.push({prompt,options});if(/Choose host/.test(prompt))return host;if(/Choose worker setup/.test(prompt))return location;if(/API base URL/.test(prompt))return url;if(/Model ID/.test(prompt))return model;if(/require an API bearer key/.test(prompt))return key===null?'n':'y';if(/Bearer key/.test(prompt))return key;assert.fail('Unexpected simple-path question: '+prompt);
+  prompts.push({prompt,options});if(/Choose host/.test(prompt))return host;if(/Choose worker setup/.test(prompt))return location;if(/API base URL/.test(prompt))return url;if(/Model ID/.test(prompt))return model;if(/require an API bearer key/.test(prompt))return key===null?'n':'y';if(/Bearer key|OpenRouter API key/.test(prompt))return key;assert.fail('Unexpected simple-path question: '+prompt);
  }};
 }
 for(const [choice,hostId] of [['','codex'],['2','claude-code'],['3','cursor'],['4','antigravity']]){
@@ -36,6 +36,7 @@ for(const [choice,name,baseUrl] of [
  ['1','OpenAI Platform','https://api.openai.com/v1'],
  ['2','Kimi Platform','https://api.moonshot.ai/v1'],
  ['3','Z.ai GLM','https://api.z.ai/api/paas/v4'],
+ ['4','OpenRouter','https://openrouter.ai/api/v1'],
 ])test(`hosted ${name} preset uses the documented endpoint, exact model and hidden key`,async()=>{
  const model='account-model-v2',key='dummy-hosted-key-separate';
  const io=simple({location:'3',url:choice,model,key});
@@ -53,6 +54,13 @@ for(const [choice,name,baseUrl] of [
  await validateSettingsCredentials(null,result.settings,{schema:1,entries:result.entries});
  assert.ok(!io.text().includes(key));
  assert.ok(!formatPortableSetupSummary(result.settings).includes(key));
+});
+test('a mistaken key in a custom endpoint is rejected before model and key questions',async()=>{
+ const io=simple({location:'3',url:'sk-or-v1-synthetic-mistaken-key'});
+ await assert.rejects(collectPortableSetup(io.ask,io.output,runtime),/API base URL/);
+ assert.equal(io.prompts.at(-1).options.masked,true);
+ assert.ok(!io.prompts.some(({prompt})=>/Model ID|bearer key/i.test(prompt)));
+ assert.ok(!io.text().includes('sk-or-v1-synthetic-mistaken-key'));
 });
 test('named hosted preset requires an API key at setup',async()=>{
  const io=simple({location:'3',url:'2',key:''});

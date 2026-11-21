@@ -152,15 +152,16 @@ export async function askSession(input,output,work,{firstRun=false,enableMenus=f
  });
  const finish=()=>{closed=true;const next=waiter;waiter=null;next?.(null);};
  rl.on('SIGINT',interrupt);rl.on('close',finish);
- const ask=async(prompt,{secret=false}={})=>{
+ const ask=async(prompt,{secret=false,masked=false}={})=>{
+  const hide=secret||masked;
   if(interrupted.signal.aborted)throw Error(interruptMessage);
   if(secret&&(!input.isTTY||!output.isTTY))throw Error('Bearer keys can only be entered in an interactive terminal with terminal output.');
   output.write(prompt);
   try{
-   const answer=queue.length?queue.shift():closed?null:await new Promise(resolve=>{waiter=resolve;echo=!secret;});
+   const answer=queue.length?queue.shift():closed?null:await new Promise(resolve=>{waiter=resolve;echo=!hide;});
    if(answer===null||interrupted.signal.aborted)throw Error(interruptMessage);
    return answer.trim();
-  }finally{echo=false;if(secret)output.write('\n');}
+  }finally{echo=false;if(hide&&input.isTTY&&output.isTTY)output.write('\n');}
  };
  const choose=menus?async(...args)=>{
   queue.length=0;
@@ -322,6 +323,7 @@ export async function setup(paths,options={}){
    if(firstRun&&await (options.gitReady??macGitReady)()===false)output.write('You can finish setup now. '+gitRecovery+'\n\n');
    return setupPortable(paths,{
     ...options,ask,choose,output,execution,nativeCheckRuntime,codexRegistrations:registrations,
+    retryEndpoint:!!input.isTTY&&!!output.isTTY,
     signal:options.signal?AbortSignal.any([options.signal,signal]):signal
    });
   },{firstRun});

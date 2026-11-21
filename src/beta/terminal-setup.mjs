@@ -1,17 +1,10 @@
 import {clearScreenDown, cursorTo, emitKeypressEvents, moveCursor} from 'node:readline';
 import {PassThrough} from 'node:stream';
 
-const letters = [
-  ['10001','11011','10101','10001','10001'],
-  ['0110','1001','1001','1001','0110'],
-  ['0111','1000','0110','0001','1110'],
-  ['0110','1001','1111','1001','1001'],
-  ['111','010','010','010','111'],
-  ['0111','1000','1000','1000','0111']
-];
-const tiles = row => row.replaceAll('0',' ').replaceAll('1','■');
-const wordmark = Array.from({length:5}, (_, row) => letters.map(letter => tiles(letter[row])).join(' '));
-const compact = ['10001','11011','10101'].map(tiles);
+const mark = ['▛▚  ▞▜', '▌ ▚▞ ▐', '▌    ▐'];
+const blue = '\x1b[1;94m';
+const bold = '\x1b[1m';
+const reset = '\x1b[0m';
 
 export function supportsSetupMenus(input, output) {
   return input.isTTY && output.isTTY && typeof input.setRawMode === 'function'
@@ -20,11 +13,16 @@ export function supportsSetupMenus(input, output) {
 
 export function welcomeSetup(output, color) {
   const width = output.columns || 80;
-  if (color && width >= 16) {
-    const rows = width >= 60 && (output.rows || 24) >= 12 ? wordmark : compact;
-    output.write('\x1b[34m' + rows.join('\n') + '\x1b[39m\n\n');
+  if (color && width >= 27 && (output.rows || 24) >= 10) {
+    output.write('\n');
+    const labels = [bold + 'Mosaic' + reset, 'First-time setup', ''];
+    for (const [row, tiles] of mark.entries()) {
+      output.write('  ' + blue + tiles + reset + (labels[row] ? '  ' + labels[row] : '') + '\n');
+    }
+  } else {
+    output.write('Welcome to Mosaic\n');
   }
-  output.write('Welcome to Mosaic\nConnect your coding app. Add a model you already run, or set one up later.\n\n');
+  output.write('\n');
 }
 
 // Route a whole input chunk to exactly one reader. Readline handles text and
@@ -69,7 +67,8 @@ export function terminalSetupInput(input, output, signal, interrupt) {
     }
     rows.push(help);
     renderedRows = rows.map(row => row.slice(0, width));
-    output.write(renderedRows.join('\n') + '\n');
+    output.write(renderedRows.map((row, index) => index === selected - start + 1
+      ? blue + row + reset : row).join('\n') + '\n');
   }
 
   function finish(value) {

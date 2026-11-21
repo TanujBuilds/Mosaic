@@ -260,7 +260,7 @@ test('registry call evidence belongs to the saved settings and is invalidated by
  assert.equal(await readHostConnection(paths),null);
 });
 
-test('portable setup uses the blue tiled welcome and arrow keys to go back, select a host and save', {skip:process.platform!=='darwin'},()=>{
+test('portable setup uses the blue Mosaic mark and arrow keys to go back, select a host and save', {skip:process.platform!=='darwin'},()=>{
  const {transcript,result}=terminalSetup([
   ['Pick your coding app','\x1b[B\x1b[B\r'],
   ['Choose a worker','\x1b'],
@@ -272,17 +272,17 @@ test('portable setup uses the blue tiled welcome and arrow keys to go back, sele
   ['Show technical settings details?','\r'],
   ['Save this setup?','\x1b[A\r']
  ]);
- assert.match(transcript,/\x1b\[34m■/u);
- assert.match(transcript,/Welcome to Mosaic/);
+ assert.match(transcript,/\x1b\[1;94m▛▚  ▞▜/u);
+ assert.match(transcript,/First-time setup/);
  assert.doesNotMatch(transcript,/\x1b\[(?:[4-5][0-9]|10[0-7])m/u);
  assert.match(transcript,/actual host registration is unverified/i);
  assert.equal(result.saved,true);
  assert.equal(result.host,'claude-code');
 });
 
-for(const exit of ['q','\x03'])test(`narrow setup shows the compact mark and cancels safely with ${exit==='q'?'q':'Ctrl+C'}`,{skip:process.platform!=='darwin'},()=>{
+for(const exit of ['q','\x03'])test(`narrow setup shows the Mosaic mark and cancels safely with ${exit==='q'?'q':'Ctrl+C'}`,{skip:process.platform!=='darwin'},()=>{
  const {transcript,result}=terminalSetup([['Pick your coding app',exit]],{width:38});
- assert.match(transcript,/\x1b\[34m■ {3}■\r?\n■■ ■■\r?\n■ ■ ■/u);
+ assert.match(transcript,/▛▚  ▞▜[^\r\n]*Mosaic[^\r\n]*\r?\n {2}\x1b\[1;94m▌ ▚▞ ▐/u);
  assert.equal(result.host,undefined);
  assert.equal(result.credentialsWritten,false);
  assert.match(result.error??transcript,/Setup (?:interrupted|exited|cancelled)/i);
@@ -308,7 +308,7 @@ for(const policy of [{plain:true},{terminal:'dumb'}])test(`plain portable setup 
   ['Run optional inference connectivity test with that fixed setup-only message? [y/N] ','n\r'],
   ['Apply this exact setup and managed host binding? [y/N] ','y\r']
  ],policy);
- assert.doesNotMatch(transcript,/\x1b\[34m|■/u);
+ assert.doesNotMatch(transcript,/\x1b\[1;94m|▛▚/u);
  assert.equal(result.host,'cursor');
  assert.equal(result.saved,true);
 });
@@ -330,4 +330,81 @@ test('pasted bearer key stays hidden after navigating with arrow keys', {skip:pr
  assert.ok(!transcript.includes(key));
  assert.equal(result.host,undefined);
  assert.equal(result.credentialsWritten,false);
+});
+
+test('OpenRouter has a named menu choice and the wizard hides its key', {skip:process.platform!=='darwin'},()=>{
+ const key='mosaic-fixture-openrouter-key';
+ const {transcript,result}=terminalSetup([
+  ['Pick your coding app','\r'],
+  ['Choose a worker','3\r'],
+  ['Choose a hosted provider','4\r'],
+  ['Model ID (e.g. moonshotai/kimi-k3.1-pro): ','moonshotai/kimi-k3.1-pro\r'],
+  ['OpenRouter API key (hidden): ',key+'\r'],
+  ['Show technical settings details?','\r'],
+  ['Check the worker model list?','\r'],
+  ['Test the worker connection?','\r'],
+  ['Save this setup?','y\r']
+ ]);
+ assert.match(transcript,/coding app, which may use its cloud service/);
+ assert.match(transcript,/Approved task context leaves this Mac/);
+ assert.match(transcript,/Optional inference sends the configured key and a setup-only message/);
+ assert.match(transcript,/Worker\s+OpenRouter\s+Model\s+moonshotai\/kimi-k3\.1-pro\s+API URL\s+https:\/\/openrouter\.ai\/api\/v1/);
+ assert.ok(!transcript.includes(key));
+ assert.equal(result.saved,true);
+ assert.equal(result.credentialsWritten,true);
+});
+
+test('mistaken key at the custom URL prompt is hidden and the URL can be retried', {skip:process.platform!=='darwin'},()=>{
+ const wrong='sk-or-v1-synthetic-mistaken-url-entry';
+ const {transcript,result}=terminalSetup([
+  ['Pick your coding app','\r'],
+  ['Choose a worker','3\r'],
+  ['Choose a hosted provider','5\r'],
+  ['API base URL: ',wrong+'\r'],
+  ['Enter the server URL here. The key prompt comes later.\r\nAPI base URL: ','https://api.example/v1\r'],
+  ['Model ID: ','example-model\r'],
+  ['Does this endpoint require an API bearer key? [y/N] ','n\r'],
+  ['Show technical settings details?','\r'],
+  ['Check the worker model list?','\r'],
+  ['Test the worker connection?','\r'],
+  ['Save this setup?','q'],
+ ]);
+ assert.ok(!transcript.includes(wrong));
+ assert.equal(result.credentialsWritten,false);
+ assert.equal(result.host,undefined);
+});
+
+test('plain interactive hosted setup also hides and retries a mistaken URL', {skip:process.platform!=='darwin'},()=>{
+ const wrong='sk-or-v1-synthetic-plain-mistaken-url';
+ const {transcript,result}=terminalSetup([
+  ['Choose host [1]: ','1\r'],
+  ['Choose worker setup [1]: ','3\r'],
+  ['API base URL: ',wrong+'\r'],
+  ['The key prompt comes later.\r\nAPI base URL: ','https://api.example/v1\r'],
+  ['Model ID: ','example-model\r'],
+  ['Does this endpoint require an API bearer key? [y/N] ','n\r'],
+  ['Show technical settings details? [y/N] ','n\r'],
+  ['Run optional model discovery check? [y/N] ','n\r'],
+  ['Run optional inference connectivity test with that fixed setup-only message? [y/N] ','n\r'],
+  ['Apply this exact setup and managed host binding? [y/N] ','n\r'],
+ ],{plain:true});
+ assert.ok(!transcript.includes(wrong));
+ assert.equal(result.credentialsWritten,false);
+ assert.equal(result.host,undefined);
+});
+
+test('guided setup hides and retries a mistaken worker URL', {skip:process.platform!=='darwin'},()=>{
+ const wrong='sk-or-v1-synthetic-guided-mistaken-url';
+ const {transcript,result}=terminalSetup([
+  ['Pick your coding app','\r'],
+  ['Choose a worker','6\r'],
+  ['How many workers? 2 or 3 [3]: ','2\r'],
+  ['Choose for worker 1 [1]: ','3\r'],
+  ['Worker 1 API base URL: ',wrong+'\r'],
+  ['The key prompt comes later.\r\nWorker 1 API base URL: ','https://api.example/v1\r'],
+  ['Worker 1 Model ID: ','\x03'],
+ ]);
+ assert.ok(!transcript.includes(wrong));
+ assert.equal(result.credentialsWritten,false);
+ assert.equal(result.host,undefined);
 });
