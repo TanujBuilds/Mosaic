@@ -97,11 +97,32 @@ for(const beta of [false,true])test(`host review exact candidate, replay and int
  assert.equal(ticket.reviewer.model,null);assert.equal(ticket.reviewer.provenance,'unknown');
  const input={ticketId:ticket.ticketId,...binding,verdict:{decision:'accept',feedback:'Checked fixture meets goal',findings:[]}};
  const accepted=await c.reviewService.submit(input,'submit');assert.equal(accepted.status,'ready_to_integrate');
+ assert.deepEqual(await c.reviewService.reserve(binding,'reserve'),ticket);
+ await assert.rejects(c.reviewService.reserve(binding,'reserve-after-acceptance'),/awaiting.*review/i);
+ assert.equal(c.reviewService.budget(goal).spent,1);
  assert.deepEqual(await c.reviewService.submit(input,'submit-again'),accepted);
  await assert.rejects(()=>c.reviewService.submit({...input,verdict:{...input.verdict,feedback:'Conflict'}},'conflict'),/conflict/i);
  const integrated=await f.integration.accept({taskId:task.id,feedback:'Import'},'integrate');assert.equal(integrated.status,'accepted');
  assert.equal((await f.integration.accept({taskId:task.id,feedback:'Import'},'integrate-again')).integration.commit,integrated.integration.commit);
  assert.equal(c.getTask(task.id).reviews,1);
+});
+
+test('a historical outstanding ticket cannot replace the saved acceptance of a coding candidate',async t=>{
+ const f=await fixture(t,{beta:true}),{c}=f,{goal,task}=await f.candidate();
+ const {binding}=(await c.reviewService.inbox({goalId:goal.id})).items[0];
+ const ticket=await c.reviewService.reserve(binding,'reserve');
+ const reservation=c.store.get('review_ticket',ticket.ticketId);
+ const verdict={decision:'accept',feedback:'The checked candidate meets the fixture goal',findings:[]};
+ await c.reviewService.submit({...binding,ticketId:ticket.ticketId,verdict},'submit');
+ // Earlier builds could leave a second reservation after saving acceptance.
+ const extra={...reservation,id:'historical-review',requestId:'historical-request'};
+ const ready=c.getTask(task.id);
+ ready.reviews++;
+ c.store.put('review_ticket',extra);c.store.put('task',ready);
+ await assert.rejects(c.reviewService.submit({...binding,ticketId:extra.id,verdict},'late-submit'),/awaiting.*review/i);
+ assert.deepEqual(c.getTask(task.id).reviewAcceptance,ready.reviewAcceptance);
+ assert.deepEqual(c.store.get('review_ticket',extra.id),extra);
+ assert.equal(c.reviewService.budget(goal).spent,2);
 });
 
 test('legacy acceptance tools and integration cannot bypass new common review',async t=>{

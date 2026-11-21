@@ -21,14 +21,15 @@ const commandReplay=(c,key,input)=>{
  identifier(key,'idempotencyKey');const saved=c.store.db.prepare('SELECT hash,result FROM commands WHERE key=?').get(key);
  if(!saved)return null;if(saved.hash!==digest(input))throw Error('Idempotency key conflict');return {result:JSON.parse(saved.result)};
 };
-function policyFor(c,t){
+function policyFor(c,t,{allowReviewed=false}={}){
  const g=c.store.get('goal',t.goalId);c.liveGoal(g);c.liveTask(t);
  if(!g.manifest.reviewPolicy)throw Error('A versioned review policy is required');
  if(g.hash!==digest(g.manifest)||t.hash!==digest(t.spec))throw Error('Approved goal or task hash changed');
  const policy=normalizeReviewPolicy(g.manifest.reviewPolicy);assertReviewMode(g.manifest.mode,policy);
  if(digest(policy)!==g.manifest.reviewPolicyHash)throw Error('Approved review policy hash changed');
  if(policy.source==='host'&&c.selectedHost!==policy.hostId)throw Error('Selected host differs from approved reviewer host');
- if(t.owner||t.native?.writerActive||!['awaiting_review','ready_to_integrate'].includes(t.status))throw Error('Candidate is not awaiting bound review');
+ const reviewable=t.status==='awaiting_review'||allowReviewed&&t.status==='ready_to_integrate';
+ if(t.owner||t.native?.writerActive||!reviewable)throw Error('Candidate is not awaiting bound review');
  if(t.goalVersion!==g.version)throw Error('Review candidate has stale goal version');
  return {g,policy};
 }
@@ -36,9 +37,9 @@ export class ReviewService {
  #runs=new Map();
  constructor({c,providers,hostRegistry}={}){this.c=c;this.providers=providers??c.providerRegistry;this.hostRegistry=hostRegistry??null;}
  async context(taskId,options={}){
-  const t=this.c.getTask(taskId),{g,policy}=policyFor(this.c,t),candidate=await candidateEvidence(this.c,t,options);
+  const t=this.c.getTask(taskId),{g,policy}=policyFor(this.c,t,{allowReviewed:true}),candidate=await candidateEvidence(this.c,t,options);
   // Filesystem/network awaits never extend an approval or a task generation.
-  const current=this.c.getTask(taskId),fresh=policyFor(this.c,current);
+  const current=this.c.getTask(taskId),fresh=policyFor(this.c,current,{allowReviewed:true});
   if(g.hash!==fresh.g.hash||g.version!==fresh.g.version||digest(savedCandidateIdentity(current))!==digest(savedCandidateIdentity(t)))throw Error('Candidate or approval changed while collecting evidence');
   const binding={goalId:g.id,goalVersion:g.version,goalHash:g.hash,taskId:t.id,candidateHash:candidate.candidateHash,checksHash:candidate.checksHash,rubricHash:digest(reviewRubric(g,t)),reviewPolicyHash:g.manifest.reviewPolicyHash,generation:t.native?.generation??t.checkpoint?.attempt??1,expiresAt:Math.min(g.deadline,t.deadline??g.deadline)};
   return {t,g,policy,binding,candidate,disclosure:reviewDisclosure(policy,candidate.evidence)};
@@ -124,7 +125,7 @@ export class ReviewService {
   });
  }
  assertAccepted(task){
-  const current=this.c.getTask(task.id),{g}=policyFor(this.c,current),accept=current.reviewAcceptance;
+  const current=this.c.getTask(task.id),{g}=policyFor(this.c,current,{allowReviewed:true}),accept=current.reviewAcceptance;
   if(current.status!=='ready_to_integrate'||!accept)throw Error('Passing bound review is required before integration');
   const ticket=this.c.store.get('review_ticket',accept.ticketId);
   if(ticket.status!=='completed'||ticket.verdict?.decision!=='accept'||ticket.verdictHash!==accept.verdictHash||digest(ticket.binding)!==digest(accept.binding)||ticket.binding.goalHash!==g.hash||ticket.binding.goalVersion!==g.version||digest(savedCandidateIdentity(current))!==digest(ticket.savedCandidateIdentity))throw Error('Accepted review binding changed before integration');
