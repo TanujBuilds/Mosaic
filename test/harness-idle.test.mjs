@@ -52,14 +52,31 @@ for(const serviceMaxConcurrentTasks of [1,2])test(`idle scheduler skips closed t
  assert.deepEqual(historyReads,[]);
 });
 
+test('an active planner does a goal lookup when only closed tasks remain',async t=>{
+ const root=await mkdtemp(path.join(os.tmpdir(),'mosaic-planner-history-'));
+ const c=new Coordinator({root});
+ const worker=new Worker({c,config:{environment:'fixture'},provider:{complete:async()=>assert.fail('Planner must not repeat a completed goal')}});
+ t.after(async()=>{await worker.close();c.close();await rm(root,{force:true,recursive:true});});
+ const g=c.prepareLegacyGoal({submissionId:'planned',objective:'Preexisting planned work',acceptance:['Preserve the prior result'],mode:'deepseek_only',environment:'fixture'},'prepare');
+ c.activateGoal({goalId:g.id,hash:g.hash},'activate');
+ const task=c.submitTask({goalId:g.id,submissionId:'result',kind:'consult',objective:'Previously planned task',acceptance:['Saved']},'submit');
+ c.store.put('task',{...c.store.get('task',task.id),status:'accepted'});
+ const readAll=c.store.all.bind(c.store),historyReads=[];
+ c.store.all=kind=>{if(kind==='task')historyReads.push(kind);return readAll(kind);};
+ assert.equal(worker.planner.schedulable(c.store.get('goal',g.id)),false);
+ assert.equal(await worker.executeTick(),null);
+ assert.equal(c.store.maybe('planning',g.id),null);
+ assert.deepEqual(historyReads,[]);
+});
+
 test('unfinished task reads follow schema-1 restart, external writes and rollback',async t=>{
  const root=await mkdtemp(path.join(os.tmpdir(),'mosaic-scheduler-reopen-'));
  t.after(()=>rm(root,{force:true,recursive:true}));
  const initial=new Store(root);
  initial.put('task',{id:'z',status:'uncertain'});
- initial.put('task',{id:'closed',status:'accepted'});
+ initial.put('task',{id:'closed',goalId:'saved-goal',status:'accepted'});
  initial.put('task',{id:'a',status:'stopped'});
- initial.db.exec('DROP INDEX records_unfinished_tasks');
+ initial.db.exec('DROP INDEX records_unfinished_tasks; DROP INDEX records_task_goal');
  initial.close();
 
  const store=new Store(root),other=new Store(root);
@@ -67,6 +84,8 @@ test('unfinished task reads follow schema-1 restart, external writes and rollbac
   const ids=()=>store.unfinishedTasks().map(row=>row.id);
   assert.equal(store.db.prepare('PRAGMA user_version').get().user_version,1);
   assert.deepEqual(ids(),['z','a']);
+  assert.equal(store.hasTasksForGoal('saved-goal'),true);
+  assert.equal(store.hasTasksForGoal('other-goal'),false);
   other.put('task',{id:'z',status:'partial'});
   other.put('task',{id:'closed',status:'suspended'});
   assert.deepEqual(ids(),['closed','a']);

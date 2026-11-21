@@ -70,7 +70,7 @@ export class Planner {
   if(this.inflight.has(goal.id)||goal.status!=='active'||goal.deadline<=c.now()||goal.manifest.mode.planner!=='deepseek')return false;
   if(c.store.all('planning').some(other=>other.goalId!==goal.id&&['running','uncertain'].includes(other.status)&&!c.store.get('goal',other.goalId).manifest.providerPolicy))return false;
   if(c.store.unfinishedTasks().some(t=>['running','uncertain','taking_over'].includes(t.status)&&t.spec.actor==='deepseek'&&!c.store.get('goal',t.goalId).manifest.providerPolicy))return false;
-  if(p&&!['queued','running'].includes(p.status)||!p&&c.store.all('task').some(t=>t.goalId===goal.id))return false;
+  if(p&&!['queued','running'].includes(p.status)||!p&&c.store.hasTasksForGoal(goal.id))return false;
   if(p?.status==='running'&&p.owner!==this.worker.owner)return false;
   if(p?.providerWait&&c.now()<Math.min(p.providerWait.retryAt,p.providerWait.until))return false;
   const saved=p?.status==='running'?c.store.request(goal.id,`plan-${p.attempt}`):null;
@@ -86,7 +86,7 @@ export class Planner {
   const unfinished=c.store.unfinishedTasks();
   if(unfinished.some(t=>['running','uncertain','taking_over'].includes(t.status)&&t.spec.actor==='deepseek'&&!c.store.get('goal',t.goalId).manifest.providerPolicy))return null;
   if(!reserved&&unfinished.some(t=>(!goalId||t.goalId===goalId)&&['queued','suspended'].includes(t.status)&&t.spec.actor==='deepseek'&&c.eligible(t)))return null;
-  const g=reserved?c.store.get('goal',reserved.goalId):c.store.all('goal').find(g=>(!goalId||g.id===goalId)&&g.status==='active'&&g.deadline>c.now()&&g.manifest.mode.planner==='deepseek'&&!c.store.all('task').some(t=>t.goalId===g.id)&&!['completed','blocked','partial'].includes(c.store.maybe('planning',g.id)?.status));
+  const g=reserved?c.store.get('goal',reserved.goalId):c.store.all('goal').find(g=>(!goalId||g.id===goalId)&&g.status==='active'&&g.deadline>c.now()&&g.manifest.mode.planner==='deepseek'&&!['completed','blocked','partial'].includes(c.store.maybe('planning',g.id)?.status)&&!c.store.hasTasksForGoal(g.id));
   if(!g)return null;
   if(!g.manifest.providerPolicy&&unfinished.some(t=>['running','uncertain','taking_over'].includes(t.status)&&t.spec.actor==='deepseek'))return null;
   if(this.inflight.has(g.id))return {waiting:true,reasonCode:'planner_active',planning:c.store.maybe('planning',g.id)};
