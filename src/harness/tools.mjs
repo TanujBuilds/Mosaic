@@ -136,7 +136,7 @@ export class Dispatcher {
      if(i.expectedControlBinding!==undefined&&i.expectedControlBinding!==binding)throw Error('Control state changed. Refresh the inbox.');
      // A different compatible build can retain exact approvals and check paths
      // while requiring a fresh local sandbox probe before dispatch resumes.
-     await c.preflightExecution({goalId:goal.id,hash:goal.hash},{config,checksFactory:worker.checksFactory});
+     await c.preflightExecution({goalId:goal.id,hash:goal.hash},{config,checksFactory:worker.checksFactory,resumeBinding:binding});
      if(controlBinding(c.store,c.store.get('goal',goal.id))!==binding)throw Error('Control state changed. Refresh the inbox.');
     }
    }

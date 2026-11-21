@@ -3,6 +3,7 @@ import {validateQuiescenceReceipt} from '../project/check-backends/native-superv
 import {randomUUID} from 'node:crypto';
 import {mkdirSync,lstatSync,readFileSync,realpathSync,constants,openSync,closeSync,fstatSync} from 'node:fs';
 import path from 'node:path';
+import {controlBinding} from './owner-inbox.mjs';
 import {execFileSync} from 'node:child_process';
 import {digest} from './contracts.mjs';
 import {digest as bindingDigest,Pause} from '../project/contracts.mjs';
@@ -38,6 +39,12 @@ export function executionApproval(c,{goalId,revisionId},{ignoreRequestId}={}){
  return {...goal,hash:revision.hash,manifest:revision.manifest,version:revision.version,status:'draft',revisionId,previousHash:revision.previousHash};
 }
 function taskAuthority(t){return {status:t.status,owner:t.owner??null,runnerGeneration:t.runnerGeneration??null,attempts:t.attempts,reviews:t.reviews,executionActor:t.executionActor??null,checkpoint:{phase:t.checkpoint?.phase??null,attempt:t.checkpoint?.attempt??null,executionBase:t.checkpoint?.executionBase??null,permissionsHash:t.checkpoint?.permissionsHash??null},native:t.native?{generationId:t.native.generationId??t.id,round:t.native.round??null,writerActive:t.native.writerActive??null,status:t.native.status??null,worktree:t.native.worktree??null,commit:t.native.commit??null}:null,resultHash:['awaiting_review','ready_to_integrate','awaiting_legacy_review','legacy_reviewing'].includes(t.status)?digest(t.result??null):null};}
+function assertResumeProbe(c,goal,context,binding){
+ if(!hex(context.resumeBinding)||context.taskId||context.revisionId||!/^native-preflight:[a-f0-9]{64}$/.test(context.operationKey)||
+    binding.argv.length!==3||binding.argv[1]!=='-e'||!['paused','stopped'].includes(goal.status)||
+    c.now()>=goal.deadline||controlBinding(c.store,goal)!==context.resumeBinding)
+  throw Error('Native resume probe no longer matches the approved control state');
+}
 export class ExecutionOwnership{
  constructor(c,{bootId=executionBootId()}={}){this.c=c;this.bootId=bootId;this.lastScan=-Infinity;}
  holds(input={}){return executionHolds(this.c,input);}
@@ -48,9 +55,13 @@ export class ExecutionOwnership{
  if(t&&t.goalId!==g.id||!context.operationKey||typeof context.operationKey!=='string'||context.operationKey.length>500||!context.workspaceRoot||realpathSync(binding.cwd)!==realpathSync(context.workspaceRoot))throw Error('Exact native execution context required');
  const {bindingHash,...raw}=binding;if(!hex(bindingHash)||bindingDigest(raw)!==bindingHash||raw.schema!==1||raw.backend?.id!=='darwin-seatbelt'||raw.backend.revision!==2||!hex(binding.dependencyInventoryHash)||binding.dependencyInventoryHash!==context.expectedDependencyHash||g.manifest.executionPolicy?.backendRevision!==2||g.manifest.executionPolicy?.backend!=='darwin-seatbelt'||g.manifest.executionPolicy.runtimeFingerprint!==binding.runtimeFingerprint||!['profileHash','inputInventoryHash','runtimeFingerprint','runtimeHash','supervisorHash'].every(key=>hex(binding[key]))||!Array.isArray(binding.argv)||!binding.argv.length)throw Error('Native execution binding differs from approved identity');
  c.verifyCurrentWorker?.();this.assertClear(context);
- const snapshot=capacitySnapshot(c),admissionTask=t??{id:'preflight:'+g.id,goalId:g.id,spec:{kind:'coding',permissions:{writePaths:g.manifest.project?.writePaths??[]}}};const wait=canClaim({task:admissionTask,goal:g,snapshot:{...snapshot,activeTasks:snapshot.activeTasks.filter(task=>task.id!==t?.id)}});if(!wait.allowed)throw new CapacityWaitError(wait);
+ if(context.resumeBinding)assertResumeProbe(c,g,context,binding);
+ // A resume probe uses a new scratch checkout and does not write to the
+ // stopped candidate. Keep normal process capacity and execution holds.
+ const snapshot=capacitySnapshot(c),admissionTask=t??{id:'preflight:'+g.id,goalId:g.id,spec:{kind:context.resumeBinding?'maintenance':'coding',permissions:{writePaths:g.manifest.project?.writePaths??[]}}};const wait=canClaim({task:admissionTask,goal:g,snapshot:{...snapshot,activeTasks:snapshot.activeTasks.filter(task=>task.id!==t?.id)}});if(!wait.allowed)throw new CapacityWaitError(wait);
  const requestId=randomUUID(),parent=path.join(realpathSync(c.store.root),'execution-owners');privateDirectory(parent);const dir=path.join(parent,requestId);privateDirectory(dir);
  const row={id:requestId,schema:1,status:'starting',goalId:g.id,goalHash:g.hash,goalVersion:g.version,...(g.revisionId?{revisionId:g.revisionId,previousHash:g.previousHash}:{}),taskId:t?.id??null,taskHash:t?.hash??null,taskAuthority:t?taskAuthority(t):null,attempt:t?.attempts??null,taskOwner:t?.owner??null,runnerGeneration:t?.runnerGeneration??null,nativeWriter:t?.executionActor==='codex'?{generationId:t.native?.generationId??t.id,round:t.native?.round??null,worktree:t.native?.worktree??null}:null,operationKey:context.operationKey,operationId:context.operationId??null,workspaceRoot:realpathSync(context.workspaceRoot),repository:g.manifest.project?.repo??null,writePaths:t?.spec.permissions?.writePaths??g.manifest.project?.writePaths??[],binding,bindingHash,runtimeFingerprint:binding.runtimeFingerprint,bootId:this.bootId,ownerLease:c.workerLease?.generation??null,helperPid:null,leaderPid:null,receiptPath:path.join(dir,'completion.json'),createdAt:c.now(),priorTaskStatus:t?.status??null};
+ if(context.resumeBinding)row.resumeBinding=context.resumeBinding;
  c.store.tx(()=>{this.assertClear(context);c.store.put('execution_owner',row);c.emit('execution.reserved',g.id,t?.id??null,{requestId,bindingHash});});
  return Object.freeze({requestId,receiptPath:row.receiptPath,prepared:event=>this.prepared(requestId,event),authorizeGo:()=>this.authorizeGo(requestId),complete:receipt=>this.complete(requestId,receipt),uncertain:reason=>this.uncertain(requestId,reason)});
  }
@@ -65,7 +76,8 @@ export class ExecutionOwnership{
   if(row.status!=='running'||!positive(row.helperPid)||!positive(row.leaderPid))throw unknown('Native physical execution ownership changed before GO');
   const g=executionApproval(c,row,{ignoreRequestId:id}),t=row.taskId?c.store.get('task',row.taskId):null;
   if(g.hash!==row.goalHash||g.version!==row.goalVersion||t&&(digest(taskAuthority(t))!==digest(row.taskAuthority)||t.status!==row.priorTaskStatus||t.hash!==row.taskHash||t.goalVersion!==g.version||t.attempts!==row.attempt||t.owner!==row.taskOwner||(t.runnerGeneration??null)!==row.runnerGeneration))throw unknown('Native execution approval or task ownership identity changed');
-  if(!['draft','active'].includes(g.status))throw unknown('Native goal control changed before helper GO');
+  if(row.resumeBinding)assertResumeProbe(c,g,row,row.binding);
+  else if(!['draft','active'].includes(g.status))throw unknown('Native goal control changed before helper GO');
   if(g.status==='active')c.liveGoal(g);if(t)c.liveTask(t);
   const savedLease=c.store.maybe('lease','coordinator');if((c.workerLease?.generation??null)!==row.ownerLease||(savedLease?.generation??null)!==row.ownerLease)throw unknown('Native worker lease ownership changed before GO');
   if(row.ownerLease)c.currentLease(c.workerLease.token);if(row.taskOwner)c.owned(t.id,row.taskOwner);

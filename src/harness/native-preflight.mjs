@@ -21,7 +21,7 @@ export function assertNativePreflight(c,g){
  if(!inputs||saved.inputsHash!==digest(inputs))throw new Pause('Matching successful native execution preflight required before approval or model dispatch','isolation');
  assertNativeCheckLaunchers(g.manifest,inputs);
 }
-export async function preflightNativeExecution(c,input,{config=c.executionConfig,checksFactory}={}){
+export async function preflightNativeExecution(c,input,{config=c.executionConfig,checksFactory,resumeBinding}={}){
  const parent=c.store.get('goal',input.goalId),revision=parent.hash===input.hash?null:c.store.all('goal_revision').find(row=>row.goalId===parent.id&&row.hash===input.hash&&row.status==='draft');if(!isNativeExecution(revision?.manifest??parent.manifest))return {required:false};if(parent.hash!==input.hash&&!revision)throw Error('Exact goal or draft revision approval hash required for native preflight');const original=executionApproval(c,{goalId:parent.id,revisionId:revision?.id});
  if(!original.manifest.project)throw new Pause('Native revision 2 requires an approved coding project and real execution preflight','isolation');
  if(!['draft','active','paused','stopped'].includes(original.status))throw Error('Native preflight goal is terminal');c.verifyCurrentWorker?.();
@@ -32,7 +32,7 @@ export async function preflightNativeExecution(c,input,{config=c.executionConfig
  const run=(async()=>{
  const id=[identity.slice(0,8),identity.slice(8,12),identity.slice(12,16),identity.slice(16,20),identity.slice(20,32)].join('-'),journal=await new Journal(path.join(c.store.root,'native-preflight'),id).load(),release=await journal.lock();let receipt;
  try{const p=original.manifest.project,workspace=new Workspace({...executionFields(original.manifest),repo:p.repo,baseCommit:p.baseCommit,permissions:p,overnightV2:true},journal);await workspace.initialize();await workspace.recover();
- const runner=approvedChecks(workspace,{checksFactory,config,context:{c,goalId:original.id,expectedDependencyHash:inputs.dependenciesHash,operationKey:'native-preflight:'+identity,...(revision?{revisionId:revision.id}:{})}}),sandbox=await runner.verify();
+ const runner=approvedChecks(workspace,{checksFactory,config,context:{c,goalId:original.id,expectedDependencyHash:inputs.dependenciesHash,operationKey:'native-preflight:'+identity,...(revision?{revisionId:revision.id}:{}),...(resumeBinding?{resumeBinding}:{})}}),sandbox=await runner.verify();
  if(digest(overnightInputs(original.manifest,config))!==inputsHash)throw Error('Native execution preflight inputs changed during verification');
  receipt={id:receiptId,goalId:original.id,...(revision?{revisionId:revision.id}:{}),schema:1,goalHash:original.hash,inputsHash,inputs,passed:true,sandbox,at:c.now()};
  }catch(error){receipt={id:receiptId,goalId:original.id,...(revision?{revisionId:revision.id}:{}),schema:1,goalHash:original.hash,inputsHash,passed:false,reason:String(error.message).slice(0,2000),at:c.now()};if(error.executionOutcome==='unknown')receipt.executionOutcome='unknown';c.store.tx(()=>c.store.put('native_preflight',receipt));throw error;}
