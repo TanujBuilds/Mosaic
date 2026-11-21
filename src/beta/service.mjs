@@ -85,11 +85,15 @@ export async function verifyLaunchAgent(paths,{allowUnrecorded=false}={}){
  return !!old;
 }
 
-export async function stopForMaintenance(paths,{allowUnrecorded=false,recovering=false}={}){
+export async function stopForMaintenance(paths,{allowUnrecorded=false,recovering=false,beforeRegisteredStop}={}){
  const owned=await verifyLaunchAgent(paths,{allowUnrecorded});
  const registered=owned&&await loaded(paths);
  if(await online(paths)){
   if(paths.isolated||!registered)throw Error('Stop the foreground Mosaic Beta coordinator before maintenance.');
+  if(beforeRegisteredStop){
+   await assertMaintenanceIdle(paths);
+   await beforeRegisteredStop();
+  }
   await client(paths,{timeoutMs:2500})('service_stop',{idempotencyKey:randomUUID()});
   for(let i=0;i<20&&await online(paths);i++)await delay(150);
   if(await online(paths))throw Error('Mosaic Beta coordinator did not stop safely');
@@ -101,6 +105,7 @@ export async function stopForMaintenance(paths,{allowUnrecorded=false,recovering
    await assertMaintenanceIdle(paths,{offline:true});
   }
   await assertMaintenanceIdle(paths,{offline:true});
+  if(registered)await beforeRegisteredStop?.();
  }
  if(registered)await launchctl('bootout',serviceId());
  return registered;
@@ -127,6 +132,7 @@ export async function startLaunchAgent(paths,{allowUnrecorded=false}={}){
 
 export async function rollbackLaunchAgent(paths,{existed,registered}){
  if(paths.isolated)return;
+ if(existed&&registered)return startLaunchAgent(paths);
  if(await loaded(paths))await launchctl('bootout',serviceId());
  if(!existed&&await verifyLaunchAgent(paths,{allowUnrecorded:true}))await rm(paths.plist);
  if(registered)await startLaunchAgent(paths);

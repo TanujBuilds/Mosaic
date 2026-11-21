@@ -242,6 +242,39 @@ function restartLifecycle(paths,events,expectedVersion,{startFailure=false}={}){
  });
  return {lifecycle:{verifyLaunchAgent:async()=>true,stopForMaintenance:async()=>true,startLaunchAgent:()=>ready('forward'),rollbackLaunchAgent:()=>ready('rollback')},close(){if(coordinator){coordinator.releaseWorker(owner);coordinator.close();coordinator=null;}}};
 }
+for(const point of ['before service shutdown','after service shutdown'])test('recover the registered service after installer termination '+point,async t=>{
+ const {root,paths}=await fixture(t);
+ const previous='0.1.0-beta.161',next='0.1.0-beta.162';
+ await installer.install(paths,await payload(root,previous),{noPath:true});
+ const nextPackage=await payload(root,next),registration=path.join(root,'synthetic-registration');
+ await writeFile(registration,'running');
+ const before=await Promise.all([paths.launcher,paths.installation].map(file=>readFile(file)));
+ const script=`import {install} from ${JSON.stringify(new URL('../src/beta/install.mjs',import.meta.url).href)};
+  import {locations} from ${JSON.stringify(new URL('../src/beta/files.mjs',import.meta.url).href)};
+  import {writeFile} from 'node:fs/promises';
+  await install(locations(${JSON.stringify(paths.home)},true),${JSON.stringify(nextPackage)},{
+   noPath:true,lifecycle:{verifyLaunchAgent:async()=>true,async stopForMaintenance(paths,options={}){
+    await options.beforeRegisteredStop?.();
+    if(${JSON.stringify(point)}==='after service shutdown')await writeFile(${JSON.stringify(registration)},'stopped');
+    process.kill(process.pid,'SIGKILL');
+   }}
+  });`;
+ const child=spawnSync(process.execPath,['--input-type=module','-e',script],{encoding:'utf8',timeout:15000});
+ assert.equal(child.signal,'SIGKILL',child.stderr);
+ assert.equal(await readFile(registration,'utf8'),point==='after service shutdown'?'stopped':'running');
+ const recovered=await installer.recoverInstallation(paths,{lifecycle:{
+  async rollbackLaunchAgent(paths,{existed,registered}){
+   assert.equal(existed,true);assert.equal(registered,true);
+   await withLock(paths,()=>installer.assertInstallationStartupReady(paths));
+   await writeFile(registration,'running');
+  },
+ }});
+ assert.equal(recovered,true);
+ assert.equal(await readFile(registration,'utf8'),'running');
+ assert.deepEqual(await Promise.all([paths.launcher,paths.installation].map(file=>readFile(file))),before);
+ await assert.rejects(lstat(path.join(paths.versions,next)),{code:'ENOENT'});
+ assert.equal(await installer.recoverInstallation(paths),false);
+});
 test('owned forward restart acquires startup mutex only after committed pointer writes',async t=>{
  const f=await fixture(t),a=await payload(f.root,'0.1.0-beta.161'),b=await payload(f.root,'0.1.0-beta.162');await installer.install(f.paths,a,{noPath:true});const events=[],service=restartLifecycle(f.paths,events,'0.1.0-beta.162');t.after(()=>service.close());
  await installer.install(f.paths,b,{noPath:true,lifecycle:service.lifecycle});assert.deepEqual(events,['startup-mutex','ready']);await assert.rejects(lstat(path.join(f.paths.configDir,'install-transaction.json')),{code:'ENOENT'});service.close();

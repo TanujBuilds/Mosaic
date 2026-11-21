@@ -258,9 +258,16 @@ export async function install(paths,payload,{noPath=false,afterStep=()=>{},lifec
   const launcher=launcherFor(paths,version),receipt={schema:1,version,contentHash:manifest.contentHash,launcherHash:hash(launcher),...(old.receipt?.pathBlock?{pathBlock:old.receipt.pathBlock,pathFileCreated:old.receipt.pathFileCreated}:{})};
   const switched=!present||!old.bytes||old.receipt.version!==version;
   if(!switched)return {receipt};
-  const existed=await lifecycle.verifyLaunchAgent(paths),registered=await lifecycle.stopForMaintenance(paths),staged='.install-'+randomUUID();
-  let tx={schema:1,version,phase:'prepared',oldLauncher:old.bytes?.toString('base64')??null,oldReceipt:old.receipt,newReceipt:receipt,existed,registered,staged,settingsHash:await settingsSnapshot(paths)};
-  // Persist the owned restart handoff before the post-shutdown state read can fail.
+  const existed=await lifecycle.verifyLaunchAgent(paths);
+  const original={schema:1,version,oldLauncher:old.bytes?.toString('base64')??null,oldReceipt:old.receipt,
+   newReceipt:receipt,existed,staged:'.install-'+randomUUID(),settingsHash:await settingsSnapshot(paths)};
+  const registered=await lifecycle.stopForMaintenance(paths,{beforeRegisteredStop:async()=>{
+   // The old pointer is still installed. Its existing recovery phase can
+   // restore registration even if the installer dies during shutdown.
+   await saveJson(transactionFile(paths),{...original,phase:'restored',registered:true});
+  }});
+  const {staged}=original;
+  let tx={...original,phase:'prepared',registered};
   await saveJson(transactionFile(paths),tx);
   const advance=async(phase,event)=>{tx={...tx,phase};await saveJson(transactionFile(paths),tx);await afterStep(event);};let newVersion=false;
   try{
