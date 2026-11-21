@@ -39,8 +39,10 @@ export function actionContext(c,{goalId,taskId}){
  const binding=integrationBinding(goal,task);
  if(binding){
   if(goal.manifest.reviewPolicy)c.reviewService.assertAccepted(task);
+  const {changes,newFiles,trackedPaths,diff}=task.result;
+  const changedFiles=[...new Set([...(trackedPaths??[]),...[...(changes??[]),...(newFiles??[])].map(file=>file.path)])];
   scope.candidate={binding,permissions:task.spec.permissions,base:task.native?.baseCommit??task.result.baseCommit,
-   commit:task.native?.commit,changedFiles:[...(task.result.changes??[]),...(task.result.newFiles??[])].map(file=>file.path),
+   commit:task.native?.commit,changedFiles,...(trackedPaths===undefined&&diff?{changedFilesComplete:false}:{}),
    checks:task.result.checks?.map(({id,passed,code})=>({id,passed,code})),
    review:task.reviewAcceptance??task.legacyDecision??task.feedback?.at(-1)};
  }

@@ -6,6 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {createInterface} from 'node:readline';
 import {promisify, stripVTControlCharacters} from 'node:util';
+import {isNativeExecution, nativeRuntime} from '../harness/execution.mjs';
 import {readOutcomeSnapshot} from '../harness/outcomes/snapshot.mjs';
 import {client} from './client.mjs';
 import {entry} from './files.mjs';
@@ -182,6 +183,10 @@ function handoff(output, goal, host) {
     overnight_review: "let the coordinator's overnight planner create the one allowed coding stage after preflight and activation",
   }[goal.manifest.mode.id] ?? 'run one coding assignment after activation using the saved workflow';
   line(output);
+  if (goal.manifest.reviewPolicy?.source === 'host') {
+    const reviewer = getHost(goal.manifest.reviewPolicy.hostId).displayName;
+    line(output, `Use an interactive ${reviewer} chat that can ask for tool approval. Keep it available through review so it can save its verdict before the task expires.`);
+  }
   line(output, `Paste into ${host.displayName} with mosaic-beta available`);
   line(output, `Open my Mosaic draft with mosaic-beta goal_get ${exact({goalId: goal.id})}. Confirm its status is draft and its approval hash is ${goal.hash}. Show me the scope, checks and limits. ${approval} After I approve activation and work, ${runAssignment} within the approved bounds. Follow the saved review policy and show the saved check, review, and integration state.`);
   line(output, `See saved result: mosaic first-task result --goal ${goal.id}`);
@@ -222,7 +227,18 @@ async function guidedTask(output, ask, {repo, settings, host, invoke, readPreset
     line(output, `Saved protected check suggestions: ${savedChecks.map(check => display(check.id)).join(', ')}.`);
     line(output, 'Enter the commands to include in this draft.');
   }
-  const checks = checkList(await question('Protected check command, e.g. npm test. Use JSON argument lists for spaces in an argument or multiple commands: '));
+  const executionPolicy = settings.schema === 2 ? settings.execution : settings.executionPolicy;
+  const nativeChecks = isNativeExecution({executionPolicy});
+  const example = nativeChecks ? 'node checks/verify.mjs' : 'npm test';
+  let checks = checkList(await question(`Protected check command, e.g. ${example}. Use JSON argument lists for spaces in an argument or multiple commands: `));
+  if (nativeChecks && checks.length) {
+    const {executable} = nativeRuntime(settings, executionPolicy.runtimeFingerprint).runtime;
+    if (checks.some(({argv}) => argv[0] !== 'node' && argv[0] !== executable)) {
+      line(output, 'Protected checks use the bundled Node runtime. Run mosaic first-task again and enter a Node check such as node checks/verify.mjs.');
+      return 1;
+    }
+    checks = checks.map(check => ({...check, argv: [executable, ...check.argv.slice(1)]}));
+  }
   let overnightPolicy;
   if (mode === 'overnight_review') {
     line(output, 'Choose checks that already pass on the committed base for infrastructure preflight.');

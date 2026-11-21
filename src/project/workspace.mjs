@@ -155,13 +155,20 @@ export class Workspace {
     }
     await this.journal.append('edits.applied', { key: intent.key, snapshot: await this.snapshot() });
   }
-  async evidence() {
+  async evidence({ includeTrackedPaths = false } = {}) {
     const snapshot = await this.snapshot();
-    const diff = await git(this.root, 'diff', '--no-ext-diff', '--no-textconv', 'HEAD', '--', ...this.manifest.permissions.writePaths.map(scope => scope.replace(/\/$/, '')));
+    const { readPaths, writePaths } = this.manifest.permissions;
+    const writeScopes = writePaths.map(scope => scope.replace(/\/$/, ''));
+    const diff = await git(this.root, 'diff', '--no-ext-diff', '--no-textconv', 'HEAD', '--', ...writeScopes);
     const untracked = (await git(this.root, 'ls-files', '--others', '--exclude-standard', '-z')).split('\0').filter(Boolean);
-    const newFiles = await this.readFiles(untracked.filter(file => !generated(file) && matches(file, this.manifest.permissions.writePaths)));
+    const newFiles = await this.readFiles(untracked.filter(file => !generated(file) && matches(file, writePaths)));
     if (Buffer.byteLength(diff) > 512 * 1024) throw new Pause('Diff exceeds review context limit', 'context');
-    return { diff, newFiles, snapshot: Object.fromEntries(Object.entries(snapshot).filter(([file]) => !secretPath(file) && matches(file, this.manifest.permissions.readPaths))) };
+    const evidence = { diff, newFiles, snapshot: Object.fromEntries(Object.entries(snapshot).filter(([file]) => !secretPath(file) && matches(file, readPaths))) };
+    if (includeTrackedPaths) {
+      const tracked = await git(this.root, 'diff', '--no-renames', '--name-only', '-z', 'HEAD', '--', ...writeScopes);
+      evidence.trackedPaths = tracked.split('\0').filter(file => file && !generated(file) && !secretPath(file) && matches(file, writePaths));
+    }
+    return evidence;
   }
   async acceptedDiffs({readPaths} = {}) {
     const scopes = (readPaths ?? this.manifest.permissions.writePaths).map(scope => scope.replace(/\/$/, ''));

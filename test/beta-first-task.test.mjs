@@ -13,6 +13,7 @@ import {Dispatcher} from '../src/harness/tools.mjs';
 import {ProviderRegistry} from '../src/harness/providers/registry.mjs';
 import {sourceClosure} from '../scripts/lib/beta-archive.mjs';
 import {repository, repositoryBytes} from './fixtures/mosaic-assignment/repository.mjs';
+import {artifact} from './fixtures/mosaic-pb15-v2-backend/artifact.mjs';
 
 const profile = id => ({
   schema: 1, id, revision: 'r1', displayName: id, transport: 'openai-chat',
@@ -21,7 +22,7 @@ const profile = id => ({
   maxContextTokens: null, maxOutputTokens: 4096, concurrency: 1, capacityGroup: 'shared', credentialRef: null, streaming: false,
 });
 
-async function fixture(t, providers = []) {
+async function fixture(t, providers = [], native) {
   const root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'mosaic-first-task-test-')));
   t.after(() => rm(root, {recursive: true, force: true}));
   const home = path.join(root, 'home');
@@ -31,12 +32,15 @@ async function fixture(t, providers = []) {
   const settings = {
     schema: 2, host: {id: 'cursor', options: {}}, providers,
     defaults: {workerId: providers[0]?.id ?? null, plannerWorkerId: providers[0]?.id ?? null, review: {source: 'host', hostId: 'cursor'}},
-    execution: {backend: 'codex-sandbox', backendRevision: 1}, codexPath: '/fixture/codex',
+    execution: native ? {backend: 'darwin-seatbelt', backendRevision: 2, runtimeFingerprint: native.config.artifactManifestSha256}
+      : {backend: 'codex-sandbox', backendRevision: 1},
+    ...(native ? {nativeCheckRuntime: native.config} : {codexPath: '/fixture/codex'}),
     serviceMaxConcurrentTasks: 1, capacityGroups: providers.length ? [{id: 'shared', limit: 1}] : [],
   };
   if (providers.length) settings.defaults.routing = {version: 1, defaultWorkerId: providers[0].id, rules: []};
   await saveJson(paths.config, settings);
   const c = new Coordinator({root: paths.state, beta: true, selectedHost: 'cursor',
+    ...(native ? {executionPolicy: {version: 1, ...settings.execution}, nativeCheckRuntime: native.config} : {}),
     ...(providers.length ? {providerRegistry: ProviderRegistry({profiles: providers}), configuredPolicies: configuredPolicies(settings)} : {}),
   });
   t.after(() => c.close());
@@ -59,6 +63,44 @@ function terminal(input = []) {
     read: () => text,
   };
 }
+
+test('the first-task wizard binds the bundled check launcher before asking for approval',
+  {skip: process.platform !== 'darwin' || process.arch !== 'arm64'}, async t => {
+    const native = await artifact();
+    t.after(() => rm(native.root, {recursive: true, force: true}));
+    const f = await fixture(t, [profile('spark')], native);
+    const repo = await repository(f);
+    const choices = answers();
+    choices[0] = 'collaborative';
+    const rejected = terminal([...choices.slice(0, -1), 'npm test']);
+    assert.equal(await runFirstTask(f.paths, [repo.root], {...rejected, invoke: f.invoke}), 1);
+    assert.match(rejected.read(), /bundled Node/);
+    assert.equal(f.calls.length, 0);
+
+    choices[5] = JSON.stringify(['node', 'checks/verify.mjs', 'a b']);
+    const io = terminal(choices);
+    assert.equal(await runFirstTask(f.paths, [repo.root], {...io, invoke: f.invoke}), 0);
+    const [goal] = f.c.store.all('goal');
+    const argv = [path.join(native.root, 'node'), 'checks/verify.mjs', 'a b'];
+    assert.deepEqual(goal.manifest.project.checks, [{id: 'check-1', argv}]);
+    assert.ok(io.read().includes(JSON.stringify(argv)));
+    assert.equal(goal.status, 'draft');
+    assert.equal(f.c.store.db.prepare('SELECT count(*) AS n FROM requests').get().n, 0);
+
+    const invalid = f.c.preparePortableGoal({
+      submissionId: 'unbound-check', mode: 'collaborative', objective: goal.manifest.objective,
+      acceptance: goal.manifest.acceptance,
+      project: {...goal.manifest.project, checks: [{id: 'check-1', argv: ['node', 'checks/verify.mjs']}]},
+    }, 'prepare-unbound-check');
+    await assert.rejects(f.c.preflightExecution({goalId: invalid.id, hash: invalid.hash}, {
+      checksFactory: () => ({
+        backendIdentity: {id: 'darwin-seatbelt', revision: 2},
+        verify: async () => ({passed: true}),
+      }),
+    }), /check-1.*bundled Node/);
+    assert.equal(f.c.getGoal(invalid.id).status, 'draft');
+    assert.equal(f.c.store.all('native_preflight').length, 0);
+  });
 
 test('guided task prepares an exact draft from the current Git project and prints the app handoff', async t => {
   const f = await fixture(t);
@@ -213,6 +255,7 @@ for (const [mode, reviewerRuns] of [['collaborative', 1], ['deepseek_only', 0]])
     assert.equal(goal.manifest.limits.taskLimits.coding.reviews, reviewerRuns);
     assert.equal(goal.manifest.reviewPolicy?.source, reviewerRuns ? 'host' : undefined);
     assert.match(io.read(), reviewerRuns ? /run one coding assignment/ : /let the coordinator's API-worker planner/);
+    assert.equal(/interactive Cursor chat that can ask for tool approval/.test(io.read()), !!reviewerRuns);
     assert.deepEqual(f.calls, ['assignment_prepare', 'goal_get']);
   });
 }

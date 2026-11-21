@@ -67,12 +67,19 @@ for(const beta of [false,true])test(`common host review composes actual checks, 
  const reviewed=await f.mutate('review_submit',input,'host-submit');assert.equal(reviewed.status,'ready_to_integrate');
  assert.deepEqual(await f.mutate('review_submit',input,'host-submit'),reviewed);
  assert.equal((await f.invoke('outcomes_report',{goalId:f.goal.id})).counts.usefulAccepted,0);
- const accepted=await f.operation('task_integrate',{taskId:f.task.id,feedback:'Import reviewed candidate'},'integrate');assert.equal(accepted.status,'accepted');
+ let integrationBinding;
+ if(beta){
+  const {candidate}=await f.invoke('owner_action_context',{goalId:f.goal.id,taskId:f.task.id});
+  assert.deepEqual(candidate.changedFiles,[file]);
+  integrationBinding=candidate.binding;
+ }
+ const integrate={taskId:f.task.id,feedback:'Import reviewed candidate',...(integrationBinding?{expectedIntegrationBinding:integrationBinding}:{})};
+ const accepted=await f.operation('task_integrate',integrate,'integrate');assert.equal(accepted.status,'accepted');
  assert.equal(await readFile(path.join(accepted.integration.worktree,file),'utf8'),fixed);
  assert.equal(await readFile(path.join(f.repo,file),'utf8'),original);
  assert.equal((await f.invoke('outcomes_report',{goalId:f.goal.id})).counts.usefulAccepted,1);
  const posts=f.calls.filter(x=>x.body).length;await f.restart();
- assert.deepEqual(await f.operation('task_integrate',{taskId:f.task.id,feedback:'Import reviewed candidate'},'integrate'),accepted);
+ assert.deepEqual(await f.operation('task_integrate',integrate,'integrate'),accepted);
  assert.equal((await f.invoke('outcomes_report',{goalId:f.goal.id})).counts.usefulAccepted,1);assert.equal(f.calls.filter(x=>x.body).length,posts);
 });
 

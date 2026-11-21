@@ -73,6 +73,18 @@ work. `mosaic first-task result --goal GOAL_ID` shows saved results and their
 next action. `mosaic first-task --demo` runs a scripted sample in a separate
 temporary Git workspace. It makes zero provider calls.
 
+If macOS prompts to install Apple's Command Line Tools, finish that installation
+before preparing the task. On the bundled check runtime, enter a Node check such
+as `node checks/verify.mjs`. The draft shows the exact bundled launcher and
+arguments that Mosaic will use.
+
+For a task reviewed by your coding app, use an interactive chat that can ask for
+tool approval. If the app asks whether you trust the project folder, review the
+path before continuing. Return to the chat while the task is still active and
+respond to its prompts to reserve and save the Mosaic review. In Codex, choose
+**Allow** to authorize just the displayed call. Mosaic requires the saved review
+before it can integrate the candidate.
+
 ### Decisions and overnight work
 
 Press **n** for **Needs You**, then select an item and press Enter to review it.
