@@ -266,16 +266,15 @@ test('portable setup uses the blue Mosaic mark and arrow keys to go back, select
   ['Choose a worker','\x1b'],
   ['Pick your coding app','\x1b[A\r'],
   ['Choose a worker','\r'],
-  ['Show technical settings details?','\r'],
-  ['Save this setup?','\x1b'],
+  ['Finish setup','\x1b'],
   ['Choose a worker','\r'],
-  ['Show technical settings details?','\r'],
-  ['Save this setup?','\x1b[A\r']
+  ['Finish setup','\x1b[A\x1b[A\r']
  ]);
  assert.match(transcript,/\x1b\[1;94m▛▚  ▞▜/u);
  assert.match(transcript,/First-time setup/);
  assert.doesNotMatch(transcript,/\x1b\[(?:[4-5][0-9]|10[0-7])m/u);
- assert.match(transcript,/actual host registration is unverified/i);
+ assert.match(transcript,/Start the trial coordinator/);
+ assert.match(transcript,/Coding app connection still needs verification/);
  assert.equal(result.saved,true);
  assert.equal(result.host,'claude-code');
 });
@@ -321,10 +320,7 @@ test('pasted bearer key stays hidden after navigating with arrow keys', {skip:pr
   ['API base URL: ','http://127.0.0.1:1/v1\r'],
   ['Model ID: ','demo-model\r'],
   ['Does this endpoint require an API bearer key? [y/N] ','y\r'+key+'\r'],
-  ['Show technical settings details?','\r'],
-  ['Check the worker model list?','\r'],
-  ['Test the worker connection?','\r'],
-  ['Save this setup?','q']
+  ['Finish setup','q']
  ]);
  assert.match(transcript,/Bearer key \(hidden\)/);
  assert.ok(!transcript.includes(key));
@@ -332,7 +328,7 @@ test('pasted bearer key stays hidden after navigating with arrow keys', {skip:pr
  assert.equal(result.credentialsWritten,false);
 });
 
-test('OpenRouter has a named menu choice and the wizard hides its key', {skip:process.platform!=='darwin'},()=>{
+test('OpenRouter saves from the review menu with its key hidden and no setup requests', {skip:process.platform!=='darwin'},()=>{
  const key='mosaic-fixture-openrouter-key';
  const {transcript,result}=terminalSetup([
   ['Pick your coding app','\r'],
@@ -340,18 +336,40 @@ test('OpenRouter has a named menu choice and the wizard hides its key', {skip:pr
   ['Choose a hosted provider','4\r'],
   ['Model ID (e.g. moonshotai/kimi-k3.1-pro): ','moonshotai/kimi-k3.1-pro\r'],
   ['OpenRouter API key (hidden): ',key+'\r'],
-  ['Show technical settings details?','\r'],
-  ['Check the worker model list?','\r'],
-  ['Test the worker connection?','\r'],
-  ['Save this setup?','y\r']
+  ['Finish setup','y\r']
  ]);
  assert.match(transcript,/coding app, which may use its cloud service/);
  assert.match(transcript,/Approved task context leaves this Mac/);
- assert.match(transcript,/Optional inference sends the configured key and a setup-only message/);
+ assert.match(transcript,/Connection checks are optional/);
+ assert.match(transcript,/Provider connection untested/);
+ assert.doesNotMatch(transcript,/GET https:|POST https:|Exact private setup preview/);
  assert.match(transcript,/Worker\s+OpenRouter\s+Model\s+moonshotai\/kimi-k3\.1-pro\s+API URL\s+https:\/\/openrouter\.ai\/api\/v1/);
  assert.ok(!transcript.includes(key));
  assert.equal(result.saved,true);
  assert.equal(result.credentialsWritten,true);
+});
+
+test('the review menu keeps technical details and separately approved provider checks available', {skip:process.platform!=='darwin'},()=>{
+ const endpoint='http://127.0.0.1:1/v1';
+ const {transcript,result}=terminalSetup([
+  ['Pick your coding app','\r'],
+  ['Choose a worker','1\r'],
+  ['API base URL: ',endpoint+'\r'],
+  ['Model ID: ','demo-model\r'],
+  ['Does this endpoint require an API bearer key? [y/N] ','n\r'],
+  ['Finish setup','d\r'],
+  ['Exact private setup preview',''],
+  ['Finish setup','t\r'],
+  ['Check the worker model list?','\r'],
+  ['Test the worker connection?','\r'],
+  ['zero setup POSTs',''],
+  ['Finish setup','y\r']
+ ]);
+ assert.match(transcript,/GET http:\/\/127\.0\.0\.1:1\/v1\/models/);
+ assert.match(transcript,/POST http:\/\/127\.0\.0\.1:1\/v1\/chat\/completions/);
+ assert.match(transcript,/Optional inference sends the configured key and a setup-only message/);
+ assert.match(transcript,/zero setup POSTs/);
+ assert.equal(result.saved,true);
 });
 
 test('mistaken key at the custom URL prompt is hidden and the URL can be retried', {skip:process.platform!=='darwin'},()=>{
@@ -364,10 +382,7 @@ test('mistaken key at the custom URL prompt is hidden and the URL can be retried
   ['Enter the server URL here. The key prompt comes later.\r\nAPI base URL: ','https://api.example/v1\r'],
   ['Model ID: ','example-model\r'],
   ['Does this endpoint require an API bearer key? [y/N] ','n\r'],
-  ['Show technical settings details?','\r'],
-  ['Check the worker model list?','\r'],
-  ['Test the worker connection?','\r'],
-  ['Save this setup?','q'],
+  ['Finish setup','q'],
  ]);
  assert.ok(!transcript.includes(wrong));
  assert.equal(result.credentialsWritten,false);

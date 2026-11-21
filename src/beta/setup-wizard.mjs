@@ -99,7 +99,7 @@ export async function collectPortableSetup(ask,output,{execution,nativeCheckRunt
  const workerLocation=['local','remote','api','none'][choice-1],providers=[],entries={};
  if(choice!==4){
   if(choose)output.write(choice===1?'Use the URL of your running local model server.\n':
-   'Approved task context goes to this worker.\n');
+   choice===2?'Use the address of your Spark or other model server.\n':'Choose the provider that issued your API key.\n');
   else output.write('Copy the API base URL and exact model ID from your existing server or API provider configuration. Mosaic uses its supported OpenAI-compatible worker transport; it will not contact the endpoint until you explicitly choose optional model discovery or the separate inference test.\n');
   if(choice===2)output.write('For another computer, supply an address reachable from this Mac. localhost means the computer running Mosaic, not the other computer; no particular tunnel is required.\n');
   const urlPrompt='API base URL: ';

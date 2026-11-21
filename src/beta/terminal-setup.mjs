@@ -55,7 +55,7 @@ export function terminalSetupInput(input, output, signal, interrupt) {
     const limit = Math.max(1, (output.rows || 24) - 6);
     const start = Math.min(Math.max(0, selected - limit + 1), Math.max(0, options.length - limit));
     const rows = [title, ...options.slice(start, start + limit).map(({label}, i) =>
-      (i + start === selected ? '> ' : '  ') + label)];
+      (i + start === selected ? '› ' : '  ') + label)];
     const controls = ['Up/Down move', 'Enter confirm', ...(back ? ['Esc back'] : []), 'q / Ctrl+C exit'];
     let help = '';
     for (const control of controls) {
@@ -67,8 +67,11 @@ export function terminalSetupInput(input, output, signal, interrupt) {
     }
     rows.push(help);
     renderedRows = rows.map(row => row.slice(0, width));
-    output.write(renderedRows.map((row, index) => index === selected - start + 1
-      ? blue + row + reset : row).join('\n') + '\n');
+    output.write(renderedRows.map((row, index) => {
+      if (index === 0) return bold + row + reset;
+      if (index === selected - start + 1) return blue + row + reset;
+      return row;
+    }).join('\n') + '\n');
   }
 
   function finish(value) {
