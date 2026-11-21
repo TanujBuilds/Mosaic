@@ -1,10 +1,11 @@
-import {actionContext,ownerGoalView,ownerInbox} from './owner-inbox.mjs';
+import {actionContext,controlBinding,ownerGoalView,ownerInbox} from './owner-inbox.mjs';
 import {bindingFields} from './review/contracts.mjs';
 import {randomUUID} from 'node:crypto';
 import {setTimeout as delay} from 'node:timers/promises';
 import {keys,integer,text,digest,goalDispatchInputSchema,taskDispatchInputSchema} from './contracts.mjs';
 import {Goals} from './goals.mjs';
 import {isOvernightV2} from './overnight.mjs';
+import {isNativeExecution} from './execution.mjs';
 import {assertOvernightPreflight,OvernightPreflight} from './overnight-preflight.mjs';
 import {Worker} from './worker.mjs';
 import {NativeResearch} from './native-research.mjs';
@@ -125,7 +126,22 @@ export class Dispatcher {
   add('question_answer','Answer within scope; DeepSeek-only requires a user answer.',{taskId:str,answer:str,expectedQuestionId:str,expectedGoalHash:str,responder:{...str,enum:['user','codex']}},['taskId','answer','responder'],true,(i,k)=>c.answer(i,k));
   add('task_priority','Set scheduling priority with a recorded reason.',{taskId:str,priority:{...str,enum:['blocking','normal','background']},reason:str},['taskId','priority','reason'],true,(i,k)=>c.setPriority(i,k));
   add('queue_get','Inspect execution queue and separate review inbox.',{goalId:str},[],false,i=>{const p=c.effectivePriorities(),tasks=c.store.all('task').filter(t=>!i.goalId||t.goalId===i.goalId);return {execution:tasks.filter(t=>['queued','suspended','running','uncertain','codex_ready','codex_active'].includes(t.status)).sort((a,b)=>p.get(b.id)-p.get(a.id)||a.sequence-b.sequence).map(t=>({...c.getTask(t.id),effectivePriority:p.get(t.id)})),review:tasks.filter(t=>['awaiting_review','awaiting_legacy_review','legacy_reviewing','ready_to_integrate'].includes(t.status))};});
-  add('work_control','Pause, stop or resume a goal or task. Limits never refresh.',{goalId:str,taskId:str,expectedControlBinding:str,action:{...str,enum:['pause','stop','resume']}},['action'],true,(i,k)=>{if(!!i.goalId===!!i.taskId)throw Error('Provide exactly one goalId or taskId');return c.control(i,k);});
+  add('work_control','Pause, stop or resume a goal or task. Limits never refresh.',{goalId:str,taskId:str,expectedControlBinding:str,action:{...str,enum:['pause','stop','resume']}},['action'],true,async(i,k)=>{
+   if(!!i.goalId===!!i.taskId)throw Error('Provide exactly one goalId or taskId');
+   if(config.beta&&i.goalId&&i.action==='resume'&&!c.store.db.prepare('SELECT 1 FROM commands WHERE key=?').get(k)){
+    const goal=c.store.get('goal',i.goalId);
+    if(isNativeExecution(goal.manifest)&&['paused','stopped'].includes(goal.status)){
+     if(c.now()>=goal.deadline)throw Error('Original deadline exceeded');
+     const binding=controlBinding(c.store,goal);
+     if(i.expectedControlBinding!==undefined&&i.expectedControlBinding!==binding)throw Error('Control state changed. Refresh the inbox.');
+     // A different compatible build can retain exact approvals and check paths
+     // while requiring a fresh local sandbox probe before dispatch resumes.
+     await c.preflightExecution({goalId:goal.id,hash:goal.hash},{config,checksFactory:worker.checksFactory});
+     if(controlBinding(c.store,c.store.get('goal',goal.id))!==binding)throw Error('Control state changed. Refresh the inbox.');
+    }
+   }
+   return c.control(i,k);
+  });
   registerBacklogTools({add,c,worker,beta:config.beta??c.beta});
   add('reviewer_reserve','Reserve one bounded read-only reviewer assignment.',{taskId:str},['taskId'],true,(i,k)=>c.reserveReviewer(i,k));
   add('reviewer_finish','Save evidence from a reserved native reviewer; main Codex retains acceptance.',{reservationId:str,result:obj,error:str},['reservationId'],true,(i,k)=>c.finishReviewer(i,k));

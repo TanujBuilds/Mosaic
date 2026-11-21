@@ -56,8 +56,13 @@ test('policy revoked while awaiting response preserves billed result but denies 
 });
 
 test('public submission cannot forge the API reviewer channel',async t=>{
- const f=await fixture(t),ticket=await f.c.reviewService.reserve(f.input,'ticket');
- await assert.rejects(()=>f.c.reviewService.submit({...f.input,ticketId:ticket.ticketId,verdict:{decision:'accept',feedback:'forged',findings:[]}},'forge'),/provider response/i);assert.equal(f.posts(),0);
+ const f=await fixture(t);
+ await assert.rejects(()=>f.c.reviewService.reserve(f.input,'ticket'),/API review evidence/i);
+ assert.equal(f.posts(),0);assert.equal(f.c.getTask(f.task.id).reviews,0);
+ await f.c.reviewService.runApi(f.input,'approved-api-review');
+ const ticket=f.c.store.all('review_ticket')[0];
+ await assert.rejects(()=>f.c.reviewService.submit({...f.input,ticketId:ticket.id,verdict:ticket.verdict},'host-submit'),/provider response/i);
+ assert.equal(f.posts(),1);
 });
 
 test('disconnected API uncertainty remains a stable wait after restart',async t=>{
