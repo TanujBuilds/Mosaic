@@ -7,8 +7,9 @@ import {DatabaseSync} from 'node:sqlite';
 import {spawnSync,spawn} from 'node:child_process';
 import {once} from 'node:events';
 import {client} from '../src/beta/client.mjs';
+import {assertMaintenanceIdle} from '../src/beta/service.mjs';
 import {digest} from '../src/harness/contracts.mjs';
-import {locations,hash,withLock} from '../src/beta/files.mjs';
+import {locations,hash,saveJson,withLock} from '../src/beta/files.mjs';
 import * as installer from '../src/beta/install.mjs';
 import {Coordinator} from '../src/harness/coordinator.mjs';
 import {ProviderRegistry} from '../src/harness/providers/registry.mjs';
@@ -261,9 +262,39 @@ for(const point of ['before service shutdown','after service shutdown'])test('re
   });`;
  const child=spawnSync(process.execPath,['--input-type=module','-e',script],{encoding:'utf8',timeout:15000});
  assert.equal(child.signal,'SIGKILL',child.stderr);
- assert.equal(await readFile(registration,'utf8'),point==='after service shutdown'?'stopped':'running');
+ const alreadyStopped=point==='after service shutdown',priorState=alreadyStopped?'stopped':'running';
+ assert.equal(await readFile(registration,'utf8'),priorState);
+ const transaction=path.join(paths.configDir,'install-transaction.json'),retained=await readFile(transaction);
+ assert.equal(JSON.parse(retained).phase,'stopping');
+ await assert.rejects(installer.assertInstallationStartupReady(paths),/incomplete/);
+ const c=new Coordinator({root:paths.state});let goal;
+ try{
+  await assert.rejects(installer.recoverInstallation(paths,{lifecycle:{
+   async stopForMaintenance(_paths,{recovering}){
+    assert.equal(recovering,true);
+    if(alreadyStopped)c.acquireWorker('retained-lease');
+    else goal=c.prepareGoal({submissionId:'late',mode:'codex_only',environment:'fixture',objective:'Preserve admitted work',acceptance:['Keep draft']},'late');
+    // A service can accept a draft after recovery's first idle read. An
+    // unreachable service with a retained lease has no offline stop proof.
+    await assertMaintenanceIdle(paths,{offline:alreadyStopped});
+   },
+   async rollbackLaunchAgent(){assert.fail('Busy service must keep its recovery receipt');},
+  }}),alreadyStopped?/coordinator lease/:/prepared, active or unresolved/);
+  assert.deepEqual(await readFile(transaction),retained);
+  assert.equal(await readFile(registration,'utf8'),priorState);
+  if(goal)c.control({goalId:goal.id,action:'stop'},'settled');
+  else c.releaseWorker('retained-lease');
+ }finally{c.close();}
+ let quiesced=false;
  const recovered=await installer.recoverInstallation(paths,{lifecycle:{
+  async stopForMaintenance(_paths,{recovering}){
+   assert.equal(recovering,true);
+   await assertMaintenanceIdle(paths,{offline:alreadyStopped});
+   await writeFile(registration,'stopped');quiesced=true;
+   return !alreadyStopped;
+  },
   async rollbackLaunchAgent(paths,{existed,registered}){
+   assert.equal(quiesced,true);assert.equal(await readFile(registration,'utf8'),'stopped');
    assert.equal(existed,true);assert.equal(registered,true);
    await withLock(paths,()=>installer.assertInstallationStartupReady(paths));
    await writeFile(registration,'running');
@@ -274,6 +305,30 @@ for(const point of ['before service shutdown','after service shutdown'])test('re
  assert.deepEqual(await Promise.all([paths.launcher,paths.installation].map(file=>readFile(file))),before);
  await assert.rejects(lstat(path.join(paths.versions,next)),{code:'ENOENT'});
  assert.equal(await installer.recoverInstallation(paths),false);
+});
+test('interrupted shutdown verifies the exact old installation and settings before asking its service to stop',async t=>{
+ const {root,paths}=await fixture(t),previous='0.1.0-beta.161';
+ await installer.install(paths,await payload(root,previous),{noPath:true});
+ const next=await payload(root,'0.1.0-beta.162');
+ await assert.rejects(installer.install(paths,next,{noPath:true,lifecycle:{
+  verifyLaunchAgent:async()=>true,
+  async stopForMaintenance(_paths,{beforeRegisteredStop}){
+   await beforeRegisteredStop();throw Error('Interrupted before shutdown');
+  },
+ }}),/Interrupted before shutdown/);
+ const transaction=path.join(paths.configDir,'install-transaction.json'),retained=await readFile(transaction);
+ let stops=0;
+ const recover=()=>installer.recoverInstallation(paths,{lifecycle:{async stopForMaintenance(){stops++;}}});
+ await saveJson(paths.config,{schema:2,changed:true});
+ await assert.rejects(recover(),/settings changed/i);await rm(paths.config);
+ const receipt=await readFile(paths.installation);
+ await rm(paths.installation);await assert.rejects(recover(),/pointer or receipt changed/i);
+ await writeFile(paths.installation,receipt,{mode:0o600});
+ const installed=path.join(paths.versions,previous),replacement=path.join(root,'replacement');await mkdir(replacement);
+ const changed=await payload(replacement,previous,{supervisor:'other valid package inventory'});
+ await rename(installed,path.join(root,'original'));await rename(changed,installed);
+ await assert.rejects(recover(),/inventory differs/i);
+ assert.equal(stops,0);assert.deepEqual(await readFile(transaction),retained);
 });
 test('owned forward restart acquires startup mutex only after committed pointer writes',async t=>{
  const f=await fixture(t),a=await payload(f.root,'0.1.0-beta.161'),b=await payload(f.root,'0.1.0-beta.162');await installer.install(f.paths,a,{noPath:true});const events=[],service=restartLifecycle(f.paths,events,'0.1.0-beta.162');t.after(()=>service.close());

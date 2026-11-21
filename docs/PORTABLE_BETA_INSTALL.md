@@ -270,6 +270,13 @@ restarts its previously registered coordinator. After commit, recovery verifies
 and retains the new pointer. If a busy state database blocks recovery, wait for
 it to become available and run `mosaic recover`. The next installer invocation
 also attempts recovery automatically.
+
+If an update is interrupted as it stops the registered coordinator, an older
+installed `mosaic recover` may report an invalid recovery transaction. Rerun
+the installer from the same verified update archive. It checks the previous
+installation and requests a guarded shutdown before restoring service. If the
+coordinator reports active work, resolve it in its host and retry the installer.
+
 Only expected installer-owned bytes are restored; a user-modified pointer or
 receipt is preserved for inspection. Private state is never restored from an
 old snapshot. A compatible installed version can be selected with

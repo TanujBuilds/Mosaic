@@ -169,7 +169,8 @@ function lifecycleFor(paths,lifecycle){
 }
 async function settingsSnapshot(paths){const bytes=await fileBytes(paths.config,{privateFile:true});return bytes?hash(bytes):null;}
 function validateTransaction(paths,tx){
- if(tx?.schema!==1||!versionPattern.test(tx.version??'')||!['prepared','staged','launcher','receipt','committed','restored'].includes(tx.phase)||typeof tx.oldLauncher!=='string'&&tx.oldLauncher!==null||typeof tx.staged!=='string'||!/^\.install-[a-f0-9-]+$/.test(tx.staged)||typeof tx.registered!=='boolean'||typeof tx.existed!=='boolean'||tx.settingsHash!==undefined&&tx.settingsHash!==null&&!/^[a-f0-9]{64}$/.test(tx.settingsHash))throw Error('Invalid installation recovery transaction; preserve it for inspection.');
+ if(tx?.schema!==1||!versionPattern.test(tx.version??'')||!['stopping','prepared','staged','launcher','receipt','committed','restored'].includes(tx.phase)||typeof tx.oldLauncher!=='string'&&tx.oldLauncher!==null||typeof tx.staged!=='string'||!/^\.install-[a-f0-9-]+$/.test(tx.staged)||typeof tx.registered!=='boolean'||typeof tx.existed!=='boolean'||tx.settingsHash!==undefined&&tx.settingsHash!==null&&!/^[a-f0-9]{64}$/.test(tx.settingsHash))throw Error('Invalid installation recovery transaction; preserve it for inspection.');
+ if(tx.phase==='stopping'&&(!tx.registered||!tx.existed||!tx.oldLauncher||!tx.oldReceipt||!/^[a-f0-9]{64}$/.test(tx.oldReceipt.contentHash??'')||tx.settingsHash===undefined))throw Error('Missing prior installation ownership for registered service shutdown; preserve the installation.');
  if(tx.oldReceipt&&tx.oldLauncher&&(!versionPattern.test(tx.oldReceipt.version??'')||hash(Buffer.from(tx.oldLauncher??'','base64'))!==tx.oldReceipt.launcherHash||![launcherFor(paths,tx.oldReceipt.version),launcherFor(paths,tx.oldReceipt.version,true)].includes(Buffer.from(tx.oldLauncher??'','base64').toString())))throw Error('Changed installation recovery ownership; preserve it for inspection.');
  if(tx.newReceipt?.version!==tx.version||tx.newReceipt.launcherHash!==hash(launcherFor(paths,tx.version)))throw Error('Changed installation recovery target; preserve it for inspection.');
 }
@@ -178,7 +179,8 @@ async function assertSettingsSnapshot(paths,tx){
  if(await settingsSnapshot(paths)!==tx.settingsHash)throw Error('Settings changed during installation recovery; preserve the transaction for inspection.');
 }
 async function assertHandoffPointer(paths,tx){
- const expectedReceipt=tx.phase==='restored'?tx.oldReceipt:tx.newReceipt,expectedLauncher=tx.phase==='restored'?(tx.oldLauncher?Buffer.from(tx.oldLauncher,'base64'):null):Buffer.from(launcherFor(paths,tx.version));
+ const previous=tx.phase==='stopping'||tx.phase==='restored';
+ const expectedReceipt=previous?tx.oldReceipt:tx.newReceipt,expectedLauncher=previous?(tx.oldLauncher?Buffer.from(tx.oldLauncher,'base64'):null):Buffer.from(launcherFor(paths,tx.version));
  const current=await fileBytes(paths.launcher,{max:16384}),receipt=await jsonFile(paths.installation,{privateFile:true,max:8192});
  if((current?hash(current):null)!==(expectedLauncher?hash(expectedLauncher):null)||canonical(receipt)!==canonical(expectedReceipt))throw Error('Installation pointer or receipt changed during owned restart; preserve it for inspection.');
  await assertSettingsSnapshot(paths,tx);
@@ -217,7 +219,18 @@ async function recoverLocked(paths,lifecycle){
  const current=await fileBytes(paths.launcher,{max:16384}),receipt=await jsonFile(paths.installation,{privateFile:true,max:8192});
  const currentHash=current?hash(current):null,oldHash=tx.oldLauncher?hash(Buffer.from(tx.oldLauncher,'base64')):null;
  if(![null,oldHash,tx.newReceipt.launcherHash].includes(currentHash)||receipt&&![hash(JSON.stringify(tx.oldReceipt)),hash(JSON.stringify(tx.newReceipt))].includes(hash(JSON.stringify(receipt))))throw Error('Installation pointer or receipt was modified after interruption; preserve it for inspection.');
- if(['committed','restored'].includes(tx.phase)){
+ if(tx.phase==='stopping'){
+  await assertHandoffPointer(paths,tx);
+  const previous=await verifyVersion(path.join(paths.versions,tx.oldReceipt.version),tx.oldReceipt.version);
+  if(previous.contentHash!==tx.oldReceipt.contentHash)throw Error('Prior package inventory differs from its installation receipt; preserve the pending shutdown.');
+  await assertStateCompatibility(paths,previous);
+  // The original service may have admitted work since the installer exited.
+  // Its live stop or proven offline quiescence must precede any restart handoff.
+  await lifecycle.stopForMaintenance(paths,{recovering:true});
+  await assertMaintenanceIdle(paths,{offline:true});
+  await assertHandoffPointer(paths,tx);
+  tx={...tx,phase:'restored'};await saveJson(transactionFile(paths),tx);
+ }else if(['committed','restored'].includes(tx.phase)){
   const target=tx.phase==='restored'?tx.oldReceipt:tx.newReceipt;
   if(target){const manifest=await verifyVersion(path.join(paths.versions,target.version),target.version);await assertStateCompatibility(paths,manifest);}
   if(tx.settingsHash===undefined){tx={...tx,settingsHash:await settingsSnapshot(paths)};await saveJson(transactionFile(paths),tx);}
@@ -262,9 +275,9 @@ export async function install(paths,payload,{noPath=false,afterStep=()=>{},lifec
   const original={schema:1,version,oldLauncher:old.bytes?.toString('base64')??null,oldReceipt:old.receipt,
    newReceipt:receipt,existed,staged:'.install-'+randomUUID(),settingsHash:await settingsSnapshot(paths)};
   const registered=await lifecycle.stopForMaintenance(paths,{beforeRegisteredStop:async()=>{
-   // The old pointer is still installed. Its existing recovery phase can
-   // restore registration even if the installer dies during shutdown.
-   await saveJson(transactionFile(paths),{...original,phase:'restored',registered:true});
+   // Older versions must decline recovery while the old service may be live.
+   const stopping={...original,phase:'stopping',registered:true};
+   validateTransaction(paths,stopping);await saveJson(transactionFile(paths),stopping);
   }});
   const {staged}=original;
   let tx={...original,phase:'prepared',registered};
