@@ -1,3 +1,4 @@
+import {macGitReady, gitRecovery} from './git-readiness.mjs';
 import {execFile} from 'node:child_process';
 import {randomUUID} from 'node:crypto';
 import {lstat, mkdtemp, realpath} from 'node:fs/promises';
@@ -326,7 +327,8 @@ async function demoResult(output, parent, run, goalId) {
   if (!snapshot.coverage.complete) line(output, 'Some saved demo evidence was unavailable.');
 }
 
-async function runDemo(output, parent) {
+async function runDemo(output, parent, gitReady = macGitReady) {
+  if (await gitReady() === false) throw Error(gitRecovery);
   const root = await mkdtemp(path.join(parent, demoPrefix));
   const run = path.basename(root).slice(demoPrefix.length);
   // Keep the literal import visible to the installed package's source closure.
@@ -354,7 +356,7 @@ export async function runFirstTask(paths, args = [], options = {}) {
   if (action === 'demo' || demoRun) {
     const parent = await realpath(demoParent);
     if (demoRun) await demoResult(output, parent, demoRun, goalId);
-    else await runDemo(output, parent);
+    else await runDemo(output, parent, options.gitReady);
     return 0;
   }
   if (action === 'result') {

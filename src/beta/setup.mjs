@@ -1,3 +1,4 @@
+import {macGitReady,gitRecovery} from './git-readiness.mjs';
 import {fileURLToPath} from 'node:url';
 import {readSettings as readPrivateSettings,readCredentials,configuredPolicies,previewSettingsMigration,applySettingsMigration,resumeSettingsMigration,validateSettingsCredentials} from './settings.mjs';
 import {setupPortable,portableSetupComplete,removePortableBindings} from './portable-setup.mjs';
@@ -317,10 +318,13 @@ export async function setup(paths,options={}){
   let execution=options.execution??(old?.schema===2?old.execution:undefined),nativeCheckRuntime=options.nativeCheckRuntime??(old?.schema===2?old.nativeCheckRuntime:undefined);
   if(!execution&&!options.settings&&!pending){nativeCheckRuntime=await (await import('./package-contract.mjs')).readBundledNativeCheckRuntime(runtimeRoot);execution={backend:'darwin-seatbelt',backendRevision:2,runtimeFingerprint:nativeCheckRuntime.artifactManifestSha256};}
   const firstRun=!old&&!pending&&!options.settings;
-  return askSession(input,output,(ask,signal,choose)=>setupPortable(paths,{
-   ...options,ask,choose,output,execution,nativeCheckRuntime,codexRegistrations:registrations,
-   signal:options.signal?AbortSignal.any([options.signal,signal]):signal
-  }),{firstRun});
+  return askSession(input,output,async(ask,signal,choose)=>{
+   if(firstRun&&await (options.gitReady??macGitReady)()===false)output.write('You can finish setup now. '+gitRecovery+'\n\n');
+   return setupPortable(paths,{
+    ...options,ask,choose,output,execution,nativeCheckRuntime,codexRegistrations:registrations,
+    signal:options.signal?AbortSignal.any([options.signal,signal]):signal
+   });
+  },{firstRun});
  }
  if(old?.host&&old.host.id!=='codex'){
   output.write(`The current host is ${old.host.id}. This interactive setup configures Codex only; existing settings and registrations are preserved. Use mosaic host-preview --host ${old.host.id} for that host's manual configuration path.\n`);
@@ -390,6 +394,8 @@ export async function doctor(paths,output=process.stdout,options={}){
  }catch{check('Setup',false,'Cannot read the private beta binding receipt. Inspect the beta settings directory.');}
  check('Installation',!!await entry(paths.launcher),'Expected launcher '+paths.launcher);
  if(!checks.some(item=>item.name==='Settings'))check('Settings',!!settings,settings?'Private setup saved.':'Run mosaic setup.');
+ const gitReady=await (options.gitReady??macGitReady)();
+ if(gitReady!==null)check('Git for coding tasks',gitReady,gitReady?'Git found in the selected Apple developer tools.':gitRecovery);
  const selectedHost=settings?.host?.id??'codex';
  if(selectedHost==='codex'&&settings?.schema!==2){
  const codex=await findCodex(paths,settings?.codexPath);
