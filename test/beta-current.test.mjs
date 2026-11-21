@@ -19,7 +19,12 @@ test('current project recognizes active native review but not reservation alone 
 test('empty coordinator and bounded incomplete history remain explicit',async()=>{
  assert.equal(chooseCurrent({goals:[]}).kind,'empty');
  const history={cursor:0,activity:new Map()};let calls=0;
- const invoke=async(_,{after})=>{calls++;return {cursor:after+1,hasMore:true,events:[{goalId:'g',at:after+1,type:'task.result'}]};};
+ const invoke=async(name,{after})=>{
+  if(name==='tools_list')return [{name:'observer_timeline'}];
+  assert.equal(name,'observer_timeline');
+  calls++;
+  return {cursor:after+1,hasMore:true,events:[{goalId:'g',at:after+1,type:'task.result'}]};
+ };
  assert.equal(await currentHistory(invoke,{cursor:100},history),false);
  assert.equal(calls,32);assert.equal(history.cursor,32);
  await currentHistory(invoke,{cursor:100},history);
