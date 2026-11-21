@@ -27,6 +27,9 @@ export class Store {
    CREATE TABLE IF NOT EXISTS submissions(kind TEXT NOT NULL,scope TEXT NOT NULL,key TEXT NOT NULL,id TEXT NOT NULL,hash TEXT NOT NULL,PRIMARY KEY(kind,scope,key));
    CREATE TABLE IF NOT EXISTS commands(key TEXT PRIMARY KEY,hash TEXT NOT NULL,result TEXT NOT NULL);
    CREATE TABLE IF NOT EXISTS events(seq INTEGER PRIMARY KEY AUTOINCREMENT,at INTEGER NOT NULL,goal_id TEXT,task_id TEXT,type TEXT NOT NULL,data TEXT NOT NULL);
+   -- The rowid suffix is the event sequence, so a task's latest event is
+   -- a reverse one-row seek even when model output dominates its history.
+   CREATE INDEX IF NOT EXISTS events_task_last ON events(task_id) WHERE task_id IS NOT NULL;
    CREATE INDEX IF NOT EXISTS events_task_activity ON events(task_id) WHERE type!='model.output';
    CREATE TABLE IF NOT EXISTS requests(id TEXT PRIMARY KEY,task_id TEXT NOT NULL,key TEXT NOT NULL,kind TEXT NOT NULL,status TEXT NOT NULL,data TEXT NOT NULL,UNIQUE(task_id,key));
    CREATE INDEX IF NOT EXISTS requests_task ON requests(task_id,kind);

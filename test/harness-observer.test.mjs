@@ -9,6 +9,8 @@ import {Coordinator} from '../src/harness/coordinator.mjs';
 import {Dispatcher} from '../src/harness/tools.mjs';
 import {Artifacts} from '../src/harness/artifacts.mjs';
 import {Observer} from '../src/harness/observer.mjs';
+import {Store} from '../src/harness/store.mjs';
+import {DatabaseSync} from 'node:sqlite';
 import {startApi} from '../src/harness/api.mjs';
 import {normalizeLegacyWorkerProfile,profileIdentity} from '../src/harness/providers/contracts.mjs';
 import {ProviderRegistry} from '../src/harness/providers/registry.mjs';
@@ -146,6 +148,29 @@ test('evidence never skips a multibyte character with a small or misaligned wind
 });
 test('snapshot filters before limiting and prioritizes actionable work over history',t=>{
  const f=fixture(t);for(let i=0;i<501;i++)f.c.store.put('task',{...f.ds,id:'history-'+i,status:'accepted'});const filtered=f.observer.snapshot({actor:'codex'});assert.ok(filtered.tasks.some(t=>t.id===f.native.id));assert.ok(f.observer.snapshot({}).queue.some(t=>t.id===f.native.id));assert.equal(f.observer.snapshot({}).overflow.tasks,true);
+});
+test('opening a saved database adds an indexed last-event seek that includes model output',t=>{
+ const root=mkdtempSync(path.join(os.tmpdir(),'harness-observer-saved-'));
+ t.after(()=>rmSync(root,{recursive:true,force:true}));
+ const previous=new DatabaseSync(path.join(root,'harness.sqlite3'));
+ previous.exec(`CREATE TABLE events(seq INTEGER PRIMARY KEY AUTOINCREMENT,at INTEGER NOT NULL,
+  goal_id TEXT,task_id TEXT,type TEXT NOT NULL,data TEXT NOT NULL);
+  CREATE INDEX events_task_activity ON events(task_id) WHERE type!='model.output';
+  INSERT INTO events(at,task_id,type,data) VALUES
+   (990,'saved-task','task.result','{}'),(900,'saved-task','model.output','{}'),
+   (1000,'different-task','task.result','{}'),(1100,NULL,'goal.finalized','{}');
+  PRAGMA user_version=1;`);
+ previous.close();
+ const store=new Store(root);
+ try{
+  const query='SELECT at FROM events WHERE task_id=? ORDER BY seq DESC LIMIT 1';
+  const plan=store.db.prepare('EXPLAIN QUERY PLAN '+query).all('saved-task').map(row=>row.detail).join(' ');
+  assert.match(plan,/SEARCH events USING INDEX events_task_last .*task_id=\?/);
+  assert.equal(store.db.prepare(query).get('saved-task').at,900);
+  const nonOutput=query.replace('ORDER BY',"AND type!='model.output' ORDER BY");
+  assert.equal(store.db.prepare(nonOutput).get('saved-task').at,990);
+  assert.equal(store.db.prepare('PRAGMA user_version').get().user_version,1);
+ }finally{store.close();}
 });
 test('goal-scoped view preserves ordering, total count and exact last event times',t=>{
  const f=fixture(t),store=f.c.store;
