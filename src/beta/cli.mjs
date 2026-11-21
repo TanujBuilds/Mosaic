@@ -1,18 +1,7 @@
 import {rm} from 'node:fs/promises';
 import {createInterface} from 'node:readline/promises';
-import {previewSettingsMigration,applySettingsMigration,resumeSettingsMigration,normalizeSettings} from './settings.mjs';
 import {isEntry} from '../harness/entry.mjs';
-import {startMcp} from '../harness/mcp.mjs';
 import path from 'node:path';
-import {currentHome,locations,jsonFile,saveJson,withLock} from './files.mjs';
-import {client} from './client.mjs';
-import {readSettings,setup,setupComplete,doctor,previewHostRegistration,starter} from './setup.mjs';
-import {serveBeta} from './service.mjs';
-import {runObserver} from './observer.mjs';
-import {observerClient} from './sources.mjs';
-import {installedLauncher,uninstall,verifyVersion} from './install.mjs';
-import {formatHostReadiness,formatHostRegistrationGuide} from './hosts/index.mjs';
-import {hostConnectionIdentity,readHostConnection,recordHostConnection} from './hosts/connection-evidence.mjs';
 
 const help=`Mosaic Beta
 
@@ -64,6 +53,7 @@ export async function main(args=process.argv.slice(2)){
   if(!['auto','beta','core'].includes(source))throw Error('Observer source must be auto, beta or core');
   args.splice(sourceIndex,2);
  }
+ const {currentHome,locations,jsonFile,saveJson,withLock}=await import('./files.mjs');
  const paths=locations(home??currentHome(),!!home),command=args.shift();
  const runOwnerCommand=async(name,args,options={})=>{
   const commandArgs=[paths,args,options];
@@ -86,10 +76,14 @@ export async function main(args=process.argv.slice(2)){
  if(['act','repair','first-task','preset','queue','morning-report'].includes(command))return runOwnerCommand(command,args);
  if(command==='host-preview'){
   if(args.length!==2||args[0]!=='--host')throw Error('Use mosaic host-preview --host codex|claude-code|cursor|antigravity');
+  const {previewHostRegistration}=await import('./setup.mjs');
   process.stdout.write(JSON.stringify(previewHostRegistration(paths,args[1]),null,2)+'\n');return;
  }
  if(command==='connect'){
   if(args.length&&(args.length!==2||args[0]!=='--host'))throw Error('Use mosaic connect [--host codex|claude-code|cursor|antigravity]');
+  const [{readSettings,previewHostRegistration,starter},{formatHostRegistrationGuide,formatHostReadiness},{readHostConnection}]=await Promise.all([
+   import('./setup.mjs'),import('./hosts/index.mjs'),import('./hosts/connection-evidence.mjs')
+  ]);
   const settings=args.length?null:await readSettings(paths);
   if(!args.length&&!settings)throw Error('Run mosaic setup to select a coding app, or use mosaic connect --host ID to see its instructions.');
   const hostId=args[1]??settings?.host?.id??'codex';
@@ -105,9 +99,17 @@ export async function main(args=process.argv.slice(2)){
  }
  if(command==='setup'||!command&&sourceIndex===-1){
   let explicitCodex,settings;
-  if(args.length===2&&args[0]==='--config'){args.shift();const file=args.shift();if(!path.isAbsolute(file))throw Error('Setup config must be an absolute private JSON path');settings=await jsonFile(file,{privateFile:true});if(normalizeSettings(settings).schema!==2)throw Error('Use migrate for schema1 settings');}
+  if(args.length===2&&args[0]==='--config'){
+   args.shift();
+   const file=args.shift();
+   if(!path.isAbsolute(file))throw Error('Setup config must be an absolute private JSON path');
+   const {normalizeSettings}=await import('./settings.mjs');
+   settings=await jsonFile(file,{privateFile:true});
+   if(normalizeSettings(settings).schema!==2)throw Error('Use migrate for schema1 settings');
+  }
   if(args.length===2&&args[0]==='--codex'){args.shift();explicitCodex=args.shift();}
   if(args.length)throw Error('Use mosaic setup [--codex /absolute/path/to/codex]');
+  const {readSettings,setup,setupComplete}=await import('./setup.mjs');
   if(command==='setup'||!await readSettings(paths)||!await setupComplete(paths)){
    if(!await setup(paths,{explicitCodex,settings}))process.exitCode=1;
    else process.stdout.write('\nPrepare your first task with mosaic first-task, or try mosaic first-task --demo.\n');
@@ -116,6 +118,7 @@ export async function main(args=process.argv.slice(2)){
  }
  if(command==='status'||!command){
   if(args.length&&!(args.length===1&&args[0]==='--once'))throw Error('Use mosaic status [--once]');
+  const [{runObserver},{observerClient}]=await Promise.all([import('./observer.mjs'),import('./sources.mjs')]);
   const state=await runObserver({invoke:observerClient(paths,{source}),once:args.includes('--once')});
   if(state.handoff) {
    const {command,args,expectedBinding}=state.handoff;
@@ -129,8 +132,9 @@ export async function main(args=process.argv.slice(2)){
  if(args.length)throw Error('Use mosaic --help for command syntax');
  if(command==='recover')return (await import('./install.mjs')).recoverInstallation(paths);
  if(command==='off'||command==='on'){return withLock(paths,async()=>{if(command==='off'){await saveJson(paths.disabled,{schema:1,disabled:true});process.stdout.write('Mosaic is off. New dispatch is blocked; running owners and saved work are retained.\n');}else{await rm(paths.disabled,{force:true});process.stdout.write('Mosaic is on. Existing approval and execution guards still apply.\n');}});}
- if(command==='migrate'){if(await resumeSettingsMigration(paths)){process.stdout.write('Resumed approved settings migration.\n');return;}const preview=await previewSettingsMigration(paths);process.stdout.write(JSON.stringify(preview,null,2)+'\n');const rl=createInterface({input:process.stdin,output:process.stdout});let approved;try{approved=await rl.question('Apply this exact lossless migration? [y/N] ');}finally{rl.close();}if(/^y(es)?$/i.test(approved.trim())){await applySettingsMigration(paths,preview);process.stdout.write('Migration saved; refresh setup to configure portable bindings.\n');}return;}
+ if(command==='migrate'){const {previewSettingsMigration,applySettingsMigration,resumeSettingsMigration}=await import('./settings.mjs');if(await resumeSettingsMigration(paths)){process.stdout.write('Resumed approved settings migration.\n');return;}const preview=await previewSettingsMigration(paths);process.stdout.write(JSON.stringify(preview,null,2)+'\n');const rl=createInterface({input:process.stdin,output:process.stdout});let approved;try{approved=await rl.question('Apply this exact lossless migration? [y/N] ');}finally{rl.close();}if(/^y(es)?$/i.test(approved.trim())){await applySettingsMigration(paths,preview);process.stdout.write('Migration saved; refresh setup to configure portable bindings.\n');}return;}
  if(command==='doctor'){
+  const [{installedLauncher,verifyVersion},{doctor}]=await Promise.all([import('./install.mjs'),import('./setup.mjs')]);
   let valid=false;
   try{
    const {receipt,bytes}=await installedLauncher(paths);
@@ -140,8 +144,14 @@ export async function main(args=process.argv.slice(2)){
   if(!await doctor(paths,process.stdout,{providers:providerDiagnostics})||!valid)process.exitCode=1;
   return;
  }
- if(command==='serve')return serveBeta(paths,await readSettings(paths));
+ if(command==='serve'){
+  const [{serveBeta},{readSettings}]=await Promise.all([import('./service.mjs'),import('./settings.mjs')]);
+  return serveBeta(paths,await readSettings(paths));
+ }
  if(command==='mcp'){
+  const [{startMcp},{client},{readSettings},{hostConnectionIdentity,recordHostConnection}]=await Promise.all([
+   import('../harness/mcp.mjs'),import('./client.mjs'),import('./settings.mjs'),import('./hosts/connection-evidence.mjs')
+  ]);
   const invoke=client(paths),identity=hostConnectionIdentity(await readSettings(paths));
   const tools=(await invoke('tools_list')).filter(tool=>tool.name!=='service_stop');
   return startMcp({name:'mosaic-beta',tools,invoke:async(name,input)=>{
@@ -150,7 +160,7 @@ export async function main(args=process.argv.slice(2)){
    return result;
   }});
  }
- if(command==='uninstall')return uninstall(paths);
+ if(command==='uninstall')return (await import('./install.mjs')).uninstall(paths);
  throw Error('Unknown Mosaic Beta command. Run mosaic --help.');
 }
 
