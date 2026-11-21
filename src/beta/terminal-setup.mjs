@@ -74,11 +74,14 @@ export function terminalSetupInput(input, output, signal, interrupt) {
     const width = Math.max(1, (output.columns || 80) - 1);
     const limit = Math.max(1, (output.rows || 24) - 6);
     const start = Math.min(Math.max(0, selected - limit + 1), Math.max(0, options.length - limit));
-    const frame = width >= 26;
-    const stageLabel = frame && stage ? stage + '/3  ' : '';
-    const rows = [(frame ? '  ' : '') + stageLabel + title,
-      ...options.slice(start, start + limit).map(({label}, i) =>
-        (frame ? '  │  ' : '') + (i + start === selected ? '› ' : '  ') + label)];
+    const visible = options.slice(start, start + limit);
+    const rail = '  │  ';
+    const frame = width >= 26 && visible.every(({label}) => label.length + rail.length + 2 <= width);
+    const indent = title.length + 2 <= width ? '  ' : '';
+    const stageLabel = stage ? stage + '/3  ' : '';
+    const prefix = title.length + indent.length + stageLabel.length <= width ? indent + stageLabel : indent;
+    const rows = [prefix + title, ...visible.map(({label}, i) =>
+      (frame ? rail : '') + (i + start === selected ? '› ' : '  ') + label)];
     const controls = ['Up/Down move', 'Enter confirm', ...(back ? ['Esc back'] : []), 'q / Ctrl+C exit'];
     let help = '';
     for (const control of controls) {
@@ -92,14 +95,11 @@ export function terminalSetupInput(input, output, signal, interrupt) {
     renderedRows = rows.map(row => row.slice(0, width));
     output.write(renderedRows.map((row, index) => {
       if (index === 0) {
-        if (!stageLabel) return bold + row + reset;
-        const prefix = ('  ' + stageLabel).length;
-        return cyan + row.slice(0, prefix) + reset + bold + row.slice(prefix) + reset;
+        return cyan + prefix + reset + bold + row.slice(prefix.length) + reset;
       }
-      if (index > Math.min(limit, options.length)) return row;
-      const rail = frame ? cyan + row.slice(0, 5) + reset : '';
-      const label = frame ? row.slice(5) : row;
-      return rail + (index === selected - start + 1 ? blue + label + reset : label);
+      if (index > visible.length) return row;
+      const label = frame ? row.slice(rail.length) : row;
+      return (frame ? cyan + rail + reset : '') + (index === selected - start + 1 ? blue + label + reset : label);
     }).join('\n') + '\n');
   }
 

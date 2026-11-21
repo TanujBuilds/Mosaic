@@ -305,6 +305,17 @@ test('an open setup menu redraws at the new width without a navigation key', {sk
  assert.equal(result.credentialsWritten,false);
 });
 
+test('a narrow worker menu gives option labels priority over the rail', {skip:process.platform!=='darwin'},()=>{
+ const {transcript,result}=terminalSetup([
+  ['Pick your coding app','\r'],
+  ['Choose a worker','q']
+ ],{width:30});
+ const plain=stripVTControlCharacters(transcript);
+ assert.match(plain,/^ {2}Model on another computer\r?$/mu);
+ assert.match(plain,/^ {2}Two or three workers\r?$/mu);
+ assert.equal(result.credentialsWritten,false);
+});
+
 for(const policy of [{plain:true},{terminal:'dumb'}])test(`plain portable setup accepts numbered answers for ${policy.plain?'NO_COLOR':'TERM=dumb'}`,{skip:process.platform!=='darwin'},()=>{
  const {transcript,result}=terminalSetup([
   ['Choose host [1]: ','3\r'],
