@@ -6,6 +6,17 @@ import {candidateEvidence,reviewRubric,savedCandidateIdentity} from './evidence.
 
 const apiAuthority=Symbol('API review submission');
 function apiError(reasonCode,message){const error=Error(message);error.reviewReasonCode=reasonCode;return error;}
+function reviewDisclosure(policy,evidence){
+ const recipient=policy.source==='host'
+  ?{source:'host',hostId:policy.hostId,mayUseCloudService:true}
+  :{source:'api',baseUrl:policy.reviewer.baseUrl,model:policy.reviewer.model,transport:policy.reviewer.transport};
+ return {
+  recipient,
+  files:Object.keys(evidence.snapshot??{}),
+  checks:evidence.checks.map(({id,stdout,stderr})=>({id,stdoutCharacters:stdout.length,stderrCharacters:stderr.length})),
+  includesTaskSummary:Object.hasOwn(evidence,'summary'),
+ };
+}
 const commandReplay=(c,key,input)=>{
  identifier(key,'idempotencyKey');const saved=c.store.db.prepare('SELECT hash,result FROM commands WHERE key=?').get(key);
  if(!saved)return null;if(saved.hash!==digest(input))throw Error('Idempotency key conflict');return {result:JSON.parse(saved.result)};
@@ -30,7 +41,7 @@ export class ReviewService {
   const current=this.c.getTask(taskId),fresh=policyFor(this.c,current);
   if(g.hash!==fresh.g.hash||g.version!==fresh.g.version||digest(savedCandidateIdentity(current))!==digest(savedCandidateIdentity(t)))throw Error('Candidate or approval changed while collecting evidence');
   const binding={goalId:g.id,goalVersion:g.version,goalHash:g.hash,taskId:t.id,candidateHash:candidate.candidateHash,checksHash:candidate.checksHash,rubricHash:digest(reviewRubric(g,t)),reviewPolicyHash:g.manifest.reviewPolicyHash,generation:t.native?.generation??t.checkpoint?.attempt??1,expiresAt:Math.min(g.deadline,t.deadline??g.deadline)};
-  return {t,g,policy,binding,candidate};
+  return {t,g,policy,binding,candidate,disclosure:reviewDisclosure(policy,candidate.evidence)};
  }
  async inbox({goalId,cursor,limit=20}={}){
   if(goalId!==undefined)identifier(goalId,'goalId');integer(limit,'review inbox limit',1,20);
@@ -39,7 +50,7 @@ export class ReviewService {
   const items=[];let scanned=after;
   for(const task of tasks){
    if(items.length>=limit)break;scanned=task.sequence;
-   try{const context=await this.context(task.id,{includeFiles:false});items.push({taskId:task.id,binding:context.binding,reviewer:reviewerIdentity(context.policy),delivery:context.policy.source==='host'?'pull':'api',waitingForHost:context.policy.source==='host',ticketId:this.c.store.all('review_ticket').findLast(r=>r.taskId===task.id&&r.status==='reserved')?.id??null});}
+   try{const context=await this.context(task.id,{includeFiles:false});items.push({taskId:task.id,binding:context.binding,disclosure:context.disclosure,reviewer:reviewerIdentity(context.policy),delivery:context.policy.source==='host'?'pull':'api',waitingForHost:context.policy.source==='host',ticketId:this.c.store.all('review_ticket').findLast(r=>r.taskId===task.id&&r.status==='reserved')?.id??null});}
    catch(error){items.push({taskId:task.id,status:'unavailable',reason:String(error.message).slice(0,500)});}
   }
   return {items,cursor:tasks.some(t=>t.sequence>scanned)?String(scanned):null};
@@ -53,8 +64,11 @@ export class ReviewService {
  }
  async reserve(input,key){
   keys(input,[...bindingFields],'review reservation');
-  const command={op:'review.reserve',...input},old=commandReplay(this.c,key,command);if(old)return old.result;
-  const context=await this.context(input.taskId),{binding,policy}=context;assertBinding(input,binding);
+  const command={op:'review.reserve',...input},old=commandReplay(this.c,key,command);
+  const hostOnly=source=>{if(source==='api')throw Error('API review evidence is reserved for the approved API reviewer');};
+  if(old){hostOnly(old.result.reviewer?.source);return old.result;}
+  hostOnly(policyFor(this.c,this.c.getTask(input.taskId)).policy.source);
+  const context=await this.context(input.taskId);hostOnly(context.policy.source);assertBinding(input,context.binding);
   return this.#reserveContext(input,key,context);
  }
  #reserveContext(input,key,context){
@@ -75,7 +89,7 @@ export class ReviewService {
    if(t.reviews>=t.spec.limits.reviews||this.budget(g).remaining===0)throw Error('Original review budget exhausted');
    const ticket={id:randomUUID(),goalId:g.id,taskId:t.id,binding,reviewer:reviewerIdentity(policy),requestId:randomUUID(),savedCandidateIdentity:savedCandidateIdentity(t),snapshotHash:context.candidate.snapshotHash,executableModesHash:context.candidate.executableModesHash,status:'reserved',createdAt:this.c.now(),expiresAt:binding.expiresAt,verdictHash:null,result:null};
    t.reviews++;this.c.store.put('task',t);this.c.store.put('review_ticket',ticket);this.c.emit('review.reserved',g.id,t.id,{ticketId:ticket.id,source:policy.source});
-   return {ticketId:ticket.id,binding,evidence:context.candidate.evidence,reviewer:ticket.reviewer,expiresAt:ticket.expiresAt};
+   return {ticketId:ticket.id,binding,disclosure:context.disclosure,evidence:context.candidate.evidence,reviewer:ticket.reviewer,expiresAt:ticket.expiresAt};
   });
  }
  async submit(input,key,authority){
@@ -85,6 +99,7 @@ export class ReviewService {
   if(ticket.reviewer.source==='api'&&authority!==apiAuthority)throw Error('API review verdict requires its persisted provider response');
   assertBinding(input,ticket.binding);
   if(ticket.status==='completed'){if(ticket.verdictHash!==verdictHash)throw Error('Conflicting review submission replay');return ticket.result;}
+  if(ticket.status==='stale')throw Error('Review ticket has a stale binding; original reservation remains spent');
   if(ticket.status!=='reserved')throw Error('Review ticket is not available; original reservation remains spent');
   if(this.c.now()>=ticket.expiresAt)throw Error('Original review ticket expiry reached');
   const context=await this.context(ticket.taskId,{includeFiles:false});assertBinding(context.binding,ticket.binding);

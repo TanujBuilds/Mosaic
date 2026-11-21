@@ -63,11 +63,33 @@ export class Goals {
    t.native={...t.native,status:'generation_pending',writerActive:false,needsGeneration:{id:randomUUID(),number:(t.native.generation??1)+1,goalVersion:g.version,permissions:nextNativePermissions,baseCommit:null,from:frozen,at:this.c.now()}};
    t.result=null;t.reviewed=false;t.feedback.push({kind:'approved_generation',text:'Explicit approved rebind requires a new native candidate generation and fresh checks/review.',goalVersion:g.version,at:this.c.now()});
   }
+  const newVersion=t.goalVersion<g.version;
+  const priorGoal=newVersion?this.c.store.maybe('goal_history',`${g.id}-${t.goalVersion}`):null;
+  const reviewStatus=['paused','stopped'].includes(t.status)?t.controlReturnStatus:t.status;
+  const staleReview=newVersion&&(g.manifest.reviewPolicy||priorGoal?.manifest.reviewPolicy)&&['awaiting_review','ready_to_integrate'].includes(reviewStatus);
+  if(staleReview&&!!g.manifest.reviewPolicy!==!!priorGoal?.manifest.reviewPolicy)throw Error('A checked candidate requires a new goal to change its review protocol');
+  const checkInputs=(project,task)=>project?.checks.filter(check=>task.permissions.checks.includes(check.id))??[];
+  const needsNewWorkerChecks=staleReview&&t.spec.kind==='coding'&&t.native?.layout!=='candidate_v1'&&(digest(t.spec.permissions)!==digest(spec.permissions)||digest(checkInputs(priorGoal?.manifest.project,t.spec))!==digest(checkInputs(g.manifest.project,spec)));
   t.history??=[];t.history.push({goalVersion:t.goalVersion,spec:t.spec,hash:t.hash,...(t.providerBinding?{providerBinding:t.providerBinding}:{}),at:this.c.now()});t.spec=spec;t.hash=digest(spec);t.goalVersion=g.version;t.deadline=t.deadline?Math.min(t.deadline,g.deadline):null;
   if(providerBinding)t.providerBinding=providerBinding;else{delete t.providerBinding;delete t.route;delete t.routeHash;}
   delete t.routingWait;
   if(!['awaiting_review','ready_to_integrate','awaiting_supervisor','awaiting_user','awaiting_legacy_review'].includes(t.status))t.status=t.executionActor==='codex'||spec.actor==='codex'?'codex_ready':'queued';t.stopRequested=t.pauseRequested=false;
-  if(nextNativePermissions){const exhausted=t.reviews>=t.spec.limits.reviews||t.attempts>=t.spec.limits.attempts||(this.c.store.spent(t.id).model??0)>=t.spec.limits.modelCalls;t.status=exhausted?'blocked':'codex_ready';if(exhausted)t.reason='Approved generation retains exhausted original task limits';}
+  const reviewExhausted=()=>t.reviews>=t.spec.limits.reviews||g.manifest.reviewPolicy&&this.c.reviewService.budget(g).remaining===0;
+  if(staleReview){
+   delete t.reviewAcceptance;if(t.reviewWait?.source!=='api')delete t.reviewWait;t.reviewed=false;
+   t.feedback.push({kind:'review_superseded',text:'An approved goal revision superseded the previous review.',goalVersion:g.version,at:this.c.now()});
+   for(const ticket of this.c.store.all('review_ticket').filter(ticket=>ticket.taskId===t.id&&ticket.reviewer.source==='host'&&ticket.status==='reserved'&&ticket.binding.goalVersion<g.version)){
+    ticket.status='stale';ticket.reasonCode='binding_superseded';ticket.staleAt=this.c.now();this.c.store.put('review_ticket',ticket);
+    this.c.emit('review.stale',g.id,t.id,{ticketId:ticket.id,reasonCode:ticket.reasonCode});
+   }
+   if(reviewExhausted()){t.status='blocked';t.reason='Original review budget exhausted after approval changed';}
+   else if(needsNewWorkerChecks){
+    const outOfAttempts=t.attempts>=t.spec.limits.attempts||(this.c.store.spent(t.id).model??0)>=t.spec.limits.modelCalls;
+    t.status=outOfAttempts?'blocked':'queued';t.checkpoint={...t.checkpoint,phase:'attempt'};
+    if(outOfAttempts)t.reason='Original attempt or request budget exhausted before required fresh checks';
+   }else t.status='awaiting_review';
+  }
+  if(nextNativePermissions){const exhausted=reviewExhausted()||t.attempts>=t.spec.limits.attempts||(this.c.store.spent(t.id).model??0)>=t.spec.limits.modelCalls;t.status=exhausted?'blocked':'codex_ready';if(exhausted)t.reason='Approved generation retains exhausted original task limits';}
   this.c.store.put('task',t);this.c.emit('task.rebound',g.id,t.id,{goalVersion:t.goalVersion,hash:t.hash});return this.c.getTask(t.id);
  });}
  finalize(input,key){return this.c.store.command(key,{op:'goal.finalize',...input},()=>{

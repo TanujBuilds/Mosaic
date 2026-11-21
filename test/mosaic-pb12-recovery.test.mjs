@@ -145,7 +145,7 @@ test('a completed API response with stale bindings becomes a terminal wait, neve
  f.c.control({goalId:current.goal.id,action:'resume'},'resume');
  const goals=new Goals(f.c),revision=goals.prepareRevision({goalId:current.goal.id,expectedHash:current.goal.hash,manifest:{...current.raw,acceptance:['current rubric']}},'revision');goals.activateRevision({revisionId:revision.id,hash:revision.hash},'activate-revision');goals.rebind({taskId:current.task.id},'rebind');
  const ticket=f.c.store.all('review_ticket')[0],binding=(await f.c.reviewService.inbox({goalId:current.goal.id})).items[0].binding;
- await assert.rejects(()=>f.c.reviewService.reserve(binding,'fresh-api-ticket'),/already reserved/i);assert.equal(f.c.store.get('review_ticket',ticket.id).status,'reserved');
+ await assert.rejects(()=>f.c.reviewService.reserve(binding,'fresh-api-ticket'),/API review evidence/i);assert.equal(f.c.store.get('review_ticket',ticket.id).status,'reserved');
  // Resume eligibility permits one validation of saved bytes; rejection is durable.
  const worker=new Worker({c:f.c,owner:'owner'});await assert.rejects(()=>worker.legacyReview.tick(),/stale|changed|binding/i);
  assert.equal(f.c.getTask(current.task.id).reviewWait.recovery,'operator');assert.deepEqual(await f.childTick(),{first:null,second:null});

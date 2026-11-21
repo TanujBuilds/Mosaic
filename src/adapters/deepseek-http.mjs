@@ -1,21 +1,21 @@
 import http from 'node:http';
 import https from 'node:https';
+import {workerEndpoint} from '../harness/worker-profile.mjs';
 import { providedRetryHint, responseRetryHint } from './retry-after.mjs';
 
 function endpoint(baseUrl, openAICompatible) {
-  const message = openAICompatible
-    ? 'Use an HTTP or HTTPS API base URL without credentials, query parameters or fragment'
-    : 'DeepSeek base URL must use HTTP or HTTPS';
+  if (openAICompatible) {
+    try { return new URL(workerEndpoint(baseUrl) + '/'); }
+    catch (error) { throw requestError(error.message); }
+  }
+  const message = 'DeepSeek base URL must use HTTP or HTTPS';
   let url;
   try {
     url = new URL(baseUrl.endsWith('/') ? baseUrl : baseUrl + '/');
   } catch {
     throw requestError(message);
   }
-  if (!['http:', 'https:'].includes(url.protocol) ||
-      openAICompatible && (url.username || url.password || url.search || url.hash)) {
-    throw requestError(message);
-  }
+  if (!['http:', 'https:'].includes(url.protocol)) throw requestError(message);
   return url;
 }
 
@@ -220,7 +220,7 @@ export class DeepSeekHttpAdapter {
     const combined = signal ? AbortSignal.any([signal, timeout]) : timeout;
     let response;
     try {
-      response = await this.fetchImpl(url, { ...options, headers:{...options.headers,...this.authHeaders}, signal: combined }, combined);
+      response = await this.fetchImpl(url, { ...options, redirect: 'manual', headers:{...options.headers,...this.authHeaders}, signal: combined }, combined);
     } catch (error) {
       const observed=error?.httpStatus??error?.observedHttpStatus;
       const status=Number.isInteger(observed)&&observed>=200&&observed<=599?observed:undefined;

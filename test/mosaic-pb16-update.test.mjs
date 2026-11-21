@@ -32,16 +32,59 @@ async function fixture(t){
  });
  return {root,paths};
 }
-async function payload(root,version,{settings=[1,2],database=[0,1],supervisor="reviewed C source",implementation={},artifactRoot,artifactFingerprint}={}){
+async function payload(root,version,{settings=[1,2],database=[0,1],providerTransport,supervisor="reviewed C source",implementation={},artifactRoot,artifactFingerprint}={}){
  const directory=path.join(root,version);await mkdir(directory);const sources={'runtime/src/project/check-backends/native-supervisor.c':supervisor,'runtime/bin/node':'#!/bin/sh\nexit 0\n','runtime/src/beta/cli.mjs':'// entry\n','runtime/package-lock.json':JSON.stringify({packages:{'node_modules/@modelcontextprotocol/sdk':{version:'1.32.2'}}}),'runtime/node_modules/@modelcontextprotocol/sdk/package.json':JSON.stringify({version:'1.32.2'})};const files=[];
  for(const source of new Set([...nativeSources,...Object.keys(implementation)]))sources[path.posix.normalize('runtime/src/project/check-backends/'+source)]=implementation[source]??(source==='native-supervisor.c'?supervisor:'reviewed '+source);
  if(artifactRoot)for(const name of ['node','mosaic-check-supervisor','NODE-LICENSE','artifact-manifest.json'])sources['runtime/check-artifact/'+name]=await readFile(path.join(artifactRoot,name));
  for(const [name,bytes] of Object.entries(sources)){const target=path.join(directory,name);await mkdir(path.dirname(target),{recursive:true});const mode=['runtime/bin/node','runtime/check-artifact/node','runtime/check-artifact/mosaic-check-supervisor'].includes(name)?'100755':name==='runtime/check-artifact/artifact-manifest.json'?'100600':'100644';await writeFile(target,bytes,{mode:parseInt(mode.slice(3),8)});files.push({path:name,sha256:hash(bytes),bytes:Buffer.byteLength(bytes),mode});}
- const manifest={schema:1,layout:artifactFingerprint?'terminal-beta-v2':'terminal-beta-v1',version,dependenciesInstalled:true,...(artifactFingerprint?{nativeCheckArtifact:{fingerprint:artifactFingerprint,backend:{id:'darwin-seatbelt',revision:2}}}:{}),stateCompatibility:{settings,database},files,contentHash:digest(files)};await writeFile(path.join(directory,'package-manifest.json'),JSON.stringify(manifest));return directory;
+ const manifest={schema:1,layout:artifactFingerprint?'terminal-beta-v2':'terminal-beta-v1',version,dependenciesInstalled:true,...(artifactFingerprint?{nativeCheckArtifact:{fingerprint:artifactFingerprint,backend:{id:'darwin-seatbelt',revision:2}}}:{}),stateCompatibility:{settings,database,...(providerTransport===undefined?{}:{providerTransport})},files,contentHash:digest(files)};await writeFile(path.join(directory,'package-manifest.json'),JSON.stringify(manifest));return directory;
 }
 test('update and compatible rollback preserve private state and every older version',async t=>{
  const f=await fixture(t),a=await payload(f.root,'0.1.0-beta.161'),b=await payload(f.root,'0.1.0-beta.162');await installer.install(f.paths,a,{noPath:true});await writeFile(f.paths.config,JSON.stringify({schema:2,host:{id:'cursor'}}),{mode:0o600});const evidence=path.join(f.paths.state,'kept-evidence.json');await writeFile(evidence,'kept');const before=await readFile(f.paths.config);
  await installer.install(f.paths,b,{noPath:true});assert.equal(typeof installer.rollbackVersion,'function');await installer.rollbackVersion(f.paths,'0.1.0-beta.161');assert.deepEqual(await readFile(f.paths.config),before);assert.equal(await readFile(evidence,'utf8'),'kept');assert.ok(await lstat(path.join(f.paths.versions,'0.1.0-beta.162')));
+});
+for(const [name,configFor,allowedUrl] of [
+ ['legacy worker',baseUrl=>({schema:1,worker:{profile:{baseUrl}}}),'http://127.0.0.1:8000/v1'],
+ ['API reviewer',baseUrl=>({schema:2,providers:[{roles:['worker'],baseUrl:'http://[::1]:8000/v1'},{roles:['reviewer'],baseUrl}]}),'https://reviewer.example.invalid/v1'],
+])test(`a remote HTTP ${name} blocks the update before registered service or launcher changes`,async t=>{
+ const {root,paths}=await fixture(t),oldVersion='0.1.0-beta.161',newVersion='0.1.0-beta.162';
+ const oldPackage=await payload(root,oldVersion),newPackage=await payload(root,newVersion,{providerTransport:'https-or-http-loopback'});
+ await installer.install(paths,oldPackage,{noPath:true});
+ await writeFile(paths.config,JSON.stringify(configFor('http://private-workstation.example.invalid/v1')),{mode:0o600});
+ const protectedFiles=[paths.launcher,paths.installation,paths.config];
+ const before=await Promise.all(protectedFiles.map(file=>readFile(file)));
+ const lifecycleCalls=[];
+ const lifecycle={
+  async verifyLaunchAgent(){lifecycleCalls.push('verify');return true;},
+  async stopForMaintenance(){lifecycleCalls.push('stop');return true;},
+  async startLaunchAgent(){lifecycleCalls.push('start');return true;},
+ };
+ await assert.rejects(installer.install(paths,newPackage,{noPath:true,lifecycle}),error=>{
+  assert.match(error.message,/HTTPS is required.*previous installed version/i);
+  assert.doesNotMatch(error.message,/private-workstation/);
+  return true;
+ });
+ assert.deepEqual(lifecycleCalls,[]);
+ assert.deepEqual(await Promise.all(protectedFiles.map(file=>readFile(file))),before);
+ await assert.rejects(lstat(path.join(paths.configDir,'install-transaction.json')),{code:'ENOENT'});
+ await assert.rejects(lstat(path.join(paths.versions,newVersion)),{code:'ENOENT'});
+
+ const compatibleConfig=JSON.stringify(configFor(allowedUrl));
+ await writeFile(paths.config,compatibleConfig,{mode:0o600});
+ await installer.install(paths,newPackage,{noPath:true,lifecycle});
+ assert.deepEqual(lifecycleCalls,['verify','stop','start']);
+ assert.equal(JSON.parse(await readFile(paths.installation)).version,newVersion);
+ assert.equal(await readFile(paths.config,'utf8'),compatibleConfig);
+});
+test('rollback uses the old target transport policy and preserves saved settings',async t=>{
+ const {root,paths}=await fixture(t),oldVersion='0.1.0-beta.161',newVersion='0.1.0-beta.162';
+ await installer.install(paths,await payload(root,oldVersion),{noPath:true});
+ await installer.install(paths,await payload(root,newVersion,{providerTransport:'https-or-http-loopback'}),{noPath:true});
+ const settings=JSON.stringify({schema:2,providers:[{roles:['worker'],baseUrl:'http://worker.example.invalid/v1'}]});
+ await writeFile(paths.config,settings,{mode:0o600});
+ await installer.rollbackVersion(paths,oldVersion);
+ assert.equal(JSON.parse(await readFile(paths.installation)).version,oldVersion);
+ assert.equal(await readFile(paths.config,'utf8'),settings);
 });
 test('rollback refuses incompatible live settings/database rather than restore old state',async t=>{
  const f=await fixture(t),a=await payload(f.root,'0.1.0-beta.161',{settings:[1],database:[0]}),b=await payload(f.root,'0.1.0-beta.162');await installer.install(f.paths,a,{noPath:true});await installer.install(f.paths,b,{noPath:true});await writeFile(f.paths.config,JSON.stringify({schema:2}),{mode:0o600});const launcher=await readFile(f.paths.launcher);await assert.rejects(installer.rollbackVersion(f.paths,'0.1.0-beta.161'),/incompatible.*settings|settings.*schema/i);assert.deepEqual(await readFile(f.paths.launcher),launcher);

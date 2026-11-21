@@ -1,5 +1,6 @@
 import {integrationBinding} from './owner-inbox.mjs';
 import {AsyncLocalStorage} from 'node:async_hooks';
+import {createHash} from 'node:crypto';
 import path from 'node:path';
 import {access,readFile} from 'node:fs/promises';
 import {canonicalRepository,capacitySnapshot,writeScopeWait,inertUnstartedGoal,repositoryLockId,sharedBaseJournalId} from './scheduling/capacity.mjs';
@@ -9,8 +10,8 @@ import { NativeCandidates } from './native-candidates.mjs';
 import { Journal } from '../project/journal.mjs';
 import { Workspace,inspectRepository } from '../project/workspace.mjs';
 import {approvedChecks,executionFields} from './execution.mjs';
-import { matches,protectedPath,secretPath,digest as fileDigest,Pause } from '../project/contracts.mjs';
-import { git } from '../project/process.mjs';
+import { matches,protectedPath,relativePath,secretPath,digest as fileDigest,Pause } from '../project/contracts.mjs';
+import { git,gitBytes } from '../project/process.mjs';
 import { CodingAdapter } from './coding.mjs';
 import { digest,identifier,text } from './contracts.mjs';
 import { assertBehavioralChecks,behavioralModeHash,deriveBehavioralEvidence,readBehavioralFileModes } from './behavioral-validation.mjs';
@@ -24,8 +25,10 @@ function assertCheckpointSnapshot(checkpoint,snapshot){
  if(digest(checkpoint.snapshot)!==digest(snapshot))throw Error('Checkpoint snapshot differs from the protected check run');
 }
 
-function checkedPath(workspace,file){
- return !secretPath(file)&&!file.startsWith('dist/')&&!file.startsWith('.overnight-output/')&&matches(file,workspace.manifest.permissions.readPaths);
+function checkedPath(workspace,file,{includeWrites=true}={}){
+ if(secretPath(file)||file.startsWith('dist/')||file.startsWith('.overnight-output/'))return false;
+ const {readPaths,writePaths}=workspace.manifest.permissions;
+ return matches(file,readPaths)||includeWrites&&!protectedPath(file)&&matches(file,writePaths);
 }
 
 function checkedFileModes(workspace,snapshot){
@@ -46,6 +49,10 @@ async function assertCheckoutConfig(workspace,beforeCommit){
  if(beforeCommit&&await git(root,'config','--type=bool','--default','true','--get','core.filemode')==='false')throw Error('Git core.filemode=false prevents binding the checked executable bit to a commit');
 }
 
+function gitBlobId(bytes){
+ return createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex');
+}
+
 async function checkedBlobIds(workspace,snapshot,modes,{beforeCommit=false}={}){
  await assertCheckoutConfig(workspace,beforeCommit);
  const files=[...modes.keys()],ids=new Map();
@@ -59,8 +66,12 @@ async function checkedBlobIds(workspace,snapshot,modes,{beforeCommit=false}={}){
    if(name==='filter')throw Error('Git filter attribute prevents binding checked bytes to a commit');
    if(name==='ident'||name==='working-tree-encoding'||name==='eol'&&value.toLowerCase()==='crlf')throw Error('Git checkout attribute '+name+'='+value+' prevents binding checked bytes to a commit');
   }
-  const raw=(await git(workspace.root,'hash-object','--no-filters','--',...batch)).split('\n');
-  if(raw.length!==batch.length)throw Error('Cannot verify commit bytes against the checked snapshot');
+  const raw=[];
+  for(const file of batch){
+   const bytes=await readFile(await workspace.file(file));
+   if(fileDigest(bytes)!==snapshot[file])throw Error('Workspace bytes changed after the protected check snapshot');
+   raw.push(gitBlobId(bytes));
+  }
   if(beforeCommit){
    const clean=(await git(workspace.root,'hash-object','--',...batch)).split('\n');
    if(clean.length!==raw.length||raw.some((id,index)=>id!==clean[index]))throw Error('Git normalization would commit bytes different from the checked snapshot');
@@ -70,6 +81,88 @@ async function checkedBlobIds(workspace,snapshot,modes,{beforeCommit=false}={}){
  await workspace.assertSnapshot(snapshot);
  await assertCheckedModes(workspace,snapshot,modes);
  return ids;
+}
+
+async function commitBlob(workspace,blob){
+ const bytes=await gitBytes(workspace.root,'cat-file','blob',blob);
+ if(gitBlobId(bytes)!==blob)throw Error('Git blob bytes differ from the checkpoint tree');
+ return bytes;
+}
+
+async function committedChanges(workspace,base,commit,writePaths){
+ const diff=await gitBytes(workspace.root,'diff-tree','-r','--no-commit-id','--raw','--no-abbrev','--no-renames','--no-ext-diff','--no-textconv','--ignore-submodules=none','-z',base,commit,'--');
+ const records=diff.toString('utf8').split('\0');
+ if(!diff.equals(Buffer.from(records.join('\0')))||records.length%2!==1||records.at(-1)!=='')throw Error('Cannot read exact checkpoint change paths');
+ const edits=[];
+ for(let i=0;i<records.length-1;i+=2){
+  const file=relativePath(records[i+1]);
+  if(protectedPath(file)||!matches(file,writePaths))throw Error('Candidate change outside approved scope');
+  const [beforeMode,afterMode,beforeBlob,afterBlob]=records[i].slice(1).split(' ');
+  if([beforeMode,afterMode].some(mode=>!['000000','100644','100755'].includes(mode)))throw Error('Candidate checkpoint contains an unsupported file type');
+  const before=beforeMode==='000000'?null:await commitBlob(workspace,beforeBlob);
+  const after=afterMode==='000000'?null:await commitBlob(workspace,afterBlob);
+  const content=after?.toString('utf8')??null;
+  if(after&&(after.length>128*1024||after.includes(0)||!after.equals(Buffer.from(content))))throw Error('Candidate checkpoint file must be valid UTF-8 text up to 128 KiB: '+file);
+  edits.push({path:file,action:after===null?'delete':'write',content,beforeHash:before===null?null:fileDigest(before),afterHash:after===null?null:fileDigest(after),beforeMode:before===null?null:beforeMode,afterMode:after===null?null:afterMode});
+ }
+ return edits;
+}
+
+async function assertImportedPaths(workspace,changes,errorForPath){
+ for(const change of changes){
+  const {hash}=await workspace.content(change.path);
+  if(hash!==change.afterHash||await workspace.fileMode(change.path)!==change.afterMode)throw errorForPath(change.path);
+ }
+}
+
+function pendingImportMismatch(file){
+ return Error('Saved pending integration differs from the verified checkpoint'+(file?' for '+file:'')+'. Inspect the pending import journal before retrying.');
+}
+
+async function assertPendingImport({journal,workspace},pending,task,checkpoint,changes){
+ const appliedKeys=new Set(journal.events.filter(event=>event.type==='edits.applied').map(event=>event.data.key));
+ const unfinished=journal.events.filter(event=>event.type==='edits.intent'&&!appliedKeys.has(event.data.key));
+ if(unfinished.some(event=>event.data.key!==pending?.importKey))throw Error('Another pending edit transaction owns the integration journal. Inspect its recovery evidence before retrying.');
+ if(!pending)return;
+ const {importKey}=pending;
+ if(pending.taskId!==task.id||pending.candidateCommit!==checkpoint.commit||typeof importKey!=='string'||!importKey)throw pendingImportMismatch();
+ const plans=journal.events.filter(event=>event.type==='integration.import.intent'&&event.data.key===importKey);
+ const edits=journal.events.filter(event=>event.type==='edits.intent'&&event.data.key===importKey);
+ if(plans.length>1||edits.length>1||!plans.length&&(edits.length||appliedKeys.has(importKey))||!edits.length&&appliedKeys.has(importKey))throw pendingImportMismatch();
+ if(!plans.length)return; // The coordinator may have stopped immediately after reserving the target.
+ const [plan]=plans,[editIntent]=edits;
+ const prior=journal.events.filter(event=>event.sequence<plan.sequence);
+ const priorCommit=prior.findLast(event=>event.type==='stage.accepted')?.data.commit??workspace.manifest.baseCommit;
+ const priorSnapshot=prior.findLast(event=>event.data.snapshot)?.data.snapshot;
+ const {data:saved}=plan;
+ if(saved.taskId!==task.id||saved.candidateCommit!==checkpoint.commit||saved.baseCommit!==priorCommit||
+    !priorSnapshot||digest(saved.snapshotBefore??null)!==digest(priorSnapshot)||!Array.isArray(saved.changes))throw pendingImportMismatch();
+ const expected=new Map(changes.map(change=>[change.path,change]));
+ const priorHash=file=>Object.hasOwn(priorSnapshot,file)?priorSnapshot[file]:null;
+ // Historical mode-less rows can only resume regular non-executable files and deletions.
+ const modesMatch=(row,change)=>['beforeMode','afterMode'].every(field=>Object.hasOwn(row,field)?row[field]===change[field]:change[field]!=='100755');
+ const recorded=new Set();
+ for(const row of saved.changes){
+  const change=expected.get(row?.path),before=row?.before;
+  if(!change||recorded.has(row.path)||row.afterHash!==change.afterHash||!modesMatch(row,change)||
+     priorHash(row.path)!==change.beforeHash||before?.path!==row.path||before.hash!==change.beforeHash||
+     (change.beforeHash===null?before.content!==null:typeof before.content!=='string'||fileDigest(before.content)!==change.beforeHash))throw pendingImportMismatch(row?.path);
+  recorded.add(row.path);
+ }
+ if(editIntent){
+  if(editIntent.sequence<=plan.sequence||digest(editIntent.data.snapshotBefore??null)!==digest(priorSnapshot)||!Array.isArray(editIntent.data.changes))throw pendingImportMismatch();
+  const recordedEdits=new Set();
+  for(const row of editIntent.data.changes){
+   const change=expected.get(row?.path);
+   if(!change||!recorded.has(row.path)||recordedEdits.has(row.path)||
+      row.before!==change.beforeHash||row.after!==change.afterHash||row.content!==change.content||!modesMatch(row,change))throw pendingImportMismatch(row?.path);
+   recordedEdits.add(row.path);
+  }
+  for(const file of recorded)if(!recordedEdits.has(file))throw pendingImportMismatch(file);
+ }
+ const unchanged=changes.filter(change=>!recorded.has(change.path));
+ for(const change of unchanged)if(priorHash(change.path)!==change.afterHash)throw pendingImportMismatch(change.path);
+ await assertImportedPaths(workspace,unchanged,pendingImportMismatch);
 }
 
 async function assertCheckedCommit(workspace,checkpoint,snapshot,modes){
@@ -126,7 +219,7 @@ export class Integration {
   if(current.hash!==expected.hash||current.version!==expected.version||digest(current.manifest.project)!==digest(expected.manifest.project))throw Error('Goal approval or project version changed during integration preparation');
   return current;
  }
- async goalWorkspace(goalId,{native=false,journal:lockedJournal,validatePrior,repairPin}={}){
+ async goalWorkspace(goalId,{native=false,journal:lockedJournal,validatePrior,repairPin,beforeRecovery}={}){
   const g=this.c.store.get('goal',goalId);if(g.integrationSealed)throw Error('Preserved partial integration workspace is retired; use a separately approved goal');if(!g.manifest.project)throw Error('Goal has no coding project');
   if(repairPin)assertPendingRepair(this,repairPin);
   const journal=lockedJournal??await this.integrationJournal(g),p=g.manifest.project;
@@ -143,12 +236,12 @@ export class Integration {
    assertPendingRepair(this,repairPin,journal);
   }else await workspace.initialize();
   if(shared&&!origin)await journal.append('integration.repository',{repository:canonicalRepository(p.repo),baseCommit:p.baseCommit});
-  if(!native)await workspace.recover();
+  if(!native){await beforeRecovery?.({journal,workspace},g);await workspace.recover();}
   this.c.store.tx(()=>{const current=repairPin?assertPendingRepair(this,repairPin).goal:this.assertPreparationGoal(g,{live:!native||!g.integration});validatePrior?.();if(!current.integration){current.integration={worktree:workspace.root,branch:workspace.branch,baseCommit:p.baseCommit,...(shared?{journalId:journal.id}: {})};this.c.store.put('goal',current);}});
   return {journal,workspace,g:this.c.store.get('goal',goalId),shared};
  }
  checks(workspace,context={}){this.c.verifyCurrentWorker?.();return approvedChecks(workspace,{checksFactory:this.checksFactory,config:this.config,context:{...context,...this.executionContext.getStore(),c:this.c}});}
- async lockedGoal(goalId,{native=false,refuseLegacy=false,integrationTaskId=null,repairPin,wait=false}={}){
+ async lockedGoal(goalId,{native=false,refuseLegacy=false,integrationTaskId=null,repairPin,beforeRecovery,wait=false}={}){
   if(repairPin){if(repairPin.goal.id!==goalId||repairPin.task.id!==integrationTaskId)throw Error('Pending repair target mismatch');assertPendingRepair(this,repairPin);}
   const g=this.c.store.get('goal',goalId),repository=canonicalRepository(g.manifest.project.repo);
   // Coding lanes share this short preparation turn, then use separate candidate
@@ -187,7 +280,7 @@ export class Integration {
    const validatePrior=()=>{for(const id of inertProofs)if(!inertUnstartedGoal(this.c,this.c.store.get('goal',id),{allowDraft:true}))throw Error('Prior inert authority changed during integration preparation');};
    this.c.store.tx(()=>{if(repairPin)assertPendingRepair(this,repairPin);else this.assertPreparationGoal(g,{live:!native||!g.integration});validatePrior();});
    releaseJournal=await journal.lock();
-   const target=await this.goalWorkspace(goalId,{native,journal,validatePrior,repairPin});
+   const target=await this.goalWorkspace(goalId,{native,journal,validatePrior,repairPin,beforeRecovery});
    const release=async()=>{try{try{await releaseJournal();}finally{await releaseRepository();}}finally{endTurn();}};
    return {...target,release};
   }catch(error){try{try{await releaseJournal?.();}finally{await releaseRepository?.();}}finally{endTurn();}throw error;}
@@ -297,19 +390,21 @@ export class Integration {
    return snapshot;
   }
   // Worker results expose only the approved readable portion of the snapshot.
-  const scoped=Object.fromEntries([...modes.keys()].map(file=>[file,snapshot[file]]));
+  const scoped=Object.fromEntries(Object.entries(snapshot).filter(([file])=>checkedPath(candidate.workspace,file,{includeWrites:false})));
   if(!task.result?.snapshot||task.result.baseCommit!==candidate.manifest.baseCommit||digest(scoped)!==digest(task.result.snapshot))throw Error('Candidate snapshot changed after its saved checks');
   if(goal.manifest.mode.review==='legacy'&&!goal.manifest.reviewPolicy){
    const binding=task.legacyBehavioralReview;
    if(binding?.approvalHash!==goal.hash||binding.taskHash!==task.hash||binding.baseCommit!==candidate.manifest.baseCommit||binding.snapshotHash!==digest(scoped))throw Error('Legacy review does not match the approved candidate snapshot');
-   if(binding.executableModesHash!==behavioralModeHash(modes))throw Error('Legacy review does not match the candidate executable bits');
+   const scopedModes=new Map([...modes].filter(([file])=>Object.hasOwn(scoped,file)));
+   if(binding.executableModesHash!==behavioralModeHash(scopedModes))throw Error('Legacy review does not match the candidate executable bits');
   }
   return scoped;
  }
  async accept(input,key){return this.effect(key,{op:'integration.accept',...input},async()=>{
   let t=this.c.getTask(input.taskId),g=this.c.store.get('goal',t.goalId);
   const verifyBinding=current=>{
-   if(input.expectedIntegrationBinding!==undefined&&input.expectedIntegrationBinding!==integrationBinding(this.c.store.get('goal',current.goalId),current))
+   const binding=current.status==='accepted'?current.integration?.ownerActionBinding:integrationBinding(this.c.store.get('goal',current.goalId),current);
+   if(input.expectedIntegrationBinding!==undefined&&input.expectedIntegrationBinding!==binding)
     throw Error('Reviewed candidate or goal changed. Refresh the inbox.');
   };
   verifyBinding(t);
@@ -341,9 +436,13 @@ export class Integration {
    const checkpoint=t.native?.layout==='candidate_v1'?{commit:t.native.commit,snapshot:await candidate.workspace.snapshot()}:await candidate.journal.memo(`${candidateStage}/checkpoint`,()=>candidate.workspace.checkpoint({id:candidateStage,writePaths:t.spec.permissions.writePaths}));
    if(candidateSnapshot)await assertCheckedCommit(candidate.workspace,checkpoint,candidateSnapshot,candidateModes);
    if(!candidate.journal.events.some(e=>e.type==='stage.accepted'&&e.data.commit===checkpoint.commit))await candidate.journal.append('stage.accepted',{stageId:candidateStage,...checkpoint});
-   const target=await this.lockedGoal(g.id,{refuseLegacy:true,integrationTaskId:t.id}),release=target.release;
+   const changes=await committedChanges(candidate.workspace,candidate.manifest.baseCommit,checkpoint.commit,t.spec.permissions.writePaths);
+   const target=await this.lockedGoal(g.id,{refuseLegacy:true,integrationTaskId:t.id,beforeRecovery:async(target,currentGoal)=>{
+    t=this.currentCandidate(t);verifyBinding(t);
+    await assertPendingImport(target,currentGoal.integrationPending,t,checkpoint,changes);
+   }}),release=target.release;
    try{
-    t=this.currentCandidate(t);verifyBinding(t);await target.workspace.recover();const changes=await this.changes(candidate.workspace,candidate.manifest.baseCommit,t.spec.permissions.writePaths);
+    t=this.currentCandidate(t);verifyBinding(t);
     if(candidateSnapshot){
      await candidate.workspace.assertSnapshot(candidateSnapshot);
      await assertCheckedModes(candidate.workspace,candidateSnapshot,candidateModes);
@@ -367,7 +466,9 @@ export class Integration {
      await target.journal.append('integration.import.intent',{key:importKey,taskId:t.id,candidateCommit:checkpoint.commit,baseCommit:await git(target.workspace.root,'rev-parse','HEAD'),snapshotBefore:await target.workspace.snapshot(),changes:captured});
     }
     await this.applyChanges(target.workspace,changes,importKey,t.spec.permissions.writePaths);
-    const checkSpecs=effectiveIntegrationChecks(this.c,t,g.manifest),snapshotBeforeChecks=project.behavioralChecks||target.shared?await target.workspace.snapshot():null;
+    await assertImportedPaths(target.workspace,changes,file=>Error('Imported file differs from the verified checkpoint for '+file+'. Inspect the pending import before retrying.'));
+    const checkSpecs=effectiveIntegrationChecks(this.c,t,g.manifest),bindTargetSnapshot=project.behavioralChecks||target.shared||g.manifest.reviewPolicy;
+    const snapshotBeforeChecks=bindTargetSnapshot?await target.workspace.snapshot():null;
     const combinedModes=snapshotBeforeChecks?await checkedFileModes(target.workspace,snapshotBeforeChecks):null;
     let results,combinedEvidence,integrationContract;
     if(target.shared){const combined=await this.combinedChecks(target,t,g,checkSpecs);results=combined.results;combinedEvidence=combined.evidence;integrationContract=combined.contract;}
@@ -383,11 +484,11 @@ export class Integration {
     for(const evidence of combinedEvidence??[])assertBehavioralChecks(evidence.behavioralEvidence);
     assertBehavioralChecks(behavioralEvidence);
     t=this.currentCandidate(t);
-    if(behavioralEvidence||target.shared)await checkedBlobIds(target.workspace,snapshot,combinedModes,{beforeCommit:true});
+    if(bindTargetSnapshot)await checkedBlobIds(target.workspace,snapshot,combinedModes,{beforeCommit:true});
     const stage=`task-${t.id}-${checkpoint.commit}`,imported=await target.journal.memo(`${stage}/checkpoint`,()=>target.workspace.checkpoint({id:stage,writePaths:t.spec.permissions.writePaths}));
-    if(behavioralEvidence||target.shared)await assertCheckedCommit(target.workspace,imported,snapshot,combinedModes);
+    if(bindTargetSnapshot)await assertCheckedCommit(target.workspace,imported,snapshot,combinedModes);
     if(!target.journal.events.some(e=>e.type==='stage.accepted'&&e.data.stageId===stage))await target.journal.append('stage.accepted',{stageId:stage,...imported,...(integrationContract?{integrationContract}: {})});
-    this.c.store.tx(()=>{const current=this.currentCandidate(t);current.status='accepted';if(current.native?.layout==='candidate_v1')current.native.status='integrated';current.integration={commit:imported.commit,candidateCommit:checkpoint.commit,worktree:target.workspace.root,checks:results,...(combinedEvidence?{combinedEvidence}:{}),review:g.manifest.reviewPolicy?(g.manifest.reviewPolicy.source==='host'?'host_review':'api_review'):g.manifest.mode.review==='checks'?'none':g.manifest.mode.review==='legacy'?'codex_legacy':'codex_operator',...(g.manifest.reviewPolicy?{reviewAcceptance:current.reviewAcceptance}:{}),...(behavioralEvidence?{candidateBehavioralEvidence,behavioralEvidence}:{})};this.c.store.put('task',current);const goal=this.c.store.get('goal',g.id);goal.integrationPending=null;this.c.store.put('goal',goal);this.c.emit('task.integrated',g.id,t.id,current.integration);});
+    this.c.store.tx(()=>{const current=this.currentCandidate(t);verifyBinding(current);current.status='accepted';if(current.native?.layout==='candidate_v1')current.native.status='integrated';current.integration={commit:imported.commit,candidateCommit:checkpoint.commit,worktree:target.workspace.root,checks:results,...(input.expectedIntegrationBinding!==undefined?{ownerActionBinding:input.expectedIntegrationBinding}:{}),...(combinedEvidence?{combinedEvidence}:{}),review:g.manifest.reviewPolicy?(g.manifest.reviewPolicy.source==='host'?'host_review':'api_review'):g.manifest.mode.review==='checks'?'none':g.manifest.mode.review==='legacy'?'codex_legacy':'codex_operator',...(g.manifest.reviewPolicy?{reviewAcceptance:current.reviewAcceptance}:{}),...(behavioralEvidence?{candidateBehavioralEvidence,behavioralEvidence}:{})};this.c.store.put('task',current);const goal=this.c.store.get('goal',g.id);goal.integrationPending=null;this.c.store.put('goal',goal);this.c.emit('task.integrated',g.id,t.id,current.integration);});
     return this.c.getTask(t.id);
    }finally{await release();}
   }finally{await releaseCandidate();}

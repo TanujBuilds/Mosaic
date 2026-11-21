@@ -1,12 +1,10 @@
-import { execFile } from 'node:child_process';
-import { constants } from 'node:fs';
-import { lstat, open, realpath } from 'node:fs/promises';
+import { lstat, realpath } from 'node:fs/promises';
 import path from 'node:path';
-import { promisify } from 'node:util';
 import { digest, goalDispatchInputSchema } from './contracts.mjs';
 import { isOvernightV2 } from './overnight.mjs';
 import { matches, protectedPath, relativePath, secretPath } from '../project/contracts.mjs';
 import { assignmentSummary } from './assignment-summary.mjs';
+import { checkoutGit, repositoryGitMetadata } from '../project/git.mjs';
 
 export const assignmentManifestSchema = {
   type: 'object',
@@ -116,102 +114,13 @@ function inspectInput(raw, registry, c) {
   return { issues, mode };
 }
 
-const runGit = promisify(execFile);
-const gitSettings = [
-  'core.fsmonitor=', 'core.untrackedCache=false', 'core.ignoreStat=false', 'core.hooksPath=/dev/null',
-  'core.trustctime=true', 'core.filemode=true', 'core.checkStat=default',
-  'core.attributesFile=/dev/null', 'core.excludesFile=/dev/null', 'submodule.recurse=false',
-  'status.submoduleSummary=false', 'status.renames=false', 'protocol.allow=never',
-];
-
-function checkoutGit(repo, { discover = true } = {}) {
-  const searchPath = (process.env.PATH ?? '').split(path.delimiter).filter(dir => path.isAbsolute(dir)).join(path.delimiter);
-  // Whitelist the environment so Git cannot inherit alternate repository or config selectors.
-  const env = {
-    PATH: searchPath || '/usr/bin:/bin', LC_ALL: 'C', GIT_OPTIONAL_LOCKS: '0', GIT_CONFIG_NOSYSTEM: '1',
-    GIT_CONFIG_GLOBAL: '/dev/null', GIT_ATTR_NOSYSTEM: '1', GIT_NO_LAZY_FETCH: '1',
-    GIT_NO_REPLACE_OBJECTS: '1', GIT_TERMINAL_PROMPT: '0', GIT_ALLOW_PROTOCOL: '',
-    ...(discover ? {} : { GIT_DIR: '/dev/null' }),
-  };
-  const options = gitSettings.flatMap(setting => ['-c', setting]);
-  return async (args, input) => {
-    const pending = runGit('git', ['--no-pager', ...options, ...args], {
-      cwd: repo, env, encoding: 'utf8', timeout: 3000, maxBuffer: 8 * 1024 * 1024,
-    });
-    if (input !== undefined) {
-      pending.child.stdin.on('error', () => {});
-      pending.child.stdin.end(input);
-    }
-    const { stdout } = await pending;
-    return stdout;
-  };
-}
-
-async function configNames(git, pattern, options = []) {
-  try { return await git(['config', ...options, '--null', '--name-only', '--get-regexp', pattern]); }
-  catch (error) { if (error.code === 1 && !error.stderr) return ''; throw error; }
-}
-
-async function metadataStat(file) {
-  try { return await lstat(file); }
-  catch (error) { if (error.code !== 'ENOENT') throw error; }
-}
-
-async function commonGitDir(gitDir) {
-  let pointer;
-  try { pointer = await open(path.join(gitDir, 'commondir'), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); }
-  catch (error) { if (error.code === 'ENOENT') return gitDir; throw error; }
-  try {
-    const stat = await pointer.stat();
-    const buffer = Buffer.alloc(4097);
-    if (!stat.isFile() || stat.size >= buffer.length) throw Error();
-    const { bytesRead } = await pointer.read(buffer);
-    const value = buffer.toString('utf8', 0, bytesRead).replace(/\r?\n$/, '');
-    if (bytesRead !== stat.size || !value || value !== value.trim() || /[\x00-\x1f\x7f\ufffd]/.test(value)) throw Error();
-    // Resolve the raw path so a symlink followed by .. has Git's meaning.
-    return realpath(path.isAbsolute(value) ? value : `${gitDir}${path.sep}${value}`);
-  } finally { await pointer.close(); }
-}
-
-async function safeGitMetadata(repo, dotGit) {
-  const entry = await lstat(dotGit);
-  if (!entry.isDirectory() && (!entry.isFile() || entry.size > 4096)) return false;
-  // Ordinary Git discovery reads config includes before it processes its flags.
-  // Resolve metadata and inspect explicit config files from outside the checkout.
-  const git = checkoutGit(path.parse(repo).root, { discover: false });
-  const resolved = (await git(['rev-parse', '--resolve-git-dir', dotGit])).replace(/\n$/, '');
-  if (!path.isAbsolute(resolved)) return false;
-  const gitDir = await realpath(resolved);
-  const common = await commonGitDir(gitDir);
-  const maxMetadataBytes = 1024 * 1024;
-  const configs = [path.join(common, 'config'), path.join(gitDir, 'config.worktree')];
-  for (const file of configs) {
-    const stat = await metadataStat(file);
-    if (!stat) continue;
-    if (!stat.isFile() || stat.size > maxMetadataBytes) return false;
-    if (await configNames(git, '^(include|includeif\\..*)\\.path$', ['--file', file, '--no-includes'])) return false;
-  }
-  for (const dir of new Set([common, gitDir])) {
-    const info = path.join(dir, 'info');
-    const stat = await metadataStat(info);
-    if (!stat) continue;
-    if (!stat.isDirectory()) return false;
-    for (const name of ['attributes', 'exclude']) {
-      const file = await metadataStat(path.join(info, name));
-      if (file && (!file.isFile() || file.size > maxMetadataBytes)) return false;
-    }
-  }
-  return common;
-}
-
 // Presets only need verified Git identity, so allow dirty checkouts here.
 export async function repositoryCommonDirectory(value) {
   if (!path.isAbsolute(value) || /[\x00-\x1f\x7f]/u.test(value)) throw Error('Choose an absolute Git repository root.');
   try {
     const repo = await realpath(value);
-    const common = await safeGitMetadata(repo, path.join(repo, '.git'));
-    if (!common) throw Error();
-    const root = (await checkoutGit(repo)(['rev-parse', '--show-toplevel'])).replace(/\n$/, '');
+    const common = repositoryGitMetadata(repo, {allowFilters: true});
+    const root = (await checkoutGit(repo, ['rev-parse', '--show-toplevel'], {identityOnly: true})).replace(/\n$/, '');
     if (await realpath(root) !== repo) throw Error();
     return common;
   } catch {
@@ -225,22 +134,24 @@ async function inspectCheckout(project) {
   try {
     repo = await realpath(project.repo);
   } catch { return failure('unresolved_repository', 'Select the exact root of an accessible Git worktree.'); }
+  const filter = () => failure('unsupported_git_filter', 'Choose a checkout without configured Git clean, smudge or process filters or tracked paths using filter attributes.');
+  const checkoutFailure = (error, fallback) => {
+    if (error.code === 'unsupported_config') return failure('unsupported_config', 'Select a checkout with regular Git config and info metadata, without config includes, symlinks or alternate worktree paths.');
+    if (error.code === 'unsupported_git_filter') return filter();
+    return fallback;
+  };
   try {
-    if (!await safeGitMetadata(repo, path.join(repo, '.git'))) throw Error();
-  } catch (error) {
-    if (error.code === 'ENOENT') return failure('unresolved_repository', 'Select the exact root of an accessible Git worktree.');
-    return failure('unsupported_config', 'Select a checkout with regular Git config and info metadata, without config includes or symlinks.');
-  }
-  try {
-    git = checkoutGit(repo);
+    git = (args, input) => checkoutGit(repo, args, {input, intake: true});
     const root = (await git(['rev-parse', '--show-toplevel'])).replace(/\n$/, '');
     if (await realpath(root) !== repo) throw Error();
-  } catch { return failure('unresolved_repository', 'Select the exact root of an accessible Git worktree.'); }
+  } catch (error) {
+    return checkoutFailure(error, failure('unresolved_repository', 'Select the exact root of an accessible Git worktree.'));
+  }
 
   const head = async () => (await git(['rev-parse', '--verify', 'HEAD^{commit}'])).trim();
   let baseCommit;
   try { baseCommit = await head(); }
-  catch { return failure('missing_commit', 'The selected checkout has no resolvable committed HEAD. Review and save the intended work through your chosen commit workflow, or select a clean checkout with a committed HEAD, then prepare again.'); }
+  catch (error) { return checkoutFailure(error, failure('missing_commit', 'The selected checkout has no resolvable committed HEAD. Review and save the intended work through your chosen commit workflow, or select a clean checkout with a committed HEAD, then prepare again.')); }
   if (!sha.test(baseCommit)) return failure('unsupported_commit', 'The selected checkout must use 40-character commit IDs.');
   if (project.baseCommit !== undefined && project.baseCommit !== baseCommit) {
     return failure('base_mismatch', 'The supplied base does not match the selected checkout HEAD. Review the current committed base and prepare again with that exact HEAD (or omit baseCommit); any new draft requires its own approval.', 'project.baseCommit');
@@ -248,15 +159,10 @@ async function inspectCheckout(project) {
 
   try {
     const dirty = () => failure('dirty_repository', 'The selected checkout has staged, unstaged or untracked changes. Review and save the intended changes through your chosen workflow, or select a clean committed checkout, then prepare again.');
-    const filter = () => failure('unsupported_git_filter', 'Choose a checkout without configured Git clean or process filters or tracked paths using filter attributes.');
     // The worktree probe ignores submodules to avoid entering other checkouts.
     // Compare the cached index separately so this cannot hide staged gitlinks.
     const staged = await git(['diff-index', '--cached', '--name-only', '-z', '--no-renames', '--no-ext-diff', '--no-textconv', '--ignore-submodules=none', baseCommit]);
     if (staged) return dirty();
-    // Git status can run clean/process filters when checking a changed stat.
-    // Disabling a transforming filter could make a dirty checkout appear clean.
-    const filters = await configNames(git, '^filter\\..*\\.(clean|process|required)$');
-    if (filters) return filter();
     const index = (await git(['ls-files', '-v', '--stage', '-z'])).split('\0').filter(Boolean);
     if (index.some(entry => entry.includes('\ufffd') || !/^H (?:100644|100755|120000) [0-9a-f]{40} 0\t/.test(entry))) {
       return failure('unsupported_index', 'Use a checkout with a complete index and no submodules or hidden tracked changes.');
@@ -272,7 +178,7 @@ async function inspectCheckout(project) {
     if (status) return dirty();
     if (await head() !== baseCommit) return failure('base_changed', 'The checkout HEAD changed while preparation was reading it.');
     return { repo, baseCommit, tracked };
-  } catch { return failure('checkout_unverified', 'Git could not verify the checkout using bounded read-only inspection.'); }
+  } catch (error) { return checkoutFailure(error, failure('checkout_unverified', 'Git could not verify the checkout using bounded read-only inspection.')); }
 }
 
 async function scopeProblem(repo, scope, tracked, write) {

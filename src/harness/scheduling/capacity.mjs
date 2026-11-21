@@ -1,7 +1,8 @@
 import {executionHolds} from '../execution-ownership.mjs';
-import {realpathSync,readFileSync,statSync,lstatSync,readdirSync} from 'node:fs';
+import {realpathSync,lstatSync,readdirSync} from 'node:fs';
 import path from 'node:path';
 import {digest} from '../contracts.mjs';
+import {repositoryGitCommonDirectory} from '../../project/git.mjs';
 
 const slots=new Set(['running','uncertain','taking_over']);
 const terminalGoals=new Set(['completed','partial']);
@@ -10,12 +11,8 @@ const terminalGoals=new Set(['completed','partial']);
 // a slot. Use the same predicate for capacity and configuration quiescence.
 const heldRequest="status='reserved' OR (status='failed' AND COALESCE(CASE WHEN json_valid(data) THEN json_extract(data,'$.requestOutcome') ELSE NULL END,'unknown') NOT IN ('completed','not_dispatched'))";
 export function canonicalRepository(repo){
- try{
-  const root=realpathSync(repo),dot=path.join(root,'.git');
-  const gitdir=statSync(dot).isDirectory()?dot:path.resolve(root,readFileSync(dot,'utf8').trim().replace(/^gitdir:\s*/,''));
-  let common=gitdir;try{common=path.resolve(gitdir,readFileSync(path.join(gitdir,'commondir'),'utf8').trim());}catch{}
-  return realpathSync(common);
- }catch{return path.resolve(repo);}
+ try{return repositoryGitCommonDirectory(repo);}
+ catch{try{return realpathSync.native(repo);}catch{return path.resolve(repo);}}
 }
 const uuidHash=value=>{const hash=digest(value);return `${hash.slice(0,8)}-${hash.slice(8,12)}-${hash.slice(12,16)}-${hash.slice(16,20)}-${hash.slice(20,32)}`;};
 export const repositoryLockId=goal=>uuidHash(canonicalRepository(goal.manifest.project.repo));

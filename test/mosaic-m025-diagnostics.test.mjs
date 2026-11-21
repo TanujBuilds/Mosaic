@@ -121,7 +121,7 @@ test('refused loopback and deterministic DNS failure are safe address diagnostic
  const d=await diagnostics(),server=http.createServer();await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));const port=server.address().port;await new Promise(resolve=>server.close(resolve));
  const p=profile(`http://127.0.0.1:${port}/v1`),r=await d.discoverProvider(client(p),p);
  assert.equal(r.endpoint.state,'transport_failed');assert.equal(r.discovery.category,'address');assert.match(d.formatProviderDiagnostic(r),/address|server|tunnel/i);
- const dns=new LocalProvider({baseUrl:'http://unused.invalid/v1',model:'fixture-model',openAICompatible:true,apiKey:secret,fetchImpl:async()=>{const e=Error(secret);e.code='ENOTFOUND';throw e;}});
+ const dns=new LocalProvider({baseUrl:'https://unused.invalid/v1',model:'fixture-model',openAICompatible:true,apiKey:secret,fetchImpl:async()=>{const e=Error(secret);e.code='ENOTFOUND';throw e;}});
  const dnsResult=await d.discoverProvider(dns,p);assert.equal(dnsResult.discovery.category,'address');assert.doesNotMatch(d.formatProviderDiagnostic(dnsResult),/dummy-key/);
 });
 
@@ -153,7 +153,7 @@ test('snapshot guard rejection after membership GET prevents POST and never beco
 });
 
 test('empty and reviewer-only diagnostics never request worker endpoints',async t=>{
- const d=await diagnostics(),p={...profile('http://unused.invalid/v1'),roles:['reviewer']};
+ const d=await diagnostics(),p={...profile('https://unused.invalid/v1'),roles:['reviewer']};
  const noClient={listModels(){assert.fail('reviewer GET');},complete(){assert.fail('reviewer POST');}};
  assert.equal((await d.discoverProvider(noClient,p)).discovery.state,'not_checked');assert.equal((await d.probeProvider(noClient,p)).inference.state,'not_checked');
 });
@@ -260,4 +260,14 @@ for(const [name,body] of [['oversized',JSON.stringify({error:{code:'model_not_fo
 for(const deadlineMs of [35,10000])test(`SSE-only slow error body keeps known HTTP status within ${deadlineMs===35?'the request deadline':'the metadata budget'}`,async t=>{
  const d=await diagnostics(),f=await fixture(t,(_req,res)=>{res.writeHead(503,{'content-type':'application/json'});res.flushHeaders();res.write('{"error":');}),p=sseProfile(f.base),start=Date.now(),r=await d.probeProvider(client(p,{streaming:true}),p,{deadlineMs}),text=d.formatProviderDiagnostic(r);
  assert.equal(r.inference.category,'server');assert.equal(r.inference.httpStatus,503);assert.equal(r.inference.requestOutcome,'unknown');assert.equal(r.endpoint.state,'responded');assert.equal(f.calls.length,1);assert.ok(Date.now()-start<1000);assert.doesNotMatch(text+JSON.stringify(r),/provider-reported|PRIVATE|dummy-key/);
+});
+
+for(const apiKey of [undefined,secret])test(`remote HTTP is refused for a ${apiKey?'credentialed':'keyless'} worker and API reviewer`,async()=>{
+ const baseUrl='http://192.0.2.1:8000/v1',p=profile(baseUrl);
+ const fetchImpl=()=>assert.fail('Invalid profile must not reach the transport');
+ assert.throws(()=>new DeepSeekHttpAdapter({baseUrl,model:p.model,openAICompatible:true,apiKey,fetchImpl}),/HTTPS/);
+ assert.throws(()=>ProviderRegistry({profiles:[{...p,credentialRef:apiKey?p.credentialRef:null}],credentialResolver:fetchImpl}),/HTTPS/);
+ const {createReviewTransport}=await import('../src/harness/review/transports/factory.mjs');
+ const reviewer={...p,roles:['reviewer'],capabilities:{workerProtocol:null,transports:['json'],modelDiscovery:'manual',taskKinds:[]}};
+ assert.throws(()=>createReviewTransport({profile:reviewer,apiKey,fetchImpl}),/configuration is invalid/);
 });

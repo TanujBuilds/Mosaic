@@ -1,7 +1,7 @@
 import {randomUUID} from 'node:crypto';
 import {canonical, digest} from '../harness/contracts.mjs';
 import {ProviderRegistry} from '../harness/providers/registry.mjs';
-import {workerEndpoint} from '../harness/worker-profile.mjs';
+import {isLoopbackProvider,workerEndpoint} from '../harness/worker-profile.mjs';
 import {entry, jsonFile, withLock} from './files.mjs';
 import {readHostConnection} from './hosts/connection-evidence.mjs';
 import {formatHostRegistrationGuide, getHost} from './hosts/index.mjs';
@@ -82,9 +82,9 @@ async function diagnose(paths, settings, credentials, pending, options, {hostOnl
 }
 
 async function collectChange(profile, credentials, settings, ask) {
-  const baseUrl = await ask(`API base URL [${quoted(profile.baseUrl)}]: `) || profile.baseUrl;
-  const model = await ask(`Exact model ID [${quoted(profile.model)}]: `) || profile.model;
+  const baseUrl = await ask(`API base URL [${quoted(profile.baseUrl)}]: `, {masked: true}) || profile.baseUrl;
   const sameUrl = workerEndpoint(baseUrl) === profile.baseUrl;
+  const model = await ask(`Exact model ID [${quoted(profile.model)}]: `) || profile.model;
   const canKeep = sameUrl && credentialExists(profile, credentials);
   const choice = (await ask(canKeep
     ? 'Bearer key: keep [k], replace [r], or remove [n] [k]: '
@@ -181,6 +181,9 @@ async function repairWorker(paths, selection, settings, credentials, options, re
     const authentication = {k: 'Keep the saved bearer key for this URL', r: 'Use the newly entered bearer key (hidden)', n: 'Use no bearer key'}[change.choice];
     output.write(`\nWorker connection preview for ${profile.id}\n` +
       `  API base URL: ${quoted(change.profile.baseUrl)}\n  Model ID: ${quoted(change.profile.model)}\n  Authentication: ${authentication}\n`);
+    output.write(isLoopbackProvider(change.profile.baseUrl)
+      ? '  The worker URL connects to a loopback listener on this Mac.\n'
+      : '  Approved task context goes to this endpoint off this Mac.\n');
     await runDiagnostics(paths, selection, change, {ask: guardedAsk, output, signal: abortSignal, assertCurrent});
     if (!change.changed) {
       output.write('The worker connection already matches this preview.\n');

@@ -97,15 +97,19 @@ export function ownerGoalView(c, goalId){
  const maxScopeBytes=128*1024;
  const checks=project?.checks.map(check=>check.id);
  const scopeComplete=!!project&&Buffer.byteLength(JSON.stringify([project.readPaths,project.writePaths,checks]))<=maxScopeBytes;
+ const integrationOperation=c.store.db.prepare(`SELECT id, json_extract(data,'$.status') AS status FROM records
+  WHERE kind='operation' AND json_extract(data,'$.name')='task_integrate' AND json_extract(data,'$.taskId')=?
+  ORDER BY rowid DESC LIMIT 1`);
  const tasks=c.store.db.prepare("SELECT id FROM records WHERE kind='task' AND json_extract(data,'$.goalId')=? ORDER BY rowid LIMIT 101")
   .all(goal.id).map(({id})=>{
-   const task=c.getTask(id);
+   const task=c.getTask(id),operation=integrationOperation.get(id);
    return {id,status:task.status,priority:task.priority,deadline:task.deadline,spent:task.spent,
     reason:terminalText(task.reason??'').slice(0,500),
     spec:{objective:terminalText(task.spec.objective).slice(0,500),kind:task.spec.kind,
      priority:task.spec.priority,dependsOn:task.spec.dependsOn,limits:task.spec.limits},
     candidateCommit:task.native?.commit??task.result?.candidate?.commit??null,
-    integration:task.integration?{commit:task.integration.commit}:null};
+    integration:task.integration?{commit:task.integration.commit}:null,
+    ...(operation?{lastIntegrationOperation:{id:operation.id,status:operation.status}}:{})};
   });
  const checkSuggestions=project?.checks.filter(check=>!Object.hasOwn(check,'env')&&/^[a-z0-9-]{1,120}$/u.test(check.id))
   .slice(0,50).map(check=>({id:check.id,definitionHash:digest(check)}));

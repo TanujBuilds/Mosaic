@@ -25,6 +25,7 @@ async function fixture(t,beta,{api=false}={}) {
  });
  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
  const baseUrl=`http://127.0.0.1:${server.address().port}/v1`;
+ const outsideMarker='OUTSIDE_REVIEW_SCOPE_CANARY';
  const profile={schema:1,id:'worker',revision:'r1',displayName:'Scripted worker',transport:'openai-chat',baseUrl,model:'fixture-worker',roles:['worker'],capabilities:{workerProtocol:'mosaic-structured-v1',transports:['json'],modelDiscovery:'advertised',taskKinds:['coding']},maxContextTokens:null,maxOutputTokens:2048,concurrency:1,capacityGroup:'fixture-service',credentialRef:null,streaming:false};
  const reviewer={...profile,id:'reviewer',displayName:'Scripted reviewer',model:'fixture-reviewer',roles:['reviewer'],capabilities:{workerProtocol:null,transports:['json'],modelDiscovery:'manual',taskKinds:[]}};
  let c,d,worker,generation=0,owner,seq=0;
@@ -33,6 +34,7 @@ async function fixture(t,beta,{api=false}={}) {
  t.after(async()=>{await d.whenIdle();c.releaseWorker(owner);c.close();server.closeAllConnections();await new Promise(resolve=>server.close(resolve));await rm(root,{recursive:true,force:true});});
  await mkdir(path.join(repo,'src'),{recursive:true});await mkdir(path.join(repo,'checks'));
  await writeFile(path.join(repo,file),original);
+ await writeFile(path.join(repo,'outside.txt'),outsideMarker);
  await writeFile(path.join(repo,'checks/value.mjs'),"import assert from 'node:assert/strict';import {value} from '../src/value.mjs';assert.equal(value,42);\n");
  await git(repo,'init','-q');await git(repo,'add','.');await git(repo,'-c','user.name=Fixture','-c','user.email=fixture@example.invalid','commit','-qm','base');
  const project={repo,baseCommit:await git(repo,'rev-parse','HEAD'),readPaths:['src/','checks/'],writePaths:['src/'],checks:[{id:'value-check',argv:[process.execPath,'checks/value.mjs'],timeoutMs:10000}],behavioralChecks:[{criterionId:'value',description:'Returns the approved value',checkIds:['value-check']}]};
@@ -43,7 +45,7 @@ async function fixture(t,beta,{api=false}={}) {
  const goal=await mutate('goal_activate',{goalId:draft.goalId,hash:draft.hash});
  const task=await mutate('task_submit',{goalId:goal.id,task:{submissionId:'value',kind:'coding',actor:'deepseek',objective:'Set src/value.mjs to 42',acceptance:['Value is 42'],permissions:{readPaths:['src/','checks/'],writePaths:[file],checks:['value-check']}}});
  const operation=async(name,input,key)=>{const op=await mutate(name,input,key);await d.whenIdle();const result=await invoke('operation_get',{operationId:op.id});assert.equal(result.status,'completed',result.error);return result.result;};
- return {root,repo,file,goal,task,calls,invoke,mutate,operation,current:()=>c,worker:()=>worker,waitIdle:()=>d.whenIdle(),restart:async()=>{await d.whenIdle();c.releaseWorker(owner);c.close();connect();}};
+ return {root,repo,file,goal,task,calls,baseUrl,outsideMarker,invoke,mutate,operation,current:()=>c,worker:()=>worker,waitIdle:()=>d.whenIdle(),restart:async()=>{await d.whenIdle();c.releaseWorker(owner);c.close();connect();}};
 }
 async function candidate(f){for(let n=0;n<12;n++){const task=await f.invoke('task_get',{taskId:f.task.id});if(task.status==='awaiting_review')return task;assert.ok(['queued','running'].includes(task.status),JSON.stringify(task));await f.worker().tick();}assert.fail('Candidate did not finish within bounded fixture');}
 async function row(f){const inbox=await f.invoke('review_inbox',{goalId:f.goal.id,limit:5});return (inbox.items??inbox.tasks??inbox.entries??inbox)[0];}
@@ -53,10 +55,10 @@ for(const beta of [false,true])test(`common host review composes actual checks, 
  assert.ok(ready.result.checks.every(x=>x.passed));
  // Old review/integration tools cannot silently confer acceptance on a new-policy candidate.
  await assert.rejects(f.mutate('task_review',{taskId:f.task.id,decision:'accept',feedback:'Attempt old bypass'}),/review|ticket|bound/i);
- const bypass=await f.mutate('task_integrate',{taskId:f.task.id,feedback:'Attempt integration before assessment'});await f.waitIdle();
+ const bypass=await f.mutate('task_integrate',{taskId:f.task.id,feedback:'Attempt integration before assessment',...(beta?{expectedIntegrationBinding:'0'.repeat(64)}:{})});await f.waitIdle();
  // Asynchronous tool failures are recorded in the durable operation.
  const pre=await f.invoke('operation_get',{operationId:bypass.id});
- assert.equal(pre.status,'failed');assert.match(pre.error,/review|ticket|bound/i);
+ assert.equal(pre.status,'failed');assert.match(pre.error,/review|ticket|bound|inbox/i);
  // Reconnect closes only the fixture service and leaves the durable inbox intact.
  await f.restart();
  const item=await row(f);assert.equal(item.taskId,f.task.id);
@@ -69,6 +71,7 @@ for(const beta of [false,true])test(`common host review composes actual checks, 
  assert.equal((await f.invoke('outcomes_report',{goalId:f.goal.id})).counts.usefulAccepted,0);
  let integrationBinding;
  if(beta){
+  await assert.rejects(f.mutate('task_integrate',{taskId:f.task.id,feedback:'Missing the confirmed plan'}),/integration binding/i);
   const {candidate}=await f.invoke('owner_action_context',{goalId:f.goal.id,taskId:f.task.id});
   assert.deepEqual(candidate.changedFiles,[file]);
   integrationBinding=candidate.binding;
@@ -85,7 +88,20 @@ for(const beta of [false,true])test(`common host review composes actual checks, 
 
 test('API reviewer shares the checked integration gate and reports provider attribution separately',{timeout:120000},async t=>{
  const f=await fixture(t,false,{api:true});await candidate(f);const item=await row(f);
+ assert.deepEqual(item.disclosure.recipient,{source:'api',baseUrl:f.baseUrl,model:'fixture-reviewer',transport:'openai-chat'});
+ assert.deepEqual(item.disclosure.files,['checks/value.mjs',file]);
+ assert.equal(f.calls.filter(x=>x.body?.model==='fixture-reviewer').length,0);
+ await assert.rejects(f.mutate('review_reserve',binding(item),'try-host-reservation'),/API review evidence/i);
+ assert.equal(f.current().getTask(f.task.id).reviews,0);
  const apiInput={taskId:f.task.id,...binding(item)};const result=await f.current().reviewService.runApi(apiInput,'api-review');assert.equal(result.status,'ready_to_integrate');
+ const captured=f.calls.find(({body})=>body?.model==='fixture-reviewer');
+ const evidence=JSON.parse(captured.body.messages.at(-1).content);
+ assert.deepEqual(evidence.files.map(candidate=>candidate.path),item.disclosure.files);
+ assert.equal(evidence.files.find(candidate=>candidate.path===file).content,fixed);
+ assert.equal(evidence.files.find(candidate=>candidate.path==='checks/value.mjs').content,await readFile(path.join(f.repo,'checks/value.mjs'),'utf8'));
+ assert.deepEqual(evidence.checks.map(({id,stdout,stderr})=>({id,stdoutCharacters:stdout.length,stderrCharacters:stderr.length})),item.disclosure.checks);
+ assert.ok(!JSON.stringify(evidence).includes(f.outsideMarker));
+
  assert.equal(f.calls.filter(x=>x.body?.model==='fixture-reviewer').length,1);
  await f.operation('task_integrate',{taskId:f.task.id,feedback:'Import API reviewed candidate'},'api-integrate');
  const report=await f.invoke('outcomes_report',{goalId:f.goal.id});assert.equal(report.counts.usefulAccepted,1);

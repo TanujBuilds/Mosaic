@@ -12,7 +12,7 @@ import {Writable} from 'node:stream';
 import {promisify} from 'node:util';
 import path from 'node:path';
 import {LocalProvider} from '../harness/provider.mjs';
-import {workerEndpoint,workerProfile} from '../harness/worker-profile.mjs';
+import {RemoteProviderTransportError,workerEndpoint,workerProfile} from '../harness/worker-profile.mjs';
 import {STRUCTURED_WORKER_PROTOCOL} from '../harness/provider-capabilities.mjs';
 import {atomic,entry,fileBytes,hash,jsonFile,localDirectory,saveJson,shellQuote,withLock} from './files.mjs';
 import {client} from './client.mjs';
@@ -390,7 +390,16 @@ export async function doctor(paths,output=process.stdout,options={}){
  const checks=[];
  const check=(name,ok,detail)=>checks.push({name,ok,detail});
  let settings,credentials,setupReady=false,registrationSaved=false;
- try{settings=await readSettings(paths);if(settings?.schema===2){credentials=await readCredentials(paths);await validateSettingsCredentials(paths,settings,credentials);}}catch{settings=undefined;check('Settings',false,'Invalid private config or credentials. Run mosaic setup.');}
+ try{
+  settings=await readSettings(paths);
+  if(settings?.schema===2){credentials=await readCredentials(paths);await validateSettingsCredentials(paths,settings,credentials);}
+ }catch(error){
+  settings=undefined;
+  const detail=error instanceof RemoteProviderTransportError
+   ?error.message+' Update the saved URL on the previous installed version before upgrading.'
+   :'Invalid private config or credentials. Run mosaic setup.';
+  check('Settings',false,detail);
+ }
  try{
   if(settings&&!(setupReady=await setupComplete(paths)))check('Setup',false,'Setup needs attention. Run mosaic setup to restore or resume its bindings.');
  }catch{check('Setup',false,'Cannot read the private beta binding receipt. Inspect the beta settings directory.');}

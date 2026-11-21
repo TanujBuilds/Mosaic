@@ -193,11 +193,13 @@ export async function setupPortable(paths,{ask,choose,output,settings:provided,e
    :await guardedAsk(prompt));
   const settings=configured.settings,nextCredentials={schema:1,entries:{...credentials.entries,...configured.entries}};
   // Validate secret-free public identity before publishing any preview or error.
-  await validateSettingsCredentials(paths,settings,nextCredentials);
   // URL canonicalization can erase JSON backslashes before retained keys are known.
   // Every setup path checks both entered and normalized identities, transiently.
-  await validateMultiWorkerCredentials(configured.rawSettings??settings,nextCredentials);
-  await validateMultiWorkerCredentials(settings,nextCredentials);
+  const enteredSettings=configured.rawSettings??settings;
+  await validateMultiWorkerCredentials(enteredSettings,credentials,{allowMissing:true});
+  await validateMultiWorkerCredentials(settings,credentials,{allowMissing:true});
+  await validateMultiWorkerCredentials(enteredSettings,nextCredentials);
+  if(enteredSettings!==settings)await validateMultiWorkerCredentials(settings,nextCredentials);
   const withCurrentSetup=action=>withLock(paths,async()=>{
    await assertCurrentSetup();
    const result=await action();
@@ -207,7 +209,7 @@ export async function setupPortable(paths,{ask,choose,output,settings:provided,e
   await (verifyExecution??(s=>assertExecutionAvailable({executionPolicy:{version:1,...s.execution}},s)))(settings);
   const adapter=getHost(settings.host.id),manualHost=!paths.isolated,io=await hostIo(paths,{...(settings.host.id==='codex'?{codexRegistrations,codexPath:settings.codexPath}:{})}),existing=manualHost?{}:await io.read(adapter.previewRegistration({paths,launcher:paths.launcher}).target);
   let hostPreview;const existingReceipt=await io.readReceipt(path.join(paths.configDir,`host-${settings.host.id}-binding.json`));if(existingReceipt&&!manualHost){const selected=settings.host.id==='codex'?existing.registration:existing.mcpServers?.['mosaic-beta'];if(fingerprint(selected??null)!==existingReceipt.entryHash)throw Error('Owned host entry was customized; preserve it before setup');const clean=structuredClone(existing);if(settings.host.id==='codex')clean.registration=null;else {delete clean.mcpServers['mosaic-beta'];if(!existingReceipt.hadMcpServers&&!Object.keys(clean.mcpServers).length)delete clean.mcpServers;}hostPreview=adapter.previewRegistration({paths,launcher:paths.launcher,existing:clean});hostPreview.resumeOwned=true;delete hostPreview.resumeOwned;}else hostPreview=adapter.previewRegistration({paths,launcher:paths.launcher,existing});
-  await withCurrentSetup(()=>output.write('\n'+formatPortableSetupSummary(settings,{manualHost,workerLocation:configured.workerLocation,compact})+'\n'));
+  await withCurrentSetup(()=>output.write('\n'+formatPortableSetupSummary(settings,{manualHost,compact})+'\n'));
   const showPreview=showDetails=>withCurrentSetup(()=>{
    if(showDetails)output.write('Exact private setup preview (provider references only)\n'+JSON.stringify(settings,null,2)+'\n');
    if(manualHost)output.write('Host: '+adapter.displayName+' · manual configuration required. Until you connect the app, host discovery remains unverified.\n'+formatHostRegistrationGuide(hostPreview));

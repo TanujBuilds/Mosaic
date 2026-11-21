@@ -4,11 +4,23 @@ function field(value, limit) {
  return typeof value==='string'&&value.length<=limit&&value.trim()===value&&value.length>0&&!/[\x00-\x1f\x7f-\x9f]/u.test(value);
 }
 
+export function isLoopbackProvider(url) {
+ const {hostname}=new URL(url);
+ return hostname==='localhost'||hostname==='localhost.'||hostname==='[::1]'||/^127\.(?:\d{1,3}\.){2}\d{1,3}$/.test(hostname);
+}
+
+export class RemoteProviderTransportError extends Error {
+ constructor(){
+  super('HTTPS is required for remote API base URLs. Use an HTTPS endpoint or an encrypted forward with a loopback URL.');
+ }
+}
+
 export function workerEndpoint(value) {
  let url;
  try{if(field(value,2048))url=new URL(value);}catch{}
- if(!url||!['http:','https:'].includes(url.protocol)||url.username||url.password||url.search||url.hash)
+ if(!url||!['http:','https:'].includes(url.protocol)||url.username||url.password||url.href.includes('?')||url.href.includes('#'))
   throw Error('Use an HTTP or HTTPS API base URL without credentials, query parameters or fragment');
+ if(url.protocol==='http:'&&!isLoopbackProvider(url))throw new RemoteProviderTransportError();
  return url.href.replace(/\/+$/,'');
 }
 

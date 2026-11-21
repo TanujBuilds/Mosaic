@@ -24,10 +24,31 @@ for(const [choice,hostId] of [['','codex'],['2','claude-code'],['3','cursor'],['
   const summary=formatPortableSetupSummary(s,{manualHost:true,workerLocation:'none'});assert.match(summary,/delegation is not ready/);assert.match(summary,/manual registration pending/);assert.match(summary,/cloud service/);assert.ok(!summary.includes('"schema"'));
  });
 }
-for(const [choice,location,url] of [['1','local','http://localhost:11434/v1'],['2','remote','http://worker.example:8080/v1'],['3','api','https://api.example/v1']])test(`${location} choice preserves manual URL and model without persisting topology`,async()=>{
+for(const [choice,location,url] of [['1','local','http://localhost:11434/v1'],['2','remote','https://worker.example:8080/v1'],['3','api','https://api.example/v1']])test(`${location} choice preserves manual URL and model without persisting topology`,async()=>{
  const io=simple({location:choice,url,model:'exact-model-2026'}),result=await collectPortableSetup(io.ask,io.output,runtime);assert.equal(result.workerLocation,location);assert.equal(result.settings.providers[0].baseUrl,url);assert.equal(result.settings.providers[0].model,'exact-model-2026');assert.equal(result.settings.providers[0].transport,'openai-chat');assert.equal(result.settings.workerLocation,undefined);assert.equal(result.settings.providers[0].location,undefined);
  assert.match(io.text(),/Approved task context goes to the supplied worker endpoint/);assert.match(io.text(),/Remote and hosted endpoints send it off this Mac/);assert.match(io.text(),/local worker does not make app review local/);assert.match(io.text(),/cloud service/);assert.match(io.text(),/will not contact the endpoint until/);if(location==='remote')assert.match(io.text(),/localhost means the computer running Mosaic/);
  const summary=formatPortableSetupSummary(result.settings,{manualHost:false,workerLocation:location});assert.ok(summary.includes(url));assert.ok(summary.includes('exact-model-2026'));assert.match(summary,/1 service slot/);assert.match(summary,/worker slots 1; capacity group slots 1/);assert.match(summary,/fixture-tested.*actual app connection remains unverified/);assert.match(summary,/does not prove coding quality or app connection/);assert.match(summary,/closed apps wait durably/);assert.ok(!summary.includes('"schema"'));
+});
+for(const key of [null,'dummy-plaintext-worker-key'])test(`remote HTTP is rejected before ${key?'authenticated':'unauthenticated'} setup can use it`,async()=>{
+ const io=simple({location:'1',url:'http://192.0.2.1:8080/v1',key});
+ await assert.rejects(collectPortableSetup(io.ask,io.output,runtime),/HTTPS.*encrypted.*loopback/i);
+ assert.ok(!io.prompts.some(({prompt})=>/Model ID|bearer key/i.test(prompt)));
+});
+for(const url of ['http://127.7.1.2:11434/v1','http://[::1]:11434/v1'])test(`manual setup allows loopback HTTP at ${url}`,async()=>{
+ const io=simple({location:'2',url});
+ const {settings}=await collectPortableSetup(io.ask,io.output,runtime);
+ assert.equal(settings.providers[0].baseUrl,url);
+ assert.match(formatPortableSetupSummary(settings),/loopback listener on this Mac/);
+});
+test('setup discloses a remote destination entered under the local worker menu option',async()=>{
+ const io=simple({location:'1',url:'https://worker.example/v1'});
+ const result=await collectPortableSetup(io.ask,io.output,runtime);
+ for(const compact of [false,true]){
+  const summary=formatPortableSetupSummary(result.settings,{workerLocation:result.workerLocation,compact});
+  assert.match(summary,/https:\/\/worker\.example\/v1/);
+  assert.match(summary,/off this Mac|leaves this Mac/);
+  assert.doesNotMatch(summary,/location: this Mac/);
+ }
 });
 test('simple bearer key uses hidden ask and private entries only',async()=>{
  const key='dummy-wizard-private-4935',io=simple({location:'3',url:'https://api.example/v1',key}),result=await collectPortableSetup(io.ask,io.output,runtime);assert.deepEqual(result.entries,{'worker-1-key':key});assert.equal(result.settings.providers[0].credentialRef,'worker-1-key');assert.deepEqual(io.prompts.filter(p=>p.options?.secret).map(p=>p.prompt),['Bearer key (hidden): ']);await validateSettingsCredentials(null,result.settings,{schema:1,entries:result.entries});assert.ok(!JSON.stringify(result.settings).includes(key));assert.ok(!io.text().includes(key));assert.ok(!formatPortableSetupSummary(result.settings).includes(key));
@@ -85,7 +106,7 @@ function advanced({protocol='1',existingSettings=null,key=null,firstId='first',f
  const values={first:{id:firstId,name:'First worker',url:firstUrl,model:'worker-a'},second:{id:'second',name:'Second worker',url:secondUrl,model:'worker-b'},reviewer:{id:'review',name:'API reviewer',url:reviewerUrl,model:'review-model'}};
  const ask=async(prompt,options)=>{
   prompts.push({prompt,options});if(/Choose host/.test(prompt))return '2';if(/Choose worker setup/.test(prompt))return '5';if(/Number of/.test(prompt))return '2';if(/Profile 1 identifier/.test(prompt)){current='first';return values[current].id;}if(/Profile 2 identifier/.test(prompt)){current='second';return values[current].id;}if(/Profile reviewer identifier/.test(prompt)){current='reviewer';return values[current].id;}
-  if(/Display name/.test(prompt))return values[current].name;if(/API base URL/.test(prompt))return values[current].url;if(/Model ID/.test(prompt))return values[current].model;if(/Reviewer API protocol/.test(prompt))return protocol;if(/require an API bearer key|Choose how to provide the API key/.test(prompt))return current==='first'?(keyChoice??(key!==null?'y':'n')):(retainedKeys[current]?'k':'n');if(/Bearer key/.test(prompt))return key;if(/Default worker identifier/.test(prompt))return 'second';if(/Planner worker identifier/.test(prompt))return '';if(/Add an explicit specialty route/.test(prompt))return ++routes===1?'y':'n';if(/Category/.test(prompt))return 'backend';if(/^Worker identifier/.test(prompt))return firstId;if(/separately configured API reviewer/.test(prompt))return 'y';if(/Service maximum/.test(prompt))return '2';assert.fail('Unexpected advanced question: '+prompt);
+  if(/Display name/.test(prompt))return values[current].name;if(/API base URL/.test(prompt))return values[current].url;if(/Model ID/.test(prompt))return values[current].model;if(/Reviewer API protocol/.test(prompt))return protocol;if(/require an API bearer key|Choose how to provide the API key/.test(prompt))return current==='first'?(keyChoice??(key!==null?'y':'n')):(retainedKeys[current]===true?'k':retainedKeys[current]||'n');if(/Bearer key/.test(prompt))return key;if(/Default worker identifier/.test(prompt))return 'second';if(/Planner worker identifier/.test(prompt))return '';if(/Add an explicit specialty route/.test(prompt))return ++routes===1?'y':'n';if(/Category/.test(prompt))return 'backend';if(/^Worker identifier/.test(prompt))return firstId;if(/separately configured API reviewer/.test(prompt))return 'y';if(/Service maximum/.test(prompt))return '2';assert.fail('Unexpected advanced question: '+prompt);
  };
  return {ask,prompts,output:{write(value){output+=value;}},text:()=>output,options:{...runtime,existingSettings}};
 }
@@ -154,4 +175,24 @@ for(const [label,retainedIndex,options,credentialRef] of [
 
  const mergedEntries={'first-key':oldKey,...result.entries};
  assert.equal(mergedEntries[result.settings.providers[retainedIndex].credentialRef],credentialRef==='first-key'?newKey:oldKey);
+});
+
+
+for(const role of ['worker','reviewer'])test(`expanded setup isolates a rotated ${role} key from a different recipient`,async()=>{
+ const oldKey='dummy-shared-old-manual-key',newKey='dummy-rotated-manual-key';
+ const secondUrl='https://second-worker.example/v1';
+ const initial=advanced({key:oldKey,secondUrl});
+ const {settings}=await collectPortableSetup(initial.ask,initial.output,initial.options);
+ const [first,second,reviewer]=settings.providers;
+ const retained=role==='worker'?second:first;
+ const rotated=role==='worker'?first:reviewer;
+ rotated.credentialRef=retained.credentialRef='first-key';
+ const io=role==='worker'
+  ?advanced({existingSettings:settings,firstUrl:'https://different-worker.example/v1',secondUrl,key:newKey,retainedKeys:{second:true}})
+  :advanced({existingSettings:settings,secondUrl,key:newKey,keyChoice:'k',retainedKeys:{reviewer:'y'}});
+ const result=await collectPortableSetup(io.ask,io.output,io.options);
+ const ref=result.settings.providers.find(profile=>profile.id===rotated.id).credentialRef;
+ assert.notEqual(ref,retained.credentialRef);
+ assert.deepEqual(result.entries,{[ref]:newKey});
+ assert.deepEqual(result.settings.providers.find(profile=>profile.id===retained.id),retained);
 });

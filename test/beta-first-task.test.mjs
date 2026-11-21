@@ -165,6 +165,22 @@ test('without a configured worker, an explicit setup choice exits without prepar
   assert.deepEqual(f.calls, []);
 });
 
+test('first-task result shows the current review and integration operation', async () => {
+  const goalId = 'fixture-goal', taskId = 'fixture-task', io = terminal();
+  const invoke = async (name) => {
+    if (name === 'goal_get') return {
+      id: goalId, status: 'active', manifest: {objective: 'Preserve state', reviewPolicy: {source: 'host'}},
+      tasks: [{id: taskId, status: 'awaiting_review', spec: {kind: 'coding', objective: 'Checked candidate'},
+        feedback: [{kind: 'review', decision: 'accept'}, {kind: 'review_superseded'}]}],
+    };
+    assert.equal(name, 'owner_goal_view');
+    return {tasks: [{id: taskId, lastIntegrationOperation: {id: 'fixture-operation', status: 'failed'}}]};
+  };
+  assert.equal(await runFirstTask({}, ['result', '--goal', goalId], {...io, invoke}), 0);
+  assert.match(io.read(), /Review: awaiting a current review/);
+  assert.match(io.read(), /Integration: last operation failed.*fixture-operation/);
+});
+
 test('demo records real fixture checks, reviews and commits in its own store and can be revisited', async t => {
   const f = await fixture(t);
   const io = terminal();

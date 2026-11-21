@@ -92,7 +92,9 @@ for (const beta of [false, true]) test(`recipes, backlog, outcomes and learned c
   const item=(await f.read('review_inbox',{goalId:g.id})).items.find(item=>item.taskId===sourceId);
   const ticket=await f.mutate('review_reserve',item.binding);
   await f.mutate('review_submit',{ticketId:ticket.ticketId,...item.binding,verdict:{decision:'accept',feedback:'Scripted host assessment of protected parser candidate',findings:[]}});
-  const accepted = await f.operation('task_integrate', {taskId: sourceId, feedback: 'Scripted native fixture accepts checked change'});
+  const action = beta ? await f.read('owner_action_context', {goalId: g.id, taskId: sourceId}) : null;
+  const accepted = await f.operation('task_integrate', {taskId: sourceId, feedback: 'Scripted native fixture accepts checked change',
+    ...(action ? {expectedIntegrationBinding: action.candidate.binding} : {})});
   assert.equal(accepted.status, 'accepted');
   assert.ok(accepted.integration.checks.every(check => check.passed));
   assert.equal(accepted.integration.behavioralEvidence.criteria[0].status, 'passed');

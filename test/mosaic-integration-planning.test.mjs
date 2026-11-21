@@ -110,7 +110,7 @@ test('beta planner retains the approved profile and expected model through saved
  const f=await fixture(t,{beta:true,workerProfile:profile});let calls=0;
  const w=f.worker({complete:async(messages,options)=>{
   calls++;assert.equal(options.expectedModel,profile.model);
-  assert.deepEqual(JSON.parse(messages.at(-1).content).goal.workerProfile,profile);
+  assert.equal(Object.hasOwn(JSON.parse(messages.at(-1).content).goal,'workerProfile'),false);
   f.c.control({goalId:f.goal.id,action:'pause'},'hold-profile');return {...plan,requestedModel:profile.model};
  }});
  await w.planner.tick();const saved=f.c.store.request(f.goal.id,'plan-1');

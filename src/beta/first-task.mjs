@@ -140,15 +140,20 @@ function showDraft(output, goal, summary) {
   for (const criterion of manifest.acceptance) line(output, `  Acceptance: ${display(criterion)}`);
   line(output, `Workflow: ${workflows[manifest.mode.id]} (v${manifest.mode.version})`);
   if (manifest.reviewPolicy?.source === 'api') {
-    line(output, `Review: API reviewer ${display(manifest.reviewPolicy.reviewer.id)} after protected checks pass.`);
+    line(output, `Review: API reviewer ${display(manifest.reviewPolicy.reviewer.id)} at ${display(manifest.reviewPolicy.reviewer.baseUrl)} after protected checks pass.`);
   } else if (manifest.reviewPolicy?.source === 'host') {
-    line(output, `Review: ${getHost(manifest.reviewPolicy.hostId).displayName} after protected checks pass.`);
+    line(output, `Review: ${getHost(manifest.reviewPolicy.hostId).displayName} after protected checks pass. The app may use its cloud service.`);
   } else {
     line(output, `Review: ${display(summary.roles.description)}`);
   }
+  if (manifest.reviewPolicy) line(output, 'Review can include changed and unchanged source files in the approved read scope and up to 4,096 characters each of stdout and stderr per check.');
   if (manifest.providerPolicy) {
     const policy = manifest.providerPolicy;
     line(output, `Default worker: ${display(policy.defaultWorkerId)} · planner worker: ${display(policy.plannerWorkerId)}.`);
+    if (manifest.mode.planner === 'deepseek') {
+      const planner = policy.workers.find(worker => worker.id === policy.plannerWorkerId);
+      line(output, `Planning sends the objective, acceptance criteria, relative scope, check IDs and planning limits to ${display(planner.baseUrl)}.`);
+    }
     if (manifest.routingPolicy) {
       line(output, `Routing fallback: ${display(manifest.routingPolicy.defaultWorkerId)}. The saved routing rules may choose another approved worker.`);
     }
@@ -295,7 +300,7 @@ function checkEvidence(output, label, results) {
   line(output, `  ${label}: ${results.map(check => `${display(check.id)} ${check.passed === true ? 'passed' : check.passed === false ? 'failed' : 'unknown'}`).join(', ')}`);
 }
 
-function showResult(output, goal, tasks) {
+function showResult(output, goal, tasks, integrationOperations = new Map()) {
   line(output, `Goal: ${display(goal.manifest.objective)}`);
   line(output, `Goal ID: ${goal.id} · ${status(goal.status)}`);
   if (goal.status === 'draft') line(output, `Approval hash: ${goal.hash}`);
@@ -312,7 +317,8 @@ function showResult(output, goal, tasks) {
     if (review === 'none') line(output, '  Review: protected checks govern acceptance for this workflow.');
     else if (review === 'codex_native') line(output, '  Review: native completion recorded with protected checks.');
     else if (Object.hasOwn(reviewLabels, review)) line(output, `  Review: accepted (${reviewLabels[review]}).`);
-    else if (task.reviewAcceptance || decision === 'accept') line(output, '  Review: acceptance saved.');
+    else if (task.reviewAcceptance || !goal.manifest.reviewPolicy && decision === 'accept') line(output, '  Review: acceptance saved.');
+    else if (task.status === 'awaiting_review') line(output, '  Review: awaiting a current review.');
     else if (decision === 'revise') line(output, '  Review: revision requested.');
     else line(output, '  Review: no saved decision.');
     const candidate = task.native?.worktree ?? task.result?.worktree;
@@ -323,6 +329,9 @@ function showResult(output, goal, tasks) {
       checkEvidence(output, 'Integration checks', task.integration.checks);
       line(output, `  Integrated commit: ${display(task.integration.commit)}`);
       if (task.integration.worktree) line(output, `  Integration checkout: ${display(task.integration.worktree)}`);
+    } else if (integrationOperations.has(task.id)) {
+      const operation = integrationOperations.get(task.id);
+      line(output, `  Integration: last operation ${display(operation.status)} · ${display(operation.id)}`);
     } else {
       line(output, '  Integration: no saved commit.');
     }
@@ -377,7 +386,11 @@ export async function runFirstTask(paths, args = [], options = {}) {
   }
   if (action === 'result') {
     const goal = await invoke('goal_get', {goalId});
-    showResult(output, goal, goal.tasks);
+    const ownerView = goal.tasks.some(task => task.spec.kind === 'coding' && !task.integration?.commit)
+      ? await invoke('owner_goal_view', {goalId}).catch(() => null) : null;
+    const operations = new Map((ownerView?.tasks ?? []).filter(task => task.lastIntegrationOperation)
+      .map(task => [task.id, task.lastIntegrationOperation]));
+    showResult(output, goal, goal.tasks, operations);
     return 0;
   }
 

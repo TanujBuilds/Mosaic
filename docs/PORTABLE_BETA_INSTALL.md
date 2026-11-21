@@ -126,7 +126,9 @@ this Mac, another computer, a hosted API, or no worker yet. For one worker,
 enter its API base URL and model ID from the server's configuration, then an
 optional hidden bearer key. Mosaic generates the internal identifiers and
 uses one concurrent task slot. On another computer, localhost means the Mac
-running Mosaic; supply a reachable URL without any required tunnel product.
+running Mosaic. Use HTTPS for remote worker or API-reviewer URLs, including
+private-network endpoints. An encrypted forward terminating at a loopback
+listener on the Mac can use a loopback HTTP URL.
 
 Review defaults to the selected app. Approved task context goes to the supplied
 worker endpoint; remote/hosted workers send it off the Mac, and app review may
@@ -182,14 +184,22 @@ the private credential store, never in that settings file.
 For each advanced profile, enter the same identifier and API base URL to keep
 its identity. At the bearer-key question, `k` explicitly keeps its saved key for
 that same profile, canonical URL and API protocol. Choose `y` to enter a new
-hidden key; an empty replacement is rejected. This rotates that profile's
-existing credential reference when it has one, including an explicitly changed
-endpoint. A reference shared by
-several profiles changes for all its users. Choose `n` to make the new profile
+hidden key. Enter a value to replace it. A reference shared by profiles at the
+same canonical URL and API protocol can rotate together. A different URL
+or API protocol gets a distinct credential reference when a saved alias
+shares the old reference. Choose `n` to make the new profile
 keyless; unused private keys are retained. New advanced profiles receive an unused
 credential reference so they cannot replace another saved key. Changing the endpoint requires a new
 key or an explicit keyless choice. Inspect the exact replacement before saving;
 model discovery and inference remain separate default-no choices.
+
+Before switching versions, the installer checks saved worker and reviewer URLs
+against the target's transport policy. If the target requires HTTPS for remote
+URLs, the installer leaves the current version, settings and service in place.
+Use the current version to update remote HTTP profiles to HTTPS or to a loopback
+URL backed by an operator-managed encrypted forward, then retry the upgrade.
+End or resolve work bound to the previous provider identity before changing its
+URL. Existing approval hashes and credentials are preserved.
 
 Declining the final confirmation, EOF or Ctrl-C before approval preserves the
 last saved settings, credentials and host entries. The CLI returns a nonzero

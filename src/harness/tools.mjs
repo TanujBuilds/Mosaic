@@ -84,8 +84,8 @@ export class Dispatcher {
   const reviewBindingSchema=Object.fromEntries(bindingFields.map(field=>[field,['goalVersion','generation','expiresAt'].includes(field)?{...number,minimum:1}:str]));
   const reviewFinding={type:'object',properties:{path:str,line:{...number,minimum:1},message:{...str,maxLength:2000}},required:['path','message'],additionalProperties:false};
   const reviewVerdict={type:'object',properties:{decision:{...str,enum:['accept','revise']},feedback:{...str,maxLength:16384},findings:{type:'array',items:reviewFinding,maxItems:50}},required:['decision','feedback','findings'],additionalProperties:false};
-  add('review_inbox','Pull a bounded durable review inbox. A closed host is not automatically awakened.',{goalId:str,cursor:str,limit:{...number,minimum:1,maximum:20}},[],false,i=>c.reviewService.inbox(i));
-  add('review_reserve','Reserve a review of the exact candidate, protected checks and approved rubric.',reviewBindingSchema,bindingFields,true,(i,k)=>c.reviewService.reserve(i,k));
+  add('review_inbox','Pull a bounded durable review inbox with the recipient, file paths and check output sizes for the bound candidate. A closed host is not automatically awakened.',{goalId:str,cursor:str,limit:{...number,minimum:1,maximum:20}},[],false,i=>c.reviewService.inbox(i));
+  add('review_reserve','Reserve a review of the exact candidate, protected checks and approved rubric. Show the owner the bound inbox disclosure before reserving evidence that the coding app may send to its cloud service.',reviewBindingSchema,bindingFields,true,(i,k)=>c.reviewService.reserve(i,k));
   add('review_submit','Submit a structured verdict for the exact reserved candidate. This does not integrate code.',{...reviewBindingSchema,ticketId:str,verdict:reviewVerdict},[...bindingFields,'ticketId','verdict'],true,(i,k)=>c.reviewService.submit(i,k));
   add('task_review','Main Codex records a bounded review decision.',{taskId:str,decision:{...str,enum:['accept','revise']},feedback:str},['taskId','decision','feedback'],true,(i,k)=>c.review(i,k));
   const modelSchema={type:'object',properties:{requested:{anyOf:[str,{type:'null'}]},resolved:{anyOf:[str,{type:'null'}]}},additionalProperties:false},registrationProperties={version:{...number,enum:[1]},taskId:str,hostAgentId:{anyOf:[str,{type:'null'}]},hostId:{...str,enum:['codex','claude-code','cursor','antigravity']},role:{...str,enum:['implementer','explorer','reviewer','supervisor']},actor:{...str,enum:['codex','deepseek']},model:modelSchema},registrationSchema={type:'object',properties:registrationProperties,required:['version','taskId','role','actor'],additionalProperties:false};
@@ -95,12 +95,20 @@ export class Dispatcher {
   add('help_link','Link an existing ordinary helper assignment to a live supervisor question; helper must be accepted before the answer resumes its parent.',{version:{...number,enum:[1]},taskId:str,questionId:str,helperTaskId:str,reason:str},['version','taskId','questionId','helperTaskId','reason'],true,(i,k)=>this.agents.linkHelp(i,k));
   for(const [name,method,description,extra,required]of [
    ['task_integration_repair','repair','Supervised inverse of a saved failed import; preserve evidence and return the same task to its remaining correction budget.',{reason:str},['reason']],
-   ['task_integrate','accept','Main operator integrates a reviewed, checked candidate.',{feedback:str,expectedIntegrationBinding:str},['feedback']],
+   ['task_integrate','accept',config.beta?'Integrate a reviewed candidate after owner confirmation of the exact integration binding from owner_action_context.':'Main operator integrates a reviewed, checked candidate.',{feedback:str,expectedIntegrationBinding:str},['feedback']],
    ['task_takeover','takeover','Transfer verified quiescent worker edits; candidate_v1 keeps the worker checkout frozen.',{reason:str,layout:{...str,enum:['candidate_v1']},registration:registrationSchema},['reason']],
    ['native_start','startNative','Reserve native ownership. Explicit candidate_v1 isolates this task; omitted layout preserves legacy behavior.',{layout:{...str,enum:['candidate_v1']},registration:registrationSchema},[]],
    ['native_finish','finishNative','Host confirms editing ended; validate/checkpoint candidate_v1 for separate main review.',{summary:str},['summary']],
    ['native_release','releaseNative','Main host confirms native editing stopped and preserves partial files; reported stop alone is insufficient.',{reason:str},['reason']]
-  ])add(name,description,{taskId:str,...extra},['taskId',...required],true,(i,k)=>this.launch(name,i,k,()=>this.worker.integration[method](i,`effect-${k}`)));
+  ])add(name,description,{taskId:str,...extra},['taskId',...required],true,(i,k)=>{
+   if(config.beta&&name==='task_integrate'&&!/^[a-f0-9]{64}$/.test(i.expectedIntegrationBinding??'')){
+    // Let an exact operation from an older release recover under its saved
+    // command. Store.command still verifies the original key and complete input.
+    const saved=c.store.db.prepare('SELECT hash FROM commands WHERE key=?').get(k);
+    if(saved?.hash!==digest({op:'operation.launch',name,input:i}))throw Error('Exact owner integration binding is required. Refresh the owner action context.');
+   }
+   return this.launch(name,i,k,()=>this.worker.integration[method](i,`effect-${k}`));
+  });
   if(!config.beta){
   const reviewCommon={taskId:str,candidateHash:str,rubricHash:str},selector={type:'object',properties:{source_id:str,text_sha256:str,start:number,end:number},required:['source_id','text_sha256','start','end'],additionalProperties:false},finding={type:'object',properties:{unit:str,code:{...str,enum:['missing_context','cross_alternative_attribution','unsupported_premise','lost_condition','unsupported_claim','material_omission','contradiction','other']},message:{...str,maxLength:2000},evidence:{type:'array',items:selector,maxItems:10}},required:['unit','code','message','evidence'],additionalProperties:false};
   add('research_review','Reserve independent review before native dispatch, or submit a bound whole-report verdict. Launches no inference.',{...reviewCommon,action:{...str,enum:['reserve','submit']},ticketId:str,decision:{...str,enum:['accept','revise','reject']},findings:{type:'array',items:finding,maxItems:50},coverage:{type:'array',items:str,maxItems:1000}},['taskId','action','candidateHash','rubricHash'],true,(i,k)=>this.launch('research_review',i,k,()=>this.worker.adapters.research.review(i,`effect-${k}`)));

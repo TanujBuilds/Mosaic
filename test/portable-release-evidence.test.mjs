@@ -65,6 +65,18 @@ test('schema1 fixture binds archive/source/evidence without copying private-look
  for(const secret of [f.root,'/Users/example','https://example.invalid','token=DEMONSTRATION','harmless'])assert.ok(!raw.includes(secret),secret);
  assert.deepEqual(await Promise.all([f.candidate,f.archive,f.evidenceIndex,...f.records.map(r=>path.join(f.evidenceRoot,r.path))].map(p=>readFile(p))),before);assert.equal(f.git('status','--porcelain'),'');assert.equal((await stat(f.output)).mode&0o777,0o600);
 });
+test('the archive verifier accepts the supported provider transport policy and rejects unknown policies',async t=>{
+ const supported=await setup(t);
+ supported.manifest.stateCompatibility.providerTransport='https-or-http-loopback';
+ await supported.saveArchive();
+ const result=run(supported);
+ assert.equal(result.status,0,result.stderr);
+
+ const unknown=await setup(t);
+ unknown.manifest.stateCompatibility.providerTransport='unknown-policy';
+ await unknown.saveArchive();
+ await reject(unknown,'inventory_schema_mismatch');
+});
 test('archive corruption and truncation cannot pass with stale candidate digest',async t=>{for(const kind of ['corrupt','short']){const f=await setup(t),b=await readFile(f.archive);await writeFile(f.archive,kind==='short'?b.subarray(0,20):Buffer.concat([b.subarray(0,-4),Buffer.from('oops')]));await reject(f,'archive');}});
 test('an unsupported coordinator runtime cannot be blessed by matching inventory and archive digests',async t=>{
  const f=await setup(t);f.c.versions.coordinatorNode=f.manifest.nodeVersion='24.22.1';await f.saveArchive();

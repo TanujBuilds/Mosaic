@@ -127,7 +127,7 @@ export async function runComposition({root,review='host',beta=false}) {
     await mutate('work_control',{taskId:id,action:'resume'},'resume-review');assert.equal(c.getTask(id).status,'awaiting_review');
    }
    const before=await invoke('outcomes_report',{goalId:goal.id});assert.equal(before.counts.usefulAccepted,index);
-   if(index===0){const denied=await operation('task_integrate',{taskId:id,feedback:'Attempt before bound assessment'},'pre-review',{failure:true});assert.match(denied.error,/review|ticket|bound/i);}
+   if(index===0){const denied=await operation('task_integrate',{taskId:id,feedback:'Attempt before bound assessment',...(beta?{expectedIntegrationBinding:'0'.repeat(64)}:{})},'pre-review',{failure:true});assert.match(denied.error,/review|ticket|bound|inbox/i);}
    const item=(await invoke('review_inbox',{goalId:goal.id})).items.find(item=>item.taskId===id);assert.ok(item);
    if(review==='host'){
     const ticket=await mutate('review_reserve',item.binding,'reserve-'+index),input={...item.binding,ticketId:ticket.ticketId,verdict:{decision:'accept',feedback:'Fixture host assessed exact diff and protected evidence',findings:[]}};
@@ -136,7 +136,8 @@ export async function runComposition({root,review='host',beta=false}) {
     const result=await c.reviewService.runApi(item.binding,'api-'+index);assert.equal(result.status,'ready_to_integrate');replayAssessments.push(()=>c.reviewService.runApi(item.binding,'api-'+index));
    }
    assert.equal((await invoke('outcomes_report',{goalId:goal.id})).counts.usefulAccepted,index);
-   const input={taskId:id,feedback:'Import the exact assessed fixture candidate'},result=(await operation('task_integrate',input,'integrate-'+index)).result;
+   const action=beta?await invoke('owner_action_context',{goalId:goal.id,taskId:id}):null;
+   const input={taskId:id,feedback:'Import the exact assessed fixture candidate',...(action?{expectedIntegrationBinding:action.candidate.binding}:{})},result=(await operation('task_integrate',input,'integrate-'+index)).result;
    assert.equal(result.status,'accepted');assert.deepEqual(result.providerBinding,candidate.providerBinding);assert.equal(result.routeHash,candidate.routeHash);assert.equal(result.hash,initial[index].hash);assert.ok(result.integration.checks.every(check=>check.passed&&check.code===0));assert.equal(result.integration.behavioralEvidence.criteria[0].status,'passed');assert.equal(await git(result.integration.worktree,'ls-tree',result.integration.commit,'checks/unit.mjs').then(value=>value.split(' ')[0]),'100755');
    assert.equal((await invoke('outcomes_report',{goalId:goal.id})).counts.usefulAccepted,index+1);accepted.push({input,result});
   }

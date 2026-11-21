@@ -6,6 +6,7 @@ import path from 'node:path';
 import {isEntry} from '../harness/entry.mjs';
 import {verifyPackage} from '../harness/package.mjs';
 import {canonical} from '../harness/contracts.mjs';
+import {RemoteProviderTransportError,workerEndpoint} from '../harness/worker-profile.mjs';
 import {readBundledNativeCheckRuntime} from './package-contract.mjs';
 import {nativeImplementationSources,validateNativeCheckRuntime} from '../project/check-backends/native-runtime-dispatch.mjs';
 import {atomic,currentHome,entry,fileBytes,hash,jsonFile,localDirectory,locations,readMaintenanceDatabase,saveJson,shellQuote,withLock} from './files.mjs';
@@ -98,8 +99,20 @@ function nativeImplementationHash(manifest,nodeVersion){
 export async function assertStateCompatibility(paths,manifest){
  const compatible=manifest.stateCompatibility??{settings:[1],database:[0,1]};
  if(!compatible||!['settings','database'].every(key=>Array.isArray(compatible[key])&&compatible[key].length&&compatible[key].every(n=>Number.isInteger(n)&&n>=0)))throw Error('Invalid package state compatibility contract');
+ if(compatible.providerTransport!==undefined&&compatible.providerTransport!=='https-or-http-loopback')throw Error('Unknown package provider transport compatibility policy');
  const settings=await jsonFile(paths.config,{privateFile:true});
  if(settings&&!compatible.settings.includes(settings.schema))throw Error('Incompatible settings schema '+settings.schema+'. Keep the newer version; rollback does not restore an older state backup.');
+ if(settings&&compatible.providerTransport==='https-or-http-loopback'){
+  const profiles=settings.schema===1?(settings.worker?[settings.worker.profile]:[]):settings.providers;
+  if(!Array.isArray(profiles))throw Error('Invalid saved provider catalog. Review settings on the previous installed version before switching versions.');
+  for(const profile of profiles){
+   try{workerEndpoint(profile?.baseUrl);}
+   catch(error){
+    if(error instanceof RemoteProviderTransportError)throw Error(error.message+' Update saved provider URLs on the previous installed version before upgrading.');
+    throw Error('Invalid saved API base URL. Review settings on the previous installed version before switching versions.');
+   }
+  }
+ }
  const database=path.join(paths.state,'harness.sqlite3'),info=await entry(database);
  let savedExecution=null,heldNative=false;
  if(info){
