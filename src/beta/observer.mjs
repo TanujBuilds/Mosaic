@@ -534,6 +534,7 @@ export async function runObserver({invoke,input=process.stdin,output=process.std
   return state;
  }
  const controller=new AbortController(),close=()=>controller.abort();
+ let refreshController;
  const originalRaw=!!input.isRaw,wasFlowing=input.readableFlowing===true;
  let selected=0,picker=null,detail=null,detailTitle='Saved evidence',detailOffset=0,offset=0,activitySelected=0,view=null,ownerSelected=0,handoff=null,painted=null;
  const draw=()=>{
@@ -548,7 +549,7 @@ export async function runObserver({invoke,input=process.stdin,output=process.std
   if(key.name==='q'||key.ctrl&&key.name==='c'){close();return;}
   if(key.name==='a'){
    picker=null;detail=null;view=null;selected=0;offset=0;detailOffset=0;activitySelected=0;
-   observer.requestCurrent();draw();return;
+   observer.requestCurrent();refreshController?.abort();draw();return;
   }
   if(key.name==='escape'){if(detail)detail=null;else if(picker!==null)picker=null;else view=null;draw();return;}
   if(detail){
@@ -653,11 +654,14 @@ export async function runObserver({invoke,input=process.stdin,output=process.std
   input.setRawMode(true);input.resume();output.write('\x1b[?1049h\x1b[?25l');
   do{
    const source=observer.state.snapshot?.source;
-   await observer.poll(controller.signal);
+   // Current can interrupt either the read or the delay without starting a second poll.
+   refreshController=new AbortController();
+   const signal=AbortSignal.any([controller.signal,refreshController.signal]);
+   await observer.poll(signal);
    if(source!==observer.state.snapshot?.source){selected=0;picker=null;detail=null;detailOffset=0;offset=0;activitySelected=0;}
    if(picker!==null)picker=Math.max(0,Math.min(picker,(observer.state.snapshot?.goals.length??0)-1));
    selected=Math.min(selected,Math.max(0,actorRows(observer.state).length-1));draw();
-   await delay(pollMs,undefined,{signal:controller.signal}).catch(()=>{});
+   if(!observer.currentRequested)await delay(pollMs,undefined,{signal}).catch(()=>{});
   }while(!controller.signal.aborted);
  }finally{
   input.removeListener('keypress',keypress);output.removeListener?.('resize',draw);

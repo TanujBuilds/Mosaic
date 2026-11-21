@@ -356,22 +356,49 @@ test('goal details show the full objective and Escape returns to the picker',asy
  }finally{input.emit('keypress','q',{name:'q'});await pending;}
 });
 
-test('a jumps to the current project from main, picker and details without dispatch',async ()=>{
+test('a jumps to the current project immediately from main, picker and details without dispatch',async ()=>{
  for(const keys of [[],['g'],['g','d']]){
   const input=new EventEmitter();input.isTTY=true;input.isRaw=false;
   input.setRawMode=v=>{input.isRaw=v;};input.resume=()=>{};input.pause=()=>{};
-  let first,jumped;const ready=new Promise(r=>{first=r;}),current=new Promise(r=>{jumped=r;});
+  const {promise:ready,resolve:first}=Promise.withResolvers();
   const fresh={...goal,id:'recent-goal',objective:'Most recent project',status:'completed'};
-  const frames=[];const output={isTTY:true,columns:80,rows:30,write(value){if(value.includes('Mosaic Beta')){frames.push(stripVTControlCharacters(value));first();if(value.includes('No work currently running'))jumped();}}};
+  const frames=[];const output={isTTY:true,columns:80,rows:30,write(value){if(value.includes('Mosaic Beta')){frames.push(stripVTControlCharacters(value));first();}}};
   const invoke=async name=>{assert.ok(['observer_snapshot','observer_timeline'].includes(name));return name==='observer_snapshot'?{...snapshot,goals:[goal,fresh]}:{events:[],cursor:101,hasMore:false};};
   invoke.current=async()=>({snapshot:{...snapshot,goals:[goal,fresh]},goalId:fresh.id,notice:'No work currently running · most recent project'});
-  const pending=runObserver({input,output,invoke,noColor:false,pollMs:1});
+  const pending=runObserver({input,output,invoke,noColor:false,pollMs:60_000});
   try{
    await ready;for(const key of keys)input.emit('keypress',key,{name:key});
-   input.emit('keypress','a',{name:'a'});await current;
+   input.emit('keypress','a',{name:'a'});await new Promise(resolve=>setImmediate(resolve));
    assert.match(frames.at(-1),/Most recent project/);assert.doesNotMatch(frames.at(-1),/Choose a goal|Goal details/);
   }finally{input.emit('keypress','q',{name:'q'});await pending;}
  }
+});
+
+test('a interrupts an in-flight observer refresh before looking up the current project',async()=>{
+ const input=new EventEmitter();
+ input.isTTY=true;input.isRaw=false;input.setRawMode=value=>{input.isRaw=value;};input.resume=()=>{};input.pause=()=>{};
+ const frames=[],output={isTTY:true,columns:80,rows:30,write(value){frames.push(stripVTControlCharacters(value));}};
+ const {promise:started,resolve:reading}=Promise.withResolvers();
+ let cancelled=false;
+ const invoke=async(name,_,signal)=>{
+  if(name==='observer_snapshot'){
+   reading();
+   await new Promise((_,reject)=>signal.addEventListener('abort',()=>{
+    cancelled=true;
+    reject(signal.reason);
+   },{once:true}));
+  }
+  return {events:[],cursor:101,hasMore:false};
+ };
+ invoke.current=async()=>({snapshot,goalId:goal.id,notice:'Current project found'});
+ const pending=runObserver({input,output,invoke,noColor:false,pollMs:60_000});
+ try{
+  await started;
+  input.emit('keypress','a',{name:'a'});
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(cancelled,true);
+  assert.match(frames.at(-1),/Last check: Current project found/);
+ }finally{input.emit('keypress','q',{name:'q'});await pending;}
 });
 
 test('passing native candidate checks take precedence over a historical worker check failure',t=>{
