@@ -1,5 +1,5 @@
 import path from 'node:path';
-import {mkdir,rm} from 'node:fs/promises';
+import {rm} from 'node:fs/promises';
 import {canonical} from '../harness/contracts.mjs';
 import {assertExecutionAvailable} from '../harness/execution.mjs';
 import {ProviderRegistry} from '../harness/providers/registry.mjs';

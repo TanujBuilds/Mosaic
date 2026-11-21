@@ -2,7 +2,7 @@ import {macGitReady,gitRecovery} from './git-readiness.mjs';
 import {fileURLToPath} from 'node:url';
 import {readSettings as readPrivateSettings,readCredentials,configuredPolicies,previewSettingsMigration,applySettingsMigration,resumeSettingsMigration,validateSettingsCredentials} from './settings.mjs';
 import {setupPortable,portableSetupComplete,removePortableBindings} from './portable-setup.mjs';
-import {normalizeExecutionPolicy,normalizeNativeCheckRuntime,assertExecutionAvailable} from '../harness/execution.mjs';
+import {assertExecutionAvailable} from '../harness/execution.mjs';
 import {execFile} from 'node:child_process';
 import {access,mkdir,readdir,realpath,rm,rmdir} from 'node:fs/promises';
 import {constants} from 'node:fs';
@@ -20,7 +20,7 @@ import {assertMaintenanceIdle,assertSettingsMaintenanceAllowed,assertBetaStartup
 import {canonical,digest} from '../harness/contracts.mjs';
 import {ProviderRegistry} from '../harness/providers/registry.mjs';
 import {discoverProvider,formatProviderDiagnostic} from './provider-diagnostics.mjs';
-import {getHost,normalizeHostSettings,formatHostReadiness} from './hosts/index.mjs';
+import {getHost,formatHostReadiness} from './hosts/index.mjs';
 import {readHostConnection} from './hosts/connection-evidence.mjs';
 import {supportsSetupMenus,terminalSetupInput,welcomeSetup} from './terminal-setup.mjs';
 
