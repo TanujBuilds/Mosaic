@@ -309,9 +309,9 @@ test('a narrow worker menu gives option labels priority over the rail', {skip:pr
  const {transcript,result}=terminalSetup([
   ['Pick your coding app','\r'],
   ['Choose a worker','q']
- ],{width:30});
+ ],{width:24});
  const plain=stripVTControlCharacters(transcript);
- assert.match(plain,/^ {2}Model on another computer\r?$/mu);
+ assert.match(plain,/^ {2}Remote model server\r?$/mu);
  assert.match(plain,/^ {2}Two or three workers\r?$/mu);
  assert.equal(result.credentialsWritten,false);
 });

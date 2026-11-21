@@ -71,7 +71,7 @@ export async function collectPortableSetup(ask,output,{execution,nativeCheckRunt
  const workers=[
   {value:'4',label:'Use coding app only'},
   {value:'1',label:'Model on this Mac'},
-  {value:'2',label:'Model on another computer'},
+  {value:'2',label:'Remote model server'},
   {value:'3',label:'Hosted model API'},
   {value:'6',label:'Two or three workers'},
   {value:'5',label:'Advanced setup'}
