@@ -55,7 +55,8 @@ test('single-line install pins the verified bootstrap and archive and rejects no
   };
   const line = makeInstallCommand(candidate, urls);
   assert.equal(line.split('\n').length, 1);
-  assert.ok(line.indexOf('Get-FileHash') < line.indexOf('ScriptBlock'));
+  assert.ok(line.includes('.ComputeHash('));
+  assert.ok(line.indexOf('.ComputeHash(') < line.indexOf('ScriptBlock'));
   assert.ok(line.includes(candidate.bootstrapSha256));
   assert.ok(line.includes(candidate.archiveSha256));
   assert.ok(line.includes(urls.archiveUri));
@@ -90,6 +91,7 @@ test('PowerShell checks the archive and installs only its verified inventory', {
   const literal = value => "'" + value.replaceAll("'", "''") + "'";
   const verify = [
     '$ErrorActionPreference = "Stop"',
+    'function Get-FileHash { throw "Windows fixture has no Get-FileHash cmdlet" }',
     '$tokens = $errors = $null',
     '$ast = [System.Management.Automation.Language.Parser]::ParseFile(' + literal(bootstrapPath) + ', [ref]$tokens, [ref]$errors)',
     'if ($errors) { throw ($errors -join "; ") }',

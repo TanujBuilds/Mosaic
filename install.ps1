@@ -91,8 +91,16 @@ function Write-JsonFile([string] $Path, $Value) {
     Write-Atomic $Path ($utf8.GetBytes(($Value | ConvertTo-Json -Depth 8 -Compress) + [char]10))
 }
 
+function Get-StreamSha256([IO.Stream] $Stream) {
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try { return [BitConverter]::ToString($sha.ComputeHash($Stream)).Replace('-', '').ToLowerInvariant() }
+    finally { $sha.Dispose() }
+}
+
 function Get-Sha256([string] $Path) {
-    return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+    $handle = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+    try { return Get-StreamSha256 $handle }
+    finally { $handle.Dispose() }
 }
 
 function Get-Archive([string] $Path, [uri] $Uri, [string] $Expected) {
@@ -227,10 +235,7 @@ function Expand-Release([string] $File, [string] $Destination) {
     if (-not $item -or $item.Length -gt $maxArchive) { throw 'The Mosaic archive is unavailable or too large.' }
     $archiveHandle = [IO.File]::Open($File, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
     try {
-        $sha = [Security.Cryptography.SHA256]::Create()
-        try { $digest = [BitConverter]::ToString($sha.ComputeHash($archiveHandle)).Replace('-', '').ToLowerInvariant() }
-        finally { $sha.Dispose() }
-        if ($digest -cne $ArchiveSha256) { throw 'Mosaic archive checksum mismatch.' }
+        if ((Get-StreamSha256 $archiveHandle) -cne $ArchiveSha256) { throw 'Mosaic archive checksum mismatch.' }
         $archiveHandle.Position = 0
         $zip = New-Object IO.Compression.ZipArchive($archiveHandle, [IO.Compression.ZipArchiveMode]::Read, $true)
         try {

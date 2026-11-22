@@ -22,6 +22,13 @@ function Invoke-InteractiveStep([string] $Executable, [string[]] $Arguments) {
     if ($LASTEXITCODE -ne 0) { throw 'Mosaic onboarding stopped. Rerun the same install command to resume.' }
 }
 
+function Get-GitConfigHash([string] $Path) {
+    $sha = [Security.Cryptography.SHA256]::Create()
+    $stream = [IO.File]::OpenRead($Path)
+    try { return [BitConverter]::ToString($sha.ComputeHash($stream)) }
+    finally { $stream.Dispose(); $sha.Dispose() }
+}
+
 function Get-Git {
     $candidates = @((Join-Path $local 'Programs\Git\cmd\git.exe'))
     foreach ($root in @($env:ProgramFiles, [Environment]::GetEnvironmentVariable('ProgramFiles(x86)'))) {
@@ -122,7 +129,7 @@ function Save-GitIdentity([string] $Git, [string] $Repo, $Values) {
         $item = Get-Item -LiteralPath $config -Force
         if ($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -or
             $item.LinkType -eq 'HardLink' -or $item.Length -gt 1048576) { throw 'Unsafe Git config; set the author fields using Git.' }
-        $before = (Get-FileHash -LiteralPath $config -Algorithm SHA256).Hash
+        $before = Get-GitConfigHash $config
         $valuesToWrite = [ordered]@{}
         foreach ($key in @('user.name', 'user.email')) {
             if (-not $Values.ContainsKey($key)) { continue }
@@ -147,7 +154,7 @@ function Save-GitIdentity([string] $Git, [string] $Repo, $Values) {
             $saved = & $Git config --file $lockPath --no-includes --get $key
             if ($LASTEXITCODE -ne 0 -or $saved -cne $valuesToWrite[$key]) { throw 'Could not verify the proposed Git author value.' }
         }
-        if ((Get-FileHash -LiteralPath $config -Algorithm SHA256).Hash -cne $before) { throw 'Git author settings changed during setup.' }
+        if ((Get-GitConfigHash $config) -cne $before) { throw 'Git author settings changed during setup.' }
         [IO.File]::Replace($lockPath, $config, [NullString]::Value)
         $committed = $true
     } finally {

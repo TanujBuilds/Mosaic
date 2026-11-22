@@ -134,8 +134,10 @@ export function makeInstallCommand(candidate, {bootstrapUri, archiveUri}) {
     'try { & $curl -q --fail --silent --show-error --location --proto \'=https\' --proto-redir \'=https\' ' +
     '--max-redirs 3 --connect-timeout 15 --max-time 90 --max-filesize 1048576 --output $p -- ' + psLiteral(httpsUri(bootstrapUri)) + '; ' +
     'if ($LASTEXITCODE -ne 0) { throw \'Mosaic could not download its installer.\' }; ' +
-    'if ((Get-FileHash -LiteralPath $p -Algorithm SHA256).Hash -ine ' + psLiteral(candidate.bootstrapSha256) +
-    ') { throw \'Mosaic installer checksum mismatch.\' }; ' +
+    '$stream = [IO.File]::OpenRead($p); try { $sha = [Security.Cryptography.SHA256]::Create(); ' +
+    'try { $sum = [BitConverter]::ToString($sha.ComputeHash($stream)).Replace(\'-\', \'\') } ' +
+    'finally { $sha.Dispose() } } finally { $stream.Dispose() }; ' +
+    'if ($sum -ine ' + psLiteral(candidate.bootstrapSha256) + ') { throw \'Mosaic installer checksum mismatch.\' }; ' +
     '& ([ScriptBlock]::Create([IO.File]::ReadAllText($p))) -Version ' + psLiteral(candidate.version) +
     ' -ArchiveUri ' + psLiteral(httpsUri(archiveUri)) + ' -ArchiveSha256 ' + psLiteral(candidate.archiveSha256) +
     ' } finally { Remove-Item -LiteralPath $p -ErrorAction SilentlyContinue } }';
