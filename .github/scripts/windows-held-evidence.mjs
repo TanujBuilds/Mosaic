@@ -17,7 +17,7 @@ const [earlySource, heldSource, earlyInput, heldInput] = process.argv.slice(2).m
 const inputs = [
   {source: earlySource, directory: earlyInput, commit: '2f938fd74dd3920e11d4f33de636e1cc8cde388e', run: 44988516524, artifact: 14740862102,
     archiveSha256: 'f6c26fbe21d3b3023b27cd62150fb7cb8c6243e476343c1aea0b9a6191e99d5a'},
-  {source: heldSource, directory: heldInput, commit: 'a1b18fe835d633bee4d313e25e013f3d1d6c4d94', run: 44990711044, artifact: 14742095178,
+  {source: heldSource, directory: heldInput, commit: '97b7ae388f3e8d03f4eba132a24c57e3997d62df', run: 44991971753, artifact: 14742128055,
     archiveSha256: 'bfcaf46c70228dea09b80746455233b89a6c3667c8e5549b24a8666d0cc4ddaf'},
 ];
 const exec = promisify(execFile);
@@ -33,7 +33,7 @@ const appData = path.join(scratch, 'Disposable application data');
 const profile = path.join(scratch, "Disposable account O'Brien");
 await Promise.all([mkdir(appData), mkdir(profile)]);
 const env = {...envBase, LOCALAPPDATA: appData, USERPROFILE: profile};
-const report = {windows: null, inputs: [], checks: []};
+const report = {windows: null, inputs: [], checks: [], scheduler: []};
 
 async function digestFile(file) {
   const hash = createHash('sha256');
@@ -205,12 +205,12 @@ async function verifySchedulerAdoption(held) {
   const sid = await ps('[Console]::Write([Security.Principal.WindowsIdentity]::GetCurrent().User.Value)');
   assert.match(sid, /^S-[0-9-]+$/);
   const account = 'MosaicQa' + randomBytes(5).toString('hex');
-  const description = 'MosaicHeldEvidence-' + randomUUID();
+  const description = 'MosaicQA-' + randomUUID();
   const accountFields = {MOSAIC_TEST_ACCOUNT: account, MOSAIC_TEST_ACCOUNT_DESCRIPTION: description};
   const cleanups = [];
   const errors = [];
   try {
-    const other = await ps(createAccount, {...accountFields, MOSAIC_TEST_PASSWORD: 'Qa!' + randomBytes(16).toString('hex') + 'Z7'});
+    const other = await ps(createAccount, {...accountFields, MOSAIC_TEST_PASSWORD: 'Qa!9' + randomBytes(8).toString('base64url').slice(0, 10)});
     assert.match(other, /^S-[0-9-]+$/);
     assert.notEqual(other, sid);
     const unrelated = {configDir: path.join(scratch, 'Unrelated fixture'), state: path.join(scratch, 'Unrelated fixture', 'state'),
@@ -234,7 +234,10 @@ async function verifySchedulerAdoption(held) {
       await windows.windowsWrite(paths.launcher, 'exit 0\n');
       assert.equal((await service.registration(paths)).registered, false);
       await files.saveJson(receipt, intent);
-      cleanups.push(() => control('remove'));
+      cleanups.push(async () => {
+        await control('remove');
+        await assert.rejects(control('query'), /Disposable task is missing/);
+      });
       const xmlHash = await service.ensureWindowsService(paths);
       await files.saveJson(receipt, intent);
       const pending = await readFile(receipt);
@@ -251,6 +254,10 @@ async function verifySchedulerAdoption(held) {
       }
       assert.deepEqual(JSON.parse(await control('query')), before);
       assert.deepEqual(await service.registration(unrelated), unrelatedBefore);
+      report.scheduler.push({case:action, interactiveLogonType:before.logon,
+        principalMatchesRunner:before.principal === sid, triggerMatchesRunner:before.trigger === sid,
+        nativeTaskSha256:sha(before.xml), pendingReceiptSha256:sha(pending),
+        finalReceiptSha256:await digestFile(receipt), adopted:action === 'genuine'});
     }));
     const failed = results.filter(result => result.status === 'rejected');
     if (failed.length) throw new AggregateError(failed.map(result => result.reason), 'Task Scheduler ownership evidence failed');
@@ -263,6 +270,7 @@ async function verifySchedulerAdoption(held) {
     await ps(removeAccount, accountFields).catch(error => errors.push(error));
   }
   if (errors.length) throw new AggregateError(errors, 'Scheduler evidence or fixture cleanup failed');
+  report.checks.push('Disposable task and account cleanup completed');
 }
 
 try {
