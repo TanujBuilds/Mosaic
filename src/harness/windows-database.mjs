@@ -1,8 +1,10 @@
-import {closeSync, openSync} from 'node:fs';
 import path from 'node:path';
 import {windowsFileSync} from '../beta/windows-files.mjs';
+import {createPrivateFileSync} from '../beta/windows-support.mjs';
 
-const sidecarSuffixes = ['-wal', '-shm', '-journal'];
+const walSuffixes = ['-wal', '-shm'];
+const sidecarSuffixes = [...walSuffixes, '-journal'];
+const empty = Buffer.alloc(0);
 
 function checkPath(operation, file, options) {
   try {
@@ -12,30 +14,51 @@ function checkPath(operation, file, options) {
   }
 }
 
+function readInventory(file) {
+  checkPath('private-directory', path.dirname(file));
+  const present = new Set();
+  for (const suffix of ['', ...sidecarSuffixes]) {
+    if (checkPath('private-file', file + suffix, {optional: true}) !== null) {
+      if (suffix && !present.has('')) {
+        throw Error('Retained Windows SQLite sidecar ' + file + suffix + ' has a missing database');
+      }
+      present.add(suffix);
+    }
+  }
+  return present;
+}
+
 // Check existing files before SQLite can load or recover a retained journal.
 // The native helper rejects reparse points, shared access and multiple links.
 export function assertWindowsDatabaseFiles(file) {
-  checkPath('private-directory', path.dirname(file));
-  const exists = checkPath('private-file', file, {optional: true}) !== null;
-  for (const suffix of sidecarSuffixes) {
-    const sidecar = file + suffix;
-    if (checkPath('private-file', sidecar, {optional: true}) !== null && !exists) {
-      throw Error('Retained Windows SQLite sidecar ' + sidecar + ' has a missing database');
-    }
-  }
-  return exists;
+  return readInventory(file).has('');
 }
 
-export function prepareWindowsDatabase(file) {
-  checkPath('mkdir', path.dirname(file));
-  if (assertWindowsDatabaseFiles(file)) return;
+// The default prepares a rollback-mode database, such as the maintenance lock.
+// For WAL readers of existing state, create=false prohibits a new main file.
+export function prepareWindowsDatabase(file, {wal = false, create = true} = {}) {
+  if (create) checkPath('mkdir', path.dirname(file));
+  const present = readInventory(file);
+  if (!create && !present.has('')) return false;
 
-  // Create an empty file exclusively inside the private directory. Verify its
-  // inherited ACL before any database content is written.
-  try {
-    closeSync(openSync(file, 'wx', 0o600));
-  } catch (error) {
-    if (error.code !== 'EEXIST') throw error;
+  // SQLite opens by pathname under the user's token. On an elevated token the
+  // default owner may be Administrators, so initialize absent names with an
+  // explicit user owner and ACL. A collision is inspected without replacement.
+  const required = wal ? ['', ...walSuffixes] : [''];
+  const missing = required.filter(suffix => !present.has(suffix));
+  for (const suffix of missing) {
+    const target = file + suffix;
+    try {
+      createPrivateFileSync(target, empty);
+    } catch (error) {
+      if (error.code !== 'EEXIST') throw Error('Cannot create private Windows SQLite file ' + target, {cause: error});
+    }
   }
-  if (!assertWindowsDatabaseFiles(file)) throw Error('Missing Windows SQLite database at ' + file);
+  if (missing.length) {
+    const created = readInventory(file);
+    for (const suffix of required) {
+      if (!created.has(suffix)) throw Error('Missing Windows SQLite file at ' + file + suffix);
+    }
+  }
+  return true;
 }

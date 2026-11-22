@@ -18,7 +18,7 @@ export class Store {
   this.root=path.resolve(root);
   const file=path.join(this.root,'harness.sqlite3');
   const windows=process.platform==='win32';
-  if(windows)prepareWindowsDatabase(file);
+  if(windows)prepareWindowsDatabase(file,{wal:true});
   else mkdirSync(this.root,{recursive:true,mode:0o700});
   this.db=new DatabaseSync(file);
   try{

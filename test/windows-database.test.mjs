@@ -3,6 +3,7 @@ import {execFileSync} from 'node:child_process';
 import {cp, link, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
+import {DatabaseSync} from 'node:sqlite';
 import test from 'node:test';
 import {fileURLToPath, pathToFileURL} from 'node:url';
 
@@ -29,10 +30,11 @@ async function stage(t) {
     stdio: 'inherit',
   });
   const {Store} = await import(pathToFileURL(path.join(runtime, 'src', 'harness', 'store.mjs')).href);
+  const {prepareWindowsDatabase} = await import(pathToFileURL(path.join(runtime, 'src', 'harness', 'windows-database.mjs')).href);
   const helperCall = (op, file, input) => execFileSync(helper, [
     op, file, ...(input ? [String(input.length)] : []),
   ], {input, stdio: ['pipe', 'pipe', 'pipe']});
-  return {root, Store, helperCall};
+  return {root, Store, helperCall, prepareWindowsDatabase};
 }
 
 function share(file) {
@@ -60,7 +62,30 @@ test('Windows Store verifies the private database root and all SQLite files befo
   skip: process.platform !== 'win32',
   timeout: 120_000,
 }, async t => {
-  const {root, Store, helperCall} = await stage(t);
+  const {root, Store, helperCall, prepareWindowsDatabase} = await stage(t);
+  await t.test('maintenance initialization assigns the current user owner without replacing retained bytes', async () => {
+    const state = path.join(root, 'maintenance');
+    const file = path.join(state, 'maintenance.sqlite3');
+    helperCall('mkdir', state);
+    assert.equal(prepareWindowsDatabase(file, {create: false}), false);
+    await assert.rejects(readFile(file), {code: 'ENOENT'});
+    assert.equal(prepareWindowsDatabase(file), true);
+    helperCall('private-file', file);
+    const lock = new DatabaseSync(file);
+    try {
+      lock.exec('BEGIN IMMEDIATE; ROLLBACK');
+    } finally {
+      lock.close();
+    }
+    const retained = Buffer.from('retained lock file bytes');
+    helperCall('write', file, retained);
+    assert.equal(prepareWindowsDatabase(file), true);
+    assert.deepEqual(await readFile(file), retained);
+    for (const suffix of ['-wal', '-shm', '-journal']) {
+      await assert.rejects(readFile(file + suffix), {code: 'ENOENT'});
+    }
+  });
+
   await t.test('a new private Store persists data across two concurrent connections and reopen', async () => {
     const state = path.join(root, 'fresh', 'private state');
     const first = new Store(state);
@@ -82,6 +107,14 @@ test('Windows Store verifies the private database root and all SQLite files befo
       assert.equal(reopened.get('sample', 'canary').value, 'durable');
     } finally {
       reopened.close();
+    }
+    const file = path.join(state, names[0]);
+    assert.equal(prepareWindowsDatabase(file, {wal: true, create: false}), true);
+    const viewer = new DatabaseSync(file, {readOnly: true});
+    try {
+      assert.equal(viewer.prepare('SELECT COUNT(*) AS n FROM records').get().n, 1);
+    } finally {
+      viewer.close();
     }
   });
 

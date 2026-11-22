@@ -1,4 +1,5 @@
 import {DatabaseSync} from 'node:sqlite';
+import {assertWindowsDatabaseFiles,prepareWindowsDatabase} from '../harness/windows-database.mjs';
 import {randomUUID,createHash} from 'node:crypto';
 import {lstat,mkdir,open,realpath,rename,rm,writeFile} from 'node:fs/promises';
 import {constants} from 'node:fs';
@@ -113,6 +114,7 @@ export async function privateDirectories(paths){
 export function readMaintenanceDatabase(file,read){
  let db;
  try{
+  if(process.platform==='win32'&&!assertWindowsDatabaseFiles(file))throw Error('Missing Windows maintenance database');
   db=new DatabaseSync(file,{readOnly:true,timeout:1000});
   return read(db);
  }catch(error){
@@ -127,10 +129,10 @@ export function readMaintenanceDatabase(file,read){
 export async function withLock(paths,work){
  await privateDirectories(paths);
  const file=path.join(paths.configDir,'maintenance.sqlite3');
- try{const handle=await open(file,'wx',0o600);await handle.close();}
- catch(error){if(error.code!=='EEXIST')throw error;}
- if(process.platform==='win32')await windowsFile('private-file',file);
+ if(process.platform==='win32')prepareWindowsDatabase(file);
  else{
+  try{const handle=await open(file,'wx',0o600);await handle.close();}
+  catch(error){if(error.code!=='EEXIST')throw error;}
   const info=await lstat(file);
   if(!info.isFile()||info.mode&0o077||info.uid!==process.getuid())throw Error('Unsafe Mosaic Beta maintenance lock');
  }
