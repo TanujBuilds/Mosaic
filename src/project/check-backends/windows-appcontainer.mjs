@@ -319,7 +319,10 @@ async function supervise({ runtime, stage, owner, binding, timeoutMs, signal, re
     {
       cwd: runtime.root,
       windowsHide: true,
-      env: { SystemRoot: process.env.SystemRoot },
+      // CreateProcessW resolves an AppContainer's per-user profile from the
+      // trusted launcher's LOCALAPPDATA. The supervisor builds an independent
+      // environment for the check, using its package storage and staged temp.
+      env: { SystemRoot: process.env.SystemRoot, LOCALAPPDATA: process.env.LOCALAPPDATA },
       stdio: ['pipe', 'pipe', 'pipe'],
     },
   );
