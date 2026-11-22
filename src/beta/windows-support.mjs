@@ -110,10 +110,11 @@ public static class MosaicSupport {
         string stem = name.Split('.')[0].TrimEnd(' ').ToUpperInvariant();
         return !System.Text.RegularExpressions.Regex.IsMatch(stem, @"^(CON(IN\$|OUT\$)?|PRN|NUL|AUX|COM[0-9¹²³]|LPT[0-9¹²³])$");
     }
+    public static string Stage = "path";
     public static int Run(string operation, string file, byte[] data) {
         Check(operation == "owner" || operation == "export");
         Check(file.Length >= 3 && file[1] == ':' && file[2] == '\\' &&
-            Path.GetFullPath(file) == file);
+            ((file[0] >= 'A' && file[0] <= 'Z') || (file[0] >= 'a' && file[0] <= 'z')));
         string root = Path.GetPathRoot(file);
         Check(root.Length == 3 && GetDriveTypeW(root) == 3);
         var parts = file.Substring(3).Split('\\');
@@ -123,14 +124,17 @@ public static class MosaicSupport {
         var pins = new List<SafeFileHandle>();
         try {
             string dir = root;
+            Stage = "ancestor";
             Pin(dir, pins);
             for (int i=0; i<count; i++) {
                 dir = Path.Combine(dir, parts[i]);
                 Pin(dir, pins);
             }
             var user = WindowsIdentity.GetCurrent().User;
+            Stage = "owner";
             CheckOwner(dir, user, exporting);
             if (!exporting) return 0;
+            Stage = "create";
             Check(data.Length <= 256*1024);
             var security = new FileSecurity();
             security.SetOwner(user);
@@ -147,6 +151,7 @@ public static class MosaicSupport {
                     stream.Flush(true);
                     // FILE_RENAME_INFO uses a zero ReplaceIfExists and null RootDirectory.
                     // The rename is issued on the same open file whose bytes were flushed.
+                    Stage = "publish";
                     byte[] name = Encoding.Unicode.GetBytes(file);
                     int lengthAt = IntPtr.Size * 2;
                     byte[] rename = new byte[lengthAt + 4 + name.Length + IntPtr.Size];
@@ -173,7 +178,7 @@ $request = [Console]::In.ReadToEnd() | ConvertFrom-Json
 $path = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($request.path))
 $bytes = [Convert]::FromBase64String([string]$request.data)
 exit ([MosaicSupport]::Run([string]$request.operation,$path,$bytes))
-} catch {exit 1}
+} catch {if('MosaicSupport' -as [type]){[Console]::Error.Write([MosaicSupport]::Stage)};exit 1}
 `;
 const args = ['-NoLogo','-NoProfile','-NonInteractive','-EncodedCommand',Buffer.from(script,'utf16le').toString('base64')];
 function request(operation,file,bytes) {
@@ -181,9 +186,12 @@ function request(operation,file,bytes) {
 }
 export function createPrivateFileSync(file,bytes) {
   const shell=windowsSystemTool('WindowsPowerShell','v1.0','powershell.exe');
-  const result=spawnSync(shell,args,{input:request('export',file,bytes),stdio:['pipe','ignore','ignore'],windowsHide:true,timeout:8000});
+  const result=spawnSync(shell,args,{input:request('export',file,bytes),stdio:['pipe','ignore','pipe'],windowsHide:true,timeout:8000});
   if(result.status===3)throw Object.assign(Error('Private file already exists'),{code:'EEXIST'});
-  if(result.error||result.status!==0)throw Error('Cannot create a private Windows file');
+  if(result.error||result.status!==0){
+    const stage=result.stderr?.toString();
+    throw Error('Cannot create a private Windows file'+(['path','ancestor','owner','create','publish'].includes(stage)?' ('+stage+')':''));
+  }
 }
 function companion(operation,file,bytes='') {
   const shell=windowsSystemTool('WindowsPowerShell','v1.0','powershell.exe');
