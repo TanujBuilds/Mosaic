@@ -75,6 +75,14 @@ test('nonterminating work has a deadline and cancellation awaits termination', {
   assert.equal(await runIsolatedJavaScript(entry, [[entry,'export {};']]), 'passed');
 });
 
+test('asynchronous assertions and syntax errors cannot report a false pass', {skip:!qualified}, async () => {
+  const run = source => runIsolatedJavaScript(entry, [[entry, source]]);
+  assert.equal(await run("Promise.resolve(1).then(value => { if (value !== 2) throw 'wrong'; });"), 'failed');
+  assert.equal(await run("if (await Promise.resolve(2) !== 2) throw 'wrong';"), 'passed');
+  assert.equal(await run('await new Promise(() => {});'), 'failed');
+  assert.equal(await run('const = 1;'), 'failed');
+});
+
 test('module inventory rejects duplicate, invalid and oversized entries before starting', {skip:!qualified}, async () => {
   await assert.rejects(runIsolatedJavaScript(entry, [[entry,''],[entry,'']]), /inventory/i);
   await assert.rejects(runIsolatedJavaScript(entry, [[entry,''],['../outside.mjs','']]), /inventory/i);
