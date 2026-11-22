@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
+import path from 'node:path';
 import { executionPolicyInputSchema } from '../src/harness/contracts.mjs';
 import {
   assertExecutionAvailable,
@@ -124,4 +125,49 @@ test('every protected Windows policy is held before a check can start', {skip:pr
   for(const policy of [undefined,windows,{version:1,backend:'codex-sandbox',backendRevision:1}]) {
     assert.throws(()=>assertExecutionAvailable({executionPolicy:policy}), {code:'isolation',message:/filesystem isolation qualification/});
   }
+});
+
+test('retained Windows core approvals cannot reopen legacy native editing or take over a checkout', {
+  skip: process.platform !== 'win32', timeout: 120000,
+}, async t => {
+  const {stageWindowsSource, createWorkflowRepository} = await import('../test-support/windows-workflows.mjs');
+  const stage = await stageWindowsSource(t);
+  const {Coordinator} = await stage.load('harness/coordinator.mjs');
+  const {Integration} = await stage.load('harness/integration.mjs');
+  const project = await createWorkflowRepository(stage);
+  const root = path.join(stage.root, 'historical core state');
+  const objective = 'Revise the sample constant';
+  const acceptance = ['The approved check passes'];
+  const initial = new Coordinator({root});
+  let taskId, goalId;
+  try {
+    const goal = initial.prepareLegacyGoal({
+      submissionId: 'old-goal', objective, acceptance, mode: 'collaborative',
+      project: {repo: project.repo, baseCommit: project.baseCommit, readPaths: ['src/', 'checks/'],
+        writePaths: ['src/'], checks: [{id: 'verify', argv: [stage.executable, 'checks/verify.mjs'], timeoutMs: 10000}]},
+    }, 'prepare');
+    // Model an activation durably saved before the Windows execution hold existed.
+    const activatedAt = initial.now();
+    initial.store.put('goal', {...goal, status: 'active', activatedAt, deadline: activatedAt + 3600000});
+    goalId = goal.id;
+    taskId = initial.submitTask({goalId, submissionId: 'old-task', kind: 'coding', actor: 'codex',
+      objective, acceptance}, 'submit').id;
+  } finally { initial.close(); }
+
+  const reopened = new Coordinator({root});
+  try {
+    const integration = new Integration({c: reopened});
+    const originalWorktrees = await project.git(project.repo, 'worktree', 'list', '--porcelain');
+    const task = reopened.getTask(taskId);
+    const goal = reopened.getGoal(goalId);
+    const denied = {code: 'isolation', message: /Windows protected coding is in development/};
+    await assert.rejects(integration.startNative({taskId}, 'legacy-start'), denied);
+    for (const layout of [undefined, 'candidate_v1']) {
+      const input = {taskId, reason: 'Take over the historical assignment', ...(layout ? {layout} : {})};
+      await assert.rejects(integration.takeover(input, 'takeover-' + (layout ?? 'legacy')), denied);
+    }
+    assert.deepEqual(reopened.getTask(taskId), task);
+    assert.deepEqual(reopened.getGoal(goalId), goal);
+    assert.equal(await project.git(project.repo, 'worktree', 'list', '--porcelain'), originalWorktrees);
+  } finally { reopened.close(); }
 });
