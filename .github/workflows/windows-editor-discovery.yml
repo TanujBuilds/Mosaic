@@ -1,0 +1,63 @@
+name: Actual Windows editor discovery
+
+'on':
+  push:
+    branches: [codex/windows-editor-discovery]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  editor:
+    name: Discover installed ${{ matrix.id }} on Windows x64
+    runs-on: windows-2025
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - id: cursor
+            publisher: Anysphere
+            url: 'https://downloads.cursor.com/production/5f54c8173e5552412beb40702adac16275677fa0/win32/x64/user-setup/CursorUserSetup-x64-3.30.14.exe'
+            sha: 'a4b93b507922388eaad428b9e4f440ed4eda92038d52de5a7fb1497eb7823ebb'
+            bytes: 207949304
+          - id: antigravity
+            publisher: Google LLC
+            url: 'https://edgedl.me.gvt1.com/edgedl/release2/j0qc3/antigravity/stable/2.8.0-6733682917113856/windows-x64/Antigravity%20IDE.exe'
+            sha: '0f63d94c0be212e25157125eb3757272b5aa95ea06538298631c14a3d7709197'
+            bytes: 199656240
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24.22.3'
+          package-manager-cache: false
+      - name: Verify and install the signed per-user editor
+        shell: pwsh
+        env:
+          EDITOR_ID: ${{ matrix.id }}
+          EDITOR_URL: ${{ matrix.url }}
+          EDITOR_SHA: ${{ matrix.sha }}
+          EDITOR_BYTES: ${{ matrix.bytes }}
+          EDITOR_PUBLISHER: ${{ matrix.publisher }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:RUNNER_ENVIRONMENT -ne 'github-hosted' -or $env:RUNNER_ARCH -ne 'X64') { throw 'Disposable Windows x64 runner required' }
+          node .github/scripts/windows-editor-discovery.mjs before
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $installer = Join-Path $env:RUNNER_TEMP 'signed-editor-setup.exe'
+          curl.exe -q --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --max-time 300 --max-filesize $env:EDITOR_BYTES --output $installer -- $env:EDITOR_URL
+          if ($LASTEXITCODE -ne 0 -or (Get-Item -LiteralPath $installer).Length -ne [long]$env:EDITOR_BYTES -or (Get-FileHash -LiteralPath $installer).Hash -ine $env:EDITOR_SHA) { throw 'Editor installer did not match the frozen download' }
+          $signature = Get-AuthenticodeSignature -LiteralPath $installer
+          if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notlike ('*' + $env:EDITOR_PUBLISHER + '*')) { throw ('Unexpected installer signature ' + $signature.Status + ' ' + $signature.SignerCertificate.Subject) }
+          $setup = Start-Process -FilePath $installer -ArgumentList '/CURRENTUSER','/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/SP-' -Wait -PassThru
+          if ($setup.ExitCode -ne 0) { throw ('Installer exit ' + $setup.ExitCode) }
+          $exe = node .github/scripts/windows-editor-discovery.mjs after
+          if ($LASTEXITCODE -ne 0 -or -not $exe) { throw 'Mosaic did not discover the installed editor' }
+          $app = Get-Item -LiteralPath $exe
+          $signature = Get-AuthenticodeSignature -LiteralPath $exe
+          if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notlike ('*' + $env:EDITOR_PUBLISHER + '*')) { throw 'Installed app publisher differs from installer' }
+          [ordered]@{editor=$env:EDITOR_ID; version=$app.VersionInfo.ProductVersion; installedExecutable=$app.Name; publisher=$signature.SignerCertificate.Subject; installedSha256=(Get-FileHash -LiteralPath $exe).Hash; discovery='real'; registration='preview'; signedIn=$false} | ConvertTo-Json
