@@ -344,7 +344,8 @@ test('Windows Beta app-only consult uses host review and cannot grant project or
     const spec = {submissionId:'explain', objective:manifest.objective, acceptance:manifest.acceptance, actor:'codex'};
     for (const kind of ['coding','research','learning']) {
       const refused = await mutate('task_submit', {goalId, task:{...spec, kind}}, {error:true});
-      assert.match(refused.error, /capability|prohibit|parked/i);
+      if (kind==='research') assert.equal(refused.error,'Invalid kind');
+      else assert.match(refused.error, /capability|prohibit/i);
     }
     const scoped = await mutate('task_submit', {goalId, task:{...spec, kind:'consult',
       permissions:{readPaths:['src/'],writePaths:['src/'],checks:[]}}}, {error:true});
