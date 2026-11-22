@@ -3,6 +3,7 @@ import { mkdirSync, chmodSync } from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { canonical, digest, identifier } from './contracts.mjs';
+import { assertWindowsDatabaseFiles, prepareWindowsDatabase } from './windows-database.mjs';
 
 export const taskEventLookupId='+task_id';
 export const taskGoalId="CASE WHEN json_valid(data) THEN json_extract(data,'$.goalId') END";
@@ -14,11 +15,17 @@ const unfinishedTask="kind='task' AND CASE WHEN json_valid(data) THEN COALESCE(j
 
 export class Store {
  constructor(root){
-  this.root=path.resolve(root);mkdirSync(this.root,{recursive:true,mode:0o700});
-  this.db=new DatabaseSync(path.join(this.root,'harness.sqlite3'));
-  const version=this.db.prepare('PRAGMA user_version').get().user_version;if(![0,1].includes(version)){this.db.close();this.db=null;throw Error(`Unsupported harness database schema version ${version}`);}
-  chmodSync(path.join(this.root,'harness.sqlite3'),0o600);this.depth=0;this.commitListeners=new Set();
-  this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;
+  this.root=path.resolve(root);
+  const file=path.join(this.root,'harness.sqlite3');
+  const windows=process.platform==='win32';
+  if(windows)prepareWindowsDatabase(file);
+  else mkdirSync(this.root,{recursive:true,mode:0o700});
+  this.db=new DatabaseSync(file);
+  try{
+   const version=this.db.prepare('PRAGMA user_version').get().user_version;
+   if(![0,1].includes(version))throw Error(`Unsupported harness database schema version ${version}`);
+   if(!windows)chmodSync(file,0o600);
+   this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;
    CREATE TABLE IF NOT EXISTS records(kind TEXT NOT NULL,id TEXT NOT NULL,data TEXT NOT NULL,PRIMARY KEY(kind,id));
    -- The kind-only index also orders matching rows by rowid. The primary
    -- key orders by id and requires a temporary sort of full record payloads.
@@ -35,10 +42,16 @@ export class Store {
    CREATE TABLE IF NOT EXISTS requests(id TEXT PRIMARY KEY,task_id TEXT NOT NULL,key TEXT NOT NULL,kind TEXT NOT NULL,status TEXT NOT NULL,data TEXT NOT NULL,UNIQUE(task_id,key));
    CREATE INDEX IF NOT EXISTS requests_task ON requests(task_id,kind);
    PRAGMA user_version=1;`);
-  this.readChanges=this.db.prepare('SELECT total_changes() AS n');
-  this.readDataVersion=this.db.prepare('PRAGMA data_version');
-  this.readHasTasksForGoal=this.db.prepare(`SELECT 1 FROM records WHERE kind='task' AND (${taskGoalId})=? LIMIT 1`);
-  this.readUnfinishedTasks=this.db.prepare(`SELECT data FROM records INDEXED BY records_unfinished_tasks WHERE ${unfinishedTask} ORDER BY rowid`);
+   if(windows&&!assertWindowsDatabaseFiles(file))throw Error('Missing Windows SQLite database at '+file);
+   this.readChanges=this.db.prepare('SELECT total_changes() AS n');
+   this.readDataVersion=this.db.prepare('PRAGMA data_version');
+   this.readHasTasksForGoal=this.db.prepare(`SELECT 1 FROM records WHERE kind='task' AND (${taskGoalId})=? LIMIT 1`);
+   this.readUnfinishedTasks=this.db.prepare(`SELECT data FROM records INDEXED BY records_unfinished_tasks WHERE ${unfinishedTask} ORDER BY rowid`);
+  }catch(error){
+   try{this.close();}catch{}
+   throw error;
+  }
+  this.depth=0;this.commitListeners=new Set();
  }
  close(){if(this.db){this.db.close();this.db=null;}}
  tx(fn){
