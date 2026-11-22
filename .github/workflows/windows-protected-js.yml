@@ -1,0 +1,47 @@
+name: Windows protected JavaScript feasibility
+
+'on':
+  push:
+    branches: [codex/windows-protected-js-probe]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  bounded-javascript:
+    runs-on: windows-2025
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24.22.3'
+          package-manager-cache: false
+      - name: Verify the proof-of-concept runtime and run Windows tests
+        shell: pwsh
+        env:
+          MOSAIC_ISOLATED_JS_PROBE: '1'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $artifact = Join-Path $env:RUNNER_TEMP 'quickjs-wasi-3.7.0.tgz'
+          $integrity = '6nOShBtCglrQL6yH+hptIfEdA1WlSmvY/Mm5Ypn9IvtsaDsrYIg8x+xoIXQt02w66a0f1eLTAj1lhfgAbJ4WVw=='
+          curl.exe -q --fail --silent --show-error --max-time 60 --max-filesize 4194304 --output $artifact -- 'https://registry.npmjs.org/quickjs-wasi/-/quickjs-wasi-3.7.0.tgz'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $sha = [Security.Cryptography.SHA512]::Create()
+          try {
+            if ([Convert]::ToBase64String($sha.ComputeHash([IO.File]::ReadAllBytes($artifact))) -cne $integrity) {
+              throw 'QuickJS runtime package integrity changed'
+            }
+          } finally { $sha.Dispose() }
+          New-Item -ItemType Directory node_modules/quickjs-wasi -Force | Out-Null
+          tar.exe -xf $artifact --strip-components=1 -C node_modules/quickjs-wasi
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $os = Get-CimInstance Win32_OperatingSystem
+          Write-Output "$($os.Caption) $($os.Version) $($os.OSArchitecture)"
+          node --version
+          git --version
+          node --test test/windows-protected-js.test.mjs
+          exit $LASTEXITCODE
