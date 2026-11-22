@@ -77,6 +77,18 @@ function Initialize-Root([string] $Path) {
     Assert-PrivateRoot $Path
 }
 
+function Set-PrivateFile([string] $Path) {
+    $acl = New-Object Security.AccessControl.FileSecurity
+    $acl.SetOwner($currentSid)
+    $acl.SetAccessRuleProtection($true, $false)
+    foreach ($sid in @($currentSid, (New-Object Security.Principal.SecurityIdentifier('S-1-5-18')))) {
+        $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($sid, 'FullControl', 'Allow')))
+    }
+    $file = New-Object IO.FileInfo($Path)
+    if ($PSVersionTable.PSEdition -eq 'Core') { [IO.FileSystemAclExtensions]::SetAccessControl($file, $acl) }
+    else { $file.SetAccessControl($acl) }
+}
+
 function Write-Atomic([string] $Path, [byte[]] $Bytes) {
     $previous = Get-PlainItem $Path
     $temporary = Join-Path ([IO.Path]::GetDirectoryName($Path)) ('.mosaic-' + [guid]::NewGuid().ToString('N'))
@@ -86,8 +98,10 @@ function Write-Atomic([string] $Path, [byte[]] $Bytes) {
             $handle.Write($Bytes, 0, $Bytes.Length)
             $handle.Flush($true)
         } finally { $handle.Dispose() }
+        if ($env:OS -eq 'Windows_NT') { Set-PrivateFile $temporary }
         if ($previous) { [IO.File]::Replace($temporary, $Path, [NullString]::Value) }
         else { [IO.File]::Move($temporary, $Path) }
+        if ($previous -and $env:OS -eq 'Windows_NT') { Set-PrivateFile $Path }
     } finally {
         if (Get-PlainItem $temporary) { [IO.File]::Delete($temporary) }
     }

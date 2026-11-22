@@ -6,6 +6,7 @@ import {
   WINDOWS_BACKEND,
 } from './windows-appcontainer.mjs';
 
+export const windowsCodingHold = 'Protected coding is in development on Windows. A qualified Windows filesystem boundary is required before Mosaic can run a coding task.';
 export const nativeImplementationSources = darwin.nativeImplementationSources;
 export function validateNativeCheckRuntime(config, fingerprint) {
   return process.platform === 'win32'
@@ -18,7 +19,7 @@ export function nativeBackendFactory(configuration) {
       throw new Pause('Unsupported Windows backend revision', 'isolation');
     // Revision 1 failed its external-write qualification on a real Windows host.
     // Native qualification exercises the backend directly with disposable fixtures.
-    throw new Pause('Windows protected coding is in development: filesystem isolation has not passed qualification.', 'isolation');
+    throw new Pause(windowsCodingHold, 'isolation');
   }
   return darwin.nativeBackendFactory(configuration);
 }

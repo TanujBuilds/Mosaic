@@ -10,5 +10,15 @@ $cli = Join-Path $version 'distribution/windows-core/core.mjs'
 foreach ($file in @($root,(Join-Path $root 'versions'),$version,(Join-Path $version 'runtime'),(Join-Path $version 'runtime/bin'),$node,(Join-Path $version 'distribution'),(Join-Path $version 'distribution/windows-core'),$cli)) {
     if ([IO.File]::GetAttributes($file) -band [IO.FileAttributes]::ReparsePoint) { throw 'Unexpected installed core path redirection' }
 }
-& $node $cli @args
-exit $LASTEXITCODE
+$options = $env:NODE_OPTIONS
+$nodePath = $env:NODE_PATH
+try {
+    $env:NODE_OPTIONS = $null
+    $env:NODE_PATH = $null
+    & $node $cli @args
+    $code = $LASTEXITCODE
+} finally {
+    $env:NODE_OPTIONS = $options
+    $env:NODE_PATH = $nodePath
+}
+exit $code

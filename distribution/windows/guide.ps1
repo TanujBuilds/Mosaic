@@ -202,14 +202,15 @@ try {
         if ($setupState -eq 4) { Invoke-InteractiveStep $Launcher @('migrate') }
         if ($setupState -ne 0) { Invoke-InteractiveStep $Launcher @('setup') }
         Invoke-GuideStep $node @($lifecycle, 'ensure-ready') | Out-Null
-        $git = Require-Git
-        $gitDirectory = [IO.Path]::GetDirectoryName($git)
-        if (($env:Path -split ';') -notcontains $gitDirectory) { $env:Path = $gitDirectory + ';' + $env:Path }
-
         Write-Host '2. Connect your coding app'
         Invoke-InteractiveStep $node @($hostGuide)
     } finally { Pop-Location }
 
+    $codingStatus = Invoke-GuideStep $node @($lifecycle, 'coding-status') @(0, 3)
+    if ($codingStatus -eq 3) { return }
+    $git = Require-Git
+    $gitDirectory = [IO.Path]::GetDirectoryName($git)
+    if (($env:Path -split ';') -notcontains $gitDirectory) { $env:Path = $gitDirectory + ';' + $env:Path }
     Write-Host '3. Start a coding task'
     $repo = Select-Repository $git $originalDirectory
     if (-not $repo) { return }

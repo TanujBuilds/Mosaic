@@ -55,6 +55,11 @@ try {
         settings && await setupComplete(paths) ? 0 : 3;
       break;
     }
+    case 'coding-status': {
+      const {windowsCodingHold}=await import('../../runtime/src/project/check-backends/platform-native-runtime.mjs');
+      if(windowsCodingHold){process.stdout.write(windowsCodingHold+'\n');process.exitCode=3;}
+      break;
+    }
     case 'ensure-ready':
       process.exitCode = await ensureReady();
       break;

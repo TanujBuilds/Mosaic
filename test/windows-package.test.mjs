@@ -104,6 +104,7 @@ test('PowerShell checks the archive and installs only its verified inventory', {
     '$functions = $ast.EndBlock.Statements | Where-Object { $_ -is [System.Management.Automation.Language.FunctionDefinitionAst] } | ForEach-Object { $_.Extent.Text }',
     '$definitions = ($preamble + $functions) -join [char]10',
     '. ([ScriptBlock]::Create($definitions))',
+    'if ($env:OS -eq "Windows_NT") { $currentSid = [Security.Principal.WindowsIdentity]::GetCurrent().User }',
     '$Version = ' + literal(version),
     '$archive = ' + literal(archive),
     '$destination = ' + literal(destination),

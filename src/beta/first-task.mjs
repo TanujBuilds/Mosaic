@@ -403,6 +403,10 @@ export async function runFirstTask(paths, args = [], options = {}) {
     output.write(usage);
     return 0;
   }
+  if (process.platform==='win32' && (action==='guide'||action==='demo')) {
+    const {windowsCodingHold}=await import('../project/check-backends/platform-native-runtime.mjs');
+    if(windowsCodingHold){line(output,windowsCodingHold);return 1;}
+  }
   if (action === 'demo' || demoRun) {
     const parent = await realpath(demoParent);
     if (demoRun) await demoResult(output, parent, demoRun, goalId);

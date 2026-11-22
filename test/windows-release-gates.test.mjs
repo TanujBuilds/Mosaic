@@ -4,6 +4,6 @@ import {nativeBackendFactory} from '../src/project/check-backends/platform-nativ
 
 test('production rejects Windows revision 1 before a protected process can start', () => {
   assert.throws(() => nativeBackendFactory({id:'windows-appcontainer',revision:1}), {
-    code:'isolation',message:/filesystem isolation has not passed qualification/,
+    code:'isolation',message:/qualified Windows filesystem boundary/,
   });
 });

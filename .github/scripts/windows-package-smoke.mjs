@@ -44,8 +44,8 @@ async function sha256(file) {
   return h.digest('hex');
 }
 
-function launch(file, args, label) {
-  const child = spawn(file, args, {cwd: scratch, env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe']});
+function launch(file, args, label, input) {
+  const child = spawn(file, args, {cwd: scratch, env, windowsHide: true, stdio: [input ? 'pipe' : 'ignore', 'pipe', 'pipe']});
   let output = '';
   for (const stream of [child.stdout, child.stderr]) {
     stream.setEncoding('utf8');
@@ -56,6 +56,10 @@ function launch(file, args, label) {
     child.once('error', error => resolve({error, output}));
     child.once('close', (code, signal) => resolve({code, signal, output}));
   }).finally(() => clearTimeout(timeout));
+  if (input) {
+    child.stdin.on('error', () => {});
+    child.stdin.end(input);
+  }
   return {child, result, label};
 }
 
@@ -169,7 +173,10 @@ if (updateDirectory) {
   await done(install(pwsh, updateArchive, 'Reinstall the verified test update', update), 0);
   assert.equal(await readFile(pointer, 'utf8'), update.version + '\n');
   // Resume the exact durable state left after an authorized selection was recorded.
-  await writeFile(lock, JSON.stringify({schema: 1, operation: 'rollback', previous: updateReceipt, target: receipt}), {flag: 'wx'});
+  assert.equal(await exists(lock), false);
+  const intent = Buffer.from(JSON.stringify({schema: 1, operation: 'rollback', previous: updateReceipt, target: receipt}));
+  const helper = path.join(versions, update.version, 'runtime', 'bin', 'mosaic-files.exe');
+  await done(launch(helper, ['write', lock, String(intent.length)], 'Write the fixture recovery intent with the native ownership helper', intent), 0);
   await done(launch(launcher, ['recover'], 'Recover the saved rollback selection'), 0);
   assert.equal(await readFile(pointer, 'utf8'), candidate.version + '\n');
   assert.equal(await exists(lock), false);
