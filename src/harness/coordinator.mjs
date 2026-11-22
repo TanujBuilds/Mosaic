@@ -216,11 +216,16 @@ export class Coordinator {
   if(!['collaborative','deepseek_only','codex_only','overnight_review'].includes(manifest.mode.id)||(manifest.mode.version!==1&&!isOvernightV2(manifest)))throw Error('Select a built-in Mosaic Beta workflow');
   manifest.mode={...manifest.mode,capabilities:manifest.mode.capabilities.filter(id=>id!=='research')};
   manifest.capabilities=manifest.capabilities.filter(capability=>capability.id!=='research');
-  // Existing approval hashes retain their original capabilities on exact replay.
   if(process.platform==='win32' && manifest.project===null && manifest.mode.id==='codex_only' &&
-     manifest.reviewPolicy?.source==='host' && (!cachedApproval || windowsHostConsult(this,cachedApproval))){
-   manifest.mode={...manifest.mode,capabilities:['consult']};
-   manifest.capabilities=manifest.capabilities.filter(capability=>capability.id==='consult');
+     manifest.reviewPolicy?.source==='host'){
+   // Older drafts remain held under their original hash, including retries with
+   // a new command key but the same submission identity.
+   const originalHash=cachedApproval ? digest(cachedApproval) :
+    this.store.db.prepare("SELECT hash FROM submissions WHERE kind='goal' AND scope='' AND key=?").get(manifest.submissionId)?.hash;
+   if(originalHash!==digest(manifest)){
+    manifest.mode={...manifest.mode,capabilities:['consult']};
+    manifest.capabilities=manifest.capabilities.filter(capability=>capability.id==='consult');
+   }
   }
   if(manifest.mode.actors.includes('deepseek')&&!manifest.providerPolicy){
    if(cachedApproval){
@@ -354,6 +359,7 @@ export class Coordinator {
  startNativeText(input,key){return this.store.command(key,{op:'native.text.start',...input},()=>{
   if(this.beta)this.verifyCurrentWorker?.();
   const t=this.getTask(input.taskId),g=this.store.get('goal',t.goalId);this.liveTask(t);
+  if(process.platform==='win32' && this.beta)this.verifyGoalBinding(g,{taskId:t.id});
   if(!g.manifest.mode.actors.includes('codex')||!['consult','learning'].includes(t.spec.kind))throw Error('Mode/capability prohibits native text execution');
   if(t.spec.actor!=='codex')text(input.reason,'takeover reason');
   if(t.owner||!['codex_ready','blocked','stopped','awaiting_review'].includes(t.status))throw Error('Verify quiescence before native execution');
@@ -362,6 +368,7 @@ export class Coordinator {
  });}
  finishNativeText(input,key){return this.store.command(key,{op:'native.text.finish',...input},()=>{
   const t=this.getTask(input.taskId);this.liveTask(t);if(t.status!=='codex_active'||t.executionActor!=='codex'||!['consult','learning'].includes(t.spec.kind))throw Error('Native text ownership required');
+  if(process.platform==='win32' && this.beta)this.verifyGoalBinding(this.store.get('goal',t.goalId),{taskId:t.id});
   const lessons=t.spec.kind==='learning'?this.store.all('lesson').filter(l=>l.maintenanceId===t.id):[];
   if(t.spec.kind==='learning'&&(!lessons.length||lessons.some(l=>l.status==='candidate')||!this.store.all('evaluation').some(e=>lessons.some(l=>l.id===e.lessonId))))throw Error('Native learning needs a protected evaluation and finalized procedure decision');
   text(input.content,'native result',20000);t.result={content:input.content,actor:'codex',accounting:'native host; token totals unavailable',...(lessons.length?{lessons:lessons.map(l=>({id:l.id,status:l.status,recipeHash:l.recipeHash}))}:{})};t.status=this.store.get('goal',t.goalId).manifest.reviewPolicy&&t.spec.kind==='consult'?'awaiting_review':'accepted';this.store.put('task',t);this.emit('task.native_finished',t.goalId,t.id,{status:t.status,actor:'codex'});return this.getTask(t.id);

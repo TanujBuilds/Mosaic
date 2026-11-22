@@ -262,6 +262,29 @@ test('Windows Beta app-only consult uses host review and cannot grant project or
   skip: process.platform !== 'win32', timeout: 120000,
 }, async t => {
   const stage = await stageWindowsSource(t);
+  // Re-open a pre-consult draft with the exact historical capability inventory.
+  const {Coordinator} = await stage.load('harness/coordinator.mjs');
+  const {normalizeGoal, digest} = await stage.load('harness/contracts.mjs');
+  const old = new Coordinator({root:path.join(stage.root,'old consult drafts'),beta:true,selectedHost:'claude-code'});
+  try {
+    const raw = {submissionId:'historical-consult',mode:'codex_only',objective:'Explain the total.',
+      acceptance:['Include shipping.']};
+    const historical = normalizeGoal(old.reviewPreparation(raw,{portable:true}),old.registry);
+    historical.mode = {...historical.mode,capabilities:historical.mode.capabilities.filter(id=>id!=='research')};
+    historical.capabilities = historical.capabilities.filter(cap=>cap.id!=='research');
+    assert.ok(historical.mode.capabilities.includes('coding'));
+    const hash=digest(historical);
+    const saved=old.store.command('original-key',{op:'goal.prepare',manifest:historical},()=>
+      old.store.submission('goal','',raw.submissionId,hash,id=>({id,manifest:historical,hash,version:1,
+        status:'draft',createdAt:old.now(),activatedAt:null,deadline:null})));
+    for(const key of ['original-key','fresh-key']){
+      const retry=old.preparePortableGoal(raw,key);
+      assert.equal(retry.id,saved.id);
+      assert.equal(retry.hash,hash);
+    }
+    assert.throws(()=>old.preparePortableGoal({...raw,objective:'Changed objective'},'changed'),/Submission conflict/);
+    assert.throws(()=>old.activateGoal({goalId:saved.id,hash},'try-old-approval'),/Windows protected coding/);
+  } finally {old.close();}
   const {locations, privateDirectories} = await stage.load('beta/files.mjs');
   const home = path.join(stage.root, 'consult profile');
   await mkdir(home);
