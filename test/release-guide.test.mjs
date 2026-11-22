@@ -45,7 +45,7 @@ async function fixture(t, {state = 'saved', gitReady = true, skipGit = false, id
   t.after(() => rm(dir, {recursive: true, force: true}));
   const home = path.join(dir, "User's home");
   const launcher = path.join(home, '.local/bin/mosaic');
-  const runtime = path.join(home, 'Library/Application Support/Mosaic Beta/versions/0.1.0-beta.227/runtime');
+  const runtime = path.join(home, 'Library/Application Support/Mosaic Beta/versions/0.1.0-beta.228/runtime');
   const stage = path.join(dir, 'staging area');
   const setupState = path.join(home, 'setup-state');
   const trace = path.join(dir, 'trace');
@@ -139,7 +139,9 @@ esac
       child.once('close', code => resolve({code, output, trace: readFile(trace, 'utf8')}));
     });
   }
-  return {home, cwd, stage, script, repo, git, invoke};
+  const isolated = {home, cwd, stage, script, repo, git, invoke};
+  await mockLoginXdg(isolated, '');
+  return isolated;
 }
 
 function completed(code, result) {
@@ -338,11 +340,21 @@ test('a declined legacy migration keeps the settings and does not open host regi
   assert.equal(await readFile(path.join(f.home, 'setup-state'), 'utf8'), 'legacy');
 });
 
-test('existing worktree-level and XDG author settings are both reused', {skip: !portable}, async t => {
+async function mockLoginXdg(f, xdg) {
+  const fake = path.join(f.stage, 'launchctl');
+  const quote = value => "'" + value.replaceAll("'", "'\\''") + "'";
+  await writeFile(fake, '#!/bin/sh\ncase "$*" in\n  managername) printf "%s\\n" Aqua ;;\n' +
+    '  "getenv XDG_CONFIG_HOME") printf "%s\\n" ' + quote(xdg) + ' ;;\n  *) exit 1 ;;\nesac\n', {mode: 0o755});
+  const source = await readFile(f.script, 'utf8');
+  await writeFile(f.script, source.replace("'/bin/launchctl'", JSON.stringify(fake)));
+}
+
+test('existing worktree-level and matching shell and login XDG author settings are reused', {skip: !portable}, async t => {
   const f = await fixture(t, {identity: false});
   const xdg = path.join(f.home, 'configuration');
   await mkdir(path.join(xdg, 'git'), {recursive: true});
   await writeFile(path.join(xdg, 'git/config'), '[user]\n  email = xdg@example.invalid\n');
+  await mockLoginXdg(f, xdg);
   const config = path.join(f.cwd, '.git/config');
   f.git(f.cwd, 'config', 'extensions.worktreeConfig', 'true');
   f.git(f.cwd, 'config', '--worktree', 'user.name', 'Worktree User');
@@ -351,4 +363,25 @@ test('existing worktree-level and XDG author settings are both reused', {skip: !
   completed(0, result);
   assert.equal(await result.trace, 'host\nfirst-task\n--repo\n' + f.cwd + '\n');
   assert.deepEqual(await readFile(config), before);
+});
+
+test('a shell-only XDG author setting requires an explicit repo-local value', {skip: !portable}, async t => {
+  const f = await fixture(t, {identity: false});
+  const xdg = path.join(f.home, 'shell configuration');
+  const author = '[user]\n  email = shell@example.invalid\n';
+  const global = path.join(xdg, 'git/config');
+  await mkdir(path.dirname(global), {recursive: true});
+  await writeFile(global, author);
+  const config = path.join(f.cwd, '.git/config');
+  f.git(f.cwd, 'config', '--local', 'user.name', 'Existing User');
+  const before = await readFile(config);
+  const result = await f.invoke([
+    ['press Enter', '\n'],
+    ['this repository (email)', 'n\n'],
+  ], {XDG_CONFIG_HOME: xdg});
+  completed(2, result);
+  assert.match(result.output, /Terminal.*Mosaic coordinator/i);
+  assert.equal(await result.trace, 'host\n');
+  assert.deepEqual(await readFile(config), before);
+  assert.equal(await readFile(global, 'utf8'), author);
 });

@@ -1,5 +1,5 @@
 #!/bin/sh
-# Invoked beside verified host.mjs after the original Beta .227 installer.
+# Invoked beside verified host.mjs after the original Beta .228 installer.
 set -u
 
 resume() {
@@ -38,7 +38,7 @@ original_directory=$(pwd -P) || stop 1 'Open Terminal from an accessible directo
 stage=$(CDPATH= cd -P -- "$(/usr/bin/dirname -- "$0")" && pwd -P) ||
   stop 1 'The verified Mosaic setup files are unavailable.'
 launcher="$HOME/.local/bin/mosaic"
-runtime="$HOME/Library/Application Support/Mosaic Beta/versions/0.1.0-beta.227/runtime"
+runtime="$HOME/Library/Application Support/Mosaic Beta/versions/0.1.0-beta.228/runtime"
 node="$runtime/bin/node"
 if [ ! -x "$launcher" ] || [ ! -x "$node" ] || [ ! -f "$stage/host.mjs" ]; then
   stop 1 'The Mosaic launcher, bundled runtime or setup files are unavailable.'
@@ -145,6 +145,21 @@ async function findRepository(directory) {
   return 0;
 }
 
+async function loginXdgHome() {
+  // The coordinator runs in the GUI launchd domain, which does not inherit
+  // variables exported by a shell. Other contexts use the normal Git home.
+  const launchctl = (...args) => execute('/bin/launchctl', args, {...system, timeout: 2000});
+  try {
+    const {stdout: manager} = await launchctl('managername');
+    if (manager.trim() !== 'Aqua') return undefined;
+    const {stdout} = await launchctl('getenv', 'XDG_CONFIG_HOME');
+    const value = stdout.replace(/\r?\n$/u, '');
+    return path.isAbsolute(value) && !unsafePath.test(value) ? value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 async function missingIdentity(repo) {
   const [{currentHome}, {checkoutGit, gitInvocation}] = await Promise.all([
     load('beta/files.mjs'), load('project/git.mjs'),
@@ -156,25 +171,34 @@ async function missingIdentity(repo) {
       throw error;
     }
   }
+  const valid = value => Boolean(value?.trim()) && !unsafePath.test(value);
   const xdg = process.env.XDG_CONFIG_HOME;
+  const shellXdg = xdg && path.isAbsolute(xdg) ? xdg : undefined;
   const missing = [];
+  let loginProbe, differentEnvironments = false;
   for (const key of ['name', 'email']) {
     const query = ['--no-includes', '--null', '--get', 'user.' + key];
-    // The packaged Git boundary suppresses system/global config here, so
-    // this lookup includes both repository and worktree config.
+    // System and global config are suppressed by the packaged boundary.
     const local = await read(() => checkoutGit(repo, ['config', ...query]));
-    const global = gitInvocation(['config', '--global', ...query], {discover: false});
-    const env = {...global.env, HOME: currentHome(), ...(xdg && path.isAbsolute(xdg) ? {XDG_CONFIG_HOME: xdg} : {})};
-    delete env.GIT_CONFIG_GLOBAL;
-    const value = local ?? await read(async () => (await execute(global.executable, global.args, {
-      ...system, env, cwd: '/', timeout: 3000,
-    })).stdout);
-    if (value === null) missing.push(key);
-    else if (!value.trim() || unsafePath.test(value)) {
-      throw Error('Review your existing Git author identity in Git before continuing.');
+    if (local !== null) {
+      if (!valid(local)) throw Error('Review your existing Git author identity in Git before continuing.');
+      continue;
     }
+    const global = gitInvocation(['config', '--global', ...query], {discover: false});
+    async function readGlobal(xdgHome) {
+      const env = {...global.env, HOME: currentHome(), ...(xdgHome ? {XDG_CONFIG_HOME: xdgHome} : {})};
+      delete env.GIT_CONFIG_GLOBAL;
+      return read(async () => (await execute(global.executable, global.args, {
+        ...system, env, cwd: '/', timeout: 3000,
+      })).stdout);
+    }
+    const loginXdg = await (loginProbe ??= loginXdgHome());
+    const loginValue = await readGlobal(loginXdg);
+    const shellValue = shellXdg === loginXdg ? loginValue : await readGlobal(shellXdg);
+    if (loginValue !== shellValue) differentEnvironments = true;
+    if (loginValue !== shellValue || !valid(loginValue)) missing.push(key);
   }
-  return missing;
+  return {missing, differentEnvironments};
 }
 
 async function saveIdentity(repo, expected, name, email) {
@@ -191,7 +215,7 @@ async function saveIdentity(repo, expected, name, email) {
     // Use Git's own lock so a concurrent git config writer cannot add values
     // between the missing-field check and the rename of the complete config.
     lock = await open(lockPath, 'wx', 0o600);
-    const missing = await missingIdentity(repo);
+    const {missing} = await missingIdentity(repo);
     if (missing.length === 0 || missing.join(' ') !== expected) {
       throw Error('Git author settings changed. Review them before retrying.');
     }
@@ -245,7 +269,12 @@ try {
     case 'git': process.exitCode = await systemGitReady() ? 0 : 1; break;
     case 'git-wait': process.exitCode = await waitForGit(); break;
     case 'repo': process.exitCode = await findRepository(candidate); break;
-    case 'identity': process.stdout.write((await missingIdentity(candidate)).join(' ')); break;
+    case 'identity': {
+      const {missing, differentEnvironments} = await missingIdentity(candidate);
+      if (differentEnvironments) console.error('Terminal and the Mosaic coordinator see different Git author settings.');
+      process.stdout.write(missing.join(' '));
+      break;
+    }
     case 'identity-write': await saveIdentity(candidate, expected, name, email); break;
     default: process.exitCode = 1;
   }
