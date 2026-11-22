@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { randomUUID } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 import { copyFile, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import net from 'node:net';
 import os from 'node:os';
@@ -78,6 +79,14 @@ test(
 );
 
 const native = { skip: process.platform !== 'win32', timeout: 180000 };
+test('the trusted supervisor reports the same kernel boot GUID across independent invocations', native, () => {
+  const helper = process.env.MOSAIC_TEST_WINDOWS_SUPERVISOR;
+  const read = () => execFileSync(helper, ['--boot-id'], {encoding: 'utf8', timeout: 5000}).trim();
+  const first = read();
+  assert.match(first, /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/);
+  assert.equal(read(), first);
+});
+
 async function fixture(t) {
   assert.equal(process.arch, 'x64');
   assert.equal(process.versions.node, '24.22.3', 'run the exact Windows release Node');

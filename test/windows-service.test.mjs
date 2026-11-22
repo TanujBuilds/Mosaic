@@ -26,7 +26,12 @@ test('native scheduled task can be created, verified, removed and registered aga
   const paths=files.locations(tmp,true);await files.privateDirectories(paths);
   t.after(async()=>{if(await service.registration(paths).then(x=>x.registered).catch(()=>false))await service.unregisterWindowsService(paths)});
   assert.equal((await service.registration(paths)).owned,false);
+  const nonce='b4f5bcc4-b1d6-4d46-b386-38986063d6aa';
+  const creating={version:1,phase:'creating',definition:files.hash(serviceDefinition(paths)),nonce};
+  await files.saveJson(service.serviceRecord(paths),creating);
   await service.ensureWindowsService(paths);
+  // Simulate losing the receipt write after Task Scheduler registered the task.
+  await files.saveJson(service.serviceRecord(paths),creating);
   const first=await service.registration(paths);
   assert.equal(first.registered,true);assert.equal(first.owned,true);
   assert.equal(await service.ensureWindowsService(paths),first.xmlHash);

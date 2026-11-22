@@ -119,7 +119,9 @@ export async function startLaunchAgent(paths,{allowUnrecorded=false}={}){
  if(paths.isolated)return false;
  const owned=await verifyLaunchAgent(paths,{allowUnrecorded});
  if(process.platform==='win32'){
-  if(!await online(paths))await startWindowsService(paths);
+  if(await online(paths)){
+   if(!owned||!await loaded(paths))throw Error('Stop the foreground Mosaic Beta coordinator before service registration.');
+  }else await startWindowsService(paths);
  }else{
  if(!owned){
   await mkdir(path.dirname(paths.plist),{recursive:true,mode:0o700});

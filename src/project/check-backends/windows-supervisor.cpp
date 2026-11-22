@@ -10,6 +10,7 @@
 #include <aclapi.h>
 #include <algorithm>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <memory>
 #include <sddl.h>
@@ -205,10 +206,19 @@ static std::vector<wchar_t> environment(const fs::path &stage) {
   wchar_t system[MAX_PATH]{};
   const UINT size = GetSystemWindowsDirectoryW(system, MAX_PATH);
   require(size && size < MAX_PATH, "Windows directory");
+  // Windows also reads LOCALAPPDATA from the explicitly supplied child
+  // environment while constructing the package profile. No ambient variables
+  // are inherited by the check.
+  std::vector<wchar_t> appData(32768);
+  const DWORD count = GetEnvironmentVariableW(
+      L"LOCALAPPDATA", appData.data(), static_cast<DWORD>(appData.size()));
+  require(count && count < appData.size(),
+          "missing local AppContainer profile root");
   const wstring temp =
       (stage / L"work" / L".overnight-output" / L"tmp").wstring();
   std::vector<wstring> vars = {L"CI=1",
                                L"HOME=" + temp,
+                               L"LOCALAPPDATA=" + wstring(appData.data()),
                                L"MOSAIC_APPROVED_INPUTS=" +
                                    (stage / L"inputs").wstring(),
                                L"PATH=" + (stage / L"runtime").wstring(),
@@ -504,8 +514,40 @@ static int run(int argc, wchar_t **argv) {
   emit(record);
   return 0;
 }
+// The kernel assigns a GUID to this boot session. A wall-clock estimate from
+// uptime/LastBootUpTime cannot prove that all owners of a prior boot are gone.
+static int bootId() {
+  using Query = LONG(NTAPI *)(ULONG, PVOID, ULONG, PULONG);
+  HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+  require(ntdll != nullptr, "locate system runtime");
+  FARPROC symbol = GetProcAddress(ntdll, "NtQuerySystemInformation");
+  require(symbol != nullptr, "locate kernel boot query");
+  Query query = nullptr;
+  static_assert(sizeof(query) == sizeof(symbol));
+  std::memcpy(&query, &symbol, sizeof(query));
+  struct {
+    GUID id;
+    ULONG firmwareType;
+    ULONGLONG flags;
+  } boot{};
+  ULONG returned = 0;
+  constexpr ULONG systemBootEnvironmentInformation = 90;
+  const GUID empty{};
+  require(query(systemBootEnvironmentInformation, &boot, sizeof(boot),
+                &returned) >= 0 &&
+              returned >= sizeof(GUID) &&
+              std::memcmp(&boot.id, &empty, sizeof(GUID)) != 0,
+          "kernel boot GUID unavailable");
+  const GUID &id = boot.id;
+  std::printf("%08lx-%04x-%04x-%02x%02x-%02x%02x%02x%02x%02x%02x\n", id.Data1,
+              id.Data2, id.Data3, id.Data4[0], id.Data4[1], id.Data4[2],
+              id.Data4[3], id.Data4[4], id.Data4[5], id.Data4[6], id.Data4[7]);
+  return 0;
+}
 int wmain(int argc, wchar_t **argv) {
   try {
+    if (argc == 2 && wstring(argv[1]) == L"--boot-id")
+      return bootId();
     return run(argc, argv);
   } catch (const std::exception &error) {
     std::fprintf(stderr, "Mosaic Windows supervisor: %s\n", error.what());

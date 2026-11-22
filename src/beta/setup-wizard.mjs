@@ -1,3 +1,4 @@
+const localMachine=process.platform==='win32'?'this Windows PC':'this Mac';
 import {collectMultiWorkerSetup} from './multi-worker-setup.mjs';
 import {normalizeSettings} from './settings.mjs';
 import {getHost,HOST_IDS} from './hosts/index.mjs';
@@ -60,17 +61,18 @@ async function advanced(ask,output,hostId,{execution,nativeCheckRuntime,existing
 }
 
 export async function collectPortableSetup(ask,output,{execution,nativeCheckRuntime,existingSettings=null,existingCredentialRefs=[],choose,previousSelection,detectedHosts,retryEndpoint=false}={}){
- if(!choose)output.write('Mosaic coordinates work. Your coding app is the conversation and default review surface; a worker is an existing compatible local or API model server.\nApproved task context goes to the supplied worker endpoint. Remote and hosted endpoints send it off this Mac. Even a local worker does not make app review local: review may use the app\'s cloud service. Separate reviewer APIs are an advanced choice.\nNo automatic server discovery, model installation or inference. Choosing an app does not prove it is connected.\n');
+ if(!choose)output.write('Mosaic coordinates work. Your coding app is the conversation and default review surface; a worker is an existing compatible local or API model server.\nApproved task context goes to the supplied worker endpoint. Remote and hosted endpoints send it off '+localMachine+'. Even a local worker does not make app review local: review may use the app\'s cloud service. Separate reviewer APIs are an advanced choice.\nNo automatic server discovery, model installation or inference. Choosing an app does not prove it is connected.\n');
  if(existingSettings)output.write('Existing settings detected: advanced setup will collect an explicit replacement. Cancelling preserves your current workers and review settings; inspect the exact replacement before applying.\n');
  const detected=new Set(detectedHosts);
+ const preferredHost=process.platform==='win32'&&detected.has('claude-code')?'claude-code':'codex';
  const hosts=HOST_IDS.map((id,i)=>({
   value:String(i+1),
-  label:getHost(id).displayName+(detected.has(id)?id==='codex'?' (found, recommended)':' (found)':'')
+  label:getHost(id).displayName+(detected.has(id)?id===preferredHost?' (found, recommended)':' (found)':'')
  }));
  const defaultHost=existingSettings?.host.id??(process.platform==='win32'&&detected.has('claude-code')?'claude-code':HOST_IDS.find(id=>detected.has(id)))??'codex';
  const workers=[
   {value:'4',label:'Use coding app only'},
-  {value:'1',label:'Model on this Mac'},
+  {value:'1',label:'Model on '+localMachine+''},
   {value:'2',label:'Remote model server'},
   {value:'3',label:'Hosted model API'},
   {value:'6',label:'Two or three workers'},
@@ -94,7 +96,7 @@ export async function collectPortableSetup(ask,output,{execution,nativeCheckRunt
   const options=hosts.map(({value,label})=>`  ${value}. ${label}`).join('\n');
   const hostChoice=await ask(`Mosaic portable setup\n${options}\nChoose host [${defaultChoice}]: `)||defaultChoice;
   hostId=HOST_IDS[integer(hostChoice,1,4,'host choice')-1];
-  choice=existingSettings?5:integer(await ask('Worker setup\n  1. Model on this Mac\n  2. Model on another computer (for example a Spark)\n  3. Hosted API\n  4. No worker yet / use the coding app only\n  5. Advanced setup\n  6. Guided setup for two or three workers\nChoose worker setup [1]: ')||'1',1,6,'worker setup choice');
+  choice=existingSettings?5:integer(await ask('Worker setup\n  1. Model on '+localMachine+'\n  2. Model on another computer (for example a Spark)\n  3. Hosted API\n  4. No worker yet / use the coding app only\n  5. Advanced setup\n  6. Guided setup for two or three workers\nChoose worker setup [1]: ')||'1',1,6,'worker setup choice');
  }
  if(choice===6)return collectMultiWorkerSetup(ask,output,{hostId,execution,nativeCheckRuntime,createProfile:profile,retryEndpoint});
  if(choice===5)return advanced(ask,output,hostId,{execution,nativeCheckRuntime,existingSettings,existingCredentialRefs});
@@ -103,7 +105,7 @@ export async function collectPortableSetup(ask,output,{execution,nativeCheckRunt
   if(choose)output.write(choice===1?'Use the URL of your running local model server.\n':
    choice===2?'Use the address of your Spark or other model server.\n':'Choose the provider that issued your API key.\n');
   else output.write('Copy the API base URL and exact model ID from your existing server or API provider configuration. Mosaic uses its supported OpenAI-compatible worker transport; it will not contact the endpoint until you explicitly choose optional model discovery or the separate inference test.\n');
-  if(choice===2)output.write('For another computer, supply an address reachable from this Mac. localhost means the computer running Mosaic, not the other computer; no particular tunnel is required.\n');
+  if(choice===2)output.write('For another computer, supply an address reachable from '+localMachine+'. localhost means the computer running Mosaic, not the other computer; no particular tunnel is required.\n');
   const urlPrompt='API base URL: ';
   const {baseUrl,preset}=choice===3
    ?await selectHostedWorkerEndpoint(ask,output,urlPrompt,{choose,retry:retryEndpoint})
@@ -129,8 +131,8 @@ export function formatPortableSetupSummary(settings,{manualHost,compact=false}={
   else fields.push('  Worker      None');
   fields.push('', '  Review happens in your coding app, which may use its cloud service.');
   if(worker)fields.push(isLoopbackProvider(worker.baseUrl)
-   ?'  The worker URL connects to a loopback listener on this Mac.'
-   :'  Approved task context leaves this Mac for the endpoint above.');
+   ?'  The worker URL connects to a loopback listener on '+localMachine+'.'
+   :'  Approved task context leaves '+localMachine+' for the endpoint above.');
   fields.push('  Coding review can include unchanged files in the approved read scope and excerpts of check output.');
   return setupSection('Review your setup') + fields.join('\n')+'\n';
  }
@@ -139,7 +141,7 @@ export function formatPortableSetupSummary(settings,{manualHost,compact=false}={
   for(const worker of workers){
    const routes=settings.defaults.routing?.rules.filter(r=>r.providerId===worker.id).map(r=>r.category)??[],roles=[...(settings.defaults.workerId===worker.id?['default']:[]),...(settings.defaults.plannerWorkerId===worker.id?['planner']:[])],group=settings.capacityGroups.find(g=>g.id===worker.capacityGroup),members=workers.filter(p=>p.capacityGroup===worker.capacityGroup).map(p=>p.displayName);
    lines.push(`${worker.displayName}: ${worker.model} at ${worker.baseUrl}; private bearer key ${worker.credentialRef?'configured':'not required'}.`);
-   lines.push(isLoopbackProvider(worker.baseUrl)?'  The worker URL connects to a loopback listener on this Mac.':'  Approved task context goes to this endpoint off this Mac.');
+   lines.push(isLoopbackProvider(worker.baseUrl)?'  The worker URL connects to a loopback listener on '+localMachine+'.':'  Approved task context goes to this endpoint off '+localMachine+'.');
    lines.push(`  Role: worker${roles.length?', '+roles.join(', '):''}; chosen routes: ${routes.length?routes.join(', '):'none (available in the pool)'}. Worker limit: ${worker.concurrency}; shared service with ${members.join(', ')}: ${group.limit} slot${group.limit===1?'':'s'}.`);
   }
   if(settings.defaults.routing)lines.push('Specialties are chosen routes, not proof of model quality. Unassigned categories use the default worker.');
@@ -147,7 +149,7 @@ export function formatPortableSetupSummary(settings,{manualHost,compact=false}={
   lines.push(`Concurrency: ${settings.serviceMaxConcurrentTasks} service slot${settings.serviceMaxConcurrentTasks===1?'':'s'}; worker slots ${workers.map(p=>p.concurrency).join(', ')}; capacity group slots ${settings.capacityGroups.map(g=>g.limit).join(', ')}.`);
  }else lines.push('No worker configured: local model delegation is not ready; use the coding app only.');
  if(settings.defaults.review.source==='host')lines.push(`Reviewer: ${host.displayName} (selected coding app); review may use its cloud service, even with a local worker.`);
- else {const p=settings.providers.find(p=>p.id===settings.defaults.review.reviewer.id);lines.push(`Reviewer: separate API ${p.displayName}, ${p.model} at ${p.baseUrl} (${p.transport}). Approved review evidence goes to that endpoint ${isLoopbackProvider(p.baseUrl)?'via a loopback listener on this Mac':'off this Mac'}.`);}
+ else {const p=settings.providers.find(p=>p.id===settings.defaults.review.reviewer.id);lines.push(`Reviewer: separate API ${p.displayName}, ${p.model} at ${p.baseUrl} (${p.transport}). Approved review evidence goes to that endpoint ${isLoopbackProvider(p.baseUrl)?'via a loopback listener on '+localMachine+'':'off '+localMachine+''}.`);}
  lines.push('Coding review can include up to 128 files within the approved read scope, including unchanged files, and the first 4,096 characters each of stdout and stderr per check. The complete evidence packet is capped at 512 KiB.');
  lines.push('Host connection: '+(manualHost?'manual registration pending; saving settings does not connect the app.':'fixture-tested registration; actual app connection remains unverified.'));
  lines.push('Discovery and inference: untested until their separate optional checks. A check does not prove coding quality or app connection; context capacity remains unverified.');
