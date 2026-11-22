@@ -99,7 +99,10 @@ static std::vector<Handle> parents(const wstring& path, bool make, User& user) {
         // the directory handle; aliases and reparse transitions fail closed.
         std::vector<wchar_t> actual(32768);
         DWORD n=GetFinalPathNameByHandleW(h.h,actual.data(),DWORD(actual.size()),FILE_NAME_NORMALIZED|VOLUME_NAME_DOS);
-        require(n>0 && n<actual.size() && _wcsicmp(actual.data(),(L"\\\\?\\"+dir).c_str())==0,"Noncanonical directory");
+        std::vector<wchar_t> expanded(32768);
+        DWORD count=GetLongPathNameW(dir.c_str(),expanded.data(),DWORD(expanded.size()));
+        require(count>0 && count<expanded.size() && n>0 && n<actual.size() &&
+            _wcsicmp(actual.data(),(L"\\\\?\\"+wstring(expanded.data())).c_str())==0,"Noncanonical directory");
         pins.emplace_back(std::move(h));
     };
     pin(root);
