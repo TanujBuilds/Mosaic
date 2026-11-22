@@ -1,0 +1,33 @@
+name: Frozen Windows trial coordinator restart
+
+'on':
+  push:
+    branches: [codex/windows-private-restart]
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  restart:
+    runs-on: windows-2025
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24.22.3'
+          package-manager-cache: false
+      - name: Download the exact private Windows trial
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          github-token: ${{ github.token }}
+          run-id: 45052575762
+          artifact-ids: 14766183423
+          merge-multiple: true
+          path: ${{ runner.temp }}/Mosaic frozen restart
+      - name: Recover the exact installed protected task across coordinator restart
+        shell: pwsh
+        run: node .github/scripts/windows-protected-js-installed.mjs (Join-Path $env:RUNNER_TEMP 'Mosaic frozen restart')

@@ -14,7 +14,13 @@ assert.equal(process.arch, 'x64');
 assert.equal(process.env.RUNNER_ENVIRONMENT, 'github-hosted');
 const directory = process.argv[2];
 const candidate = JSON.parse(await readFile(path.join(directory,'candidate.json'),'utf8'));
-assert.equal(candidate.sourceCommit, process.env.GITHUB_SHA);
+const archived = process.env.GITHUB_REF === 'refs/heads/codex/windows-private-restart';
+if (archived) {
+  assert.equal(candidate.sourceCommit,'7cf176d1cdb3260182f5e1c1e7ac3a673c93af7b');
+  assert.equal(candidate.sourceTree,'17586a60fa4f26b5d7ed23d6314952071eb7be4b');
+  assert.equal(candidate.archiveSha256,'78f5ef24be34a7cfefd4cc4f0e07e5bda7181b71c5286c20c7606f42886fd311');
+  assert.equal(candidate.javascriptFingerprint,'dcc13cfd0085e091f3ae444615c0e14eaee4d7368fdf8f6243b1ebab8337b84c');
+} else assert.equal(candidate.sourceCommit, process.env.GITHUB_SHA);
 assert.match(candidate.javascriptFingerprint, /^[a-f0-9]{64}$/);
 const bootstrap = path.join(directory,'install.ps1'), archive = path.join(directory,candidate.archiveName);
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -110,29 +116,45 @@ if (invoiceTotal(1250, 0) !== 1250) throw 'Preserve zero shipping';
     import {serve} from ${JSON.stringify(pathToFileURL(path.join(runtime,'src','harness','cli.mjs')).href)};
     await serve({root:process.argv[1], port:0, runtimeConfig:JSON.parse(process.argv[2]),headless:true});
   `;
-  const child = spawn(node,['--input-type=module','-e',service,state,JSON.stringify(config)], {
-    env,windowsHide:true,stdio:['ignore','pipe','pipe'],
-  });
-  let errors = '';
-  child.stderr.on('data', bytes => { errors += bytes; });
-  const closed = once(child,'close');
-  const lines = createInterface({input:child.stdout});
-
-  let invoke;
-  try {
+  let active, endpoint;
+  async function startService() {
+    const child = spawn(node,['--input-type=module','-e',service,state,JSON.stringify(config)], {
+      env,windowsHide:true,stdio:['ignore','pipe','pipe'],
+    });
+    const closed = once(child,'close');
+    const lines = createInterface({input:child.stdout});
+    active = {child,closed,lines};
+    let errors = '';
+    child.stderr.on('data', bytes => { if (errors.length < 8192) errors += bytes; });
     const [line] = await Promise.race([once(lines,'line'),closed.then(() => {throw Error(errors);}),
-      delay(20000,[] ,{ref:false})]);
+      delay(25000,[],{ref:false})]);
     assert.ok(line,'Installed coordinator did not start');
-    const endpoint = JSON.parse(await readFile(path.join(state,'connection.json'),'utf8'));
+    endpoint = JSON.parse(await readFile(path.join(state,'connection.json'),'utf8'));
     assert.equal(new URL(endpoint.url).hostname,'127.0.0.1');
-    invoke = async (name,input={}) => {
-      const result = await fetch(new URL('/api/invoke',endpoint.url),{method:'POST',
-        headers:{'content-type':'application/json',authorization:'Bearer '+endpoint.token},
-        body:JSON.stringify({name,input}),signal:AbortSignal.timeout(90000)});
-      const body = await result.json();
-      if (!result.ok) throw Error(name + ' failed: ' + body.error);
-      return body;
-    };
+  }
+  const invoke = async (name,input={}) => {
+    const result = await fetch(new URL('/api/invoke',endpoint.url),{method:'POST',
+      headers:{'content-type':'application/json',authorization:'Bearer '+endpoint.token},
+      body:JSON.stringify({name,input}),signal:AbortSignal.timeout(90000)});
+    const body = await result.json();
+    if (!result.ok) throw Error(name + ' failed: ' + body.error);
+    return body;
+  };
+  async function stopService(crash = false) {
+    if (!active) return;
+    const {child,closed,lines} = active;
+    if (child.exitCode === null && child.signalCode === null) {
+      if (crash) assert.ok(child.kill());
+      else await invoke('service_stop',{idempotencyKey:'windows-js-close-'+child.pid}).catch(()=>{});
+      const result = await Promise.race([closed,delay(2500,null,{ref:false})]);
+      if (!result && child.exitCode === null && child.signalCode === null) child.kill();
+    }
+    await closed;
+    lines.close();
+    active = undefined;
+  }
+  try {
+    await startService();
     const key = (name,input,id=name) => invoke(name,{...input,idempotencyKey:'windows-js-'+id});
     const operation = async (name,input,id=name) => {
       const {id:operationId} = await key(name,input,id);
@@ -183,9 +205,20 @@ if (invoiceTotal(1250, 0) !== 1250) throw 'Preserve zero shipping';
     const ticket = await key('review_reserve',item.binding);
     await key('review_submit',{ticketId:ticket.ticketId,...item.binding,
       verdict:{decision:'accept',feedback:'Scripted host reviewed the exact invoice diff and protected evidence.',findings:[]}});
-    const context = await invoke('owner_action_context',{goalId:goal.id,taskId:task.id});
+    let context = await invoke('owner_action_context',{goalId:goal.id,taskId:task.id});
+    const originalBinding = context.candidate.binding;
+    if (archived) {
+      await stopService(true);
+      await startService();
+      context = await invoke('owner_action_context',{goalId:goal.id,taskId:task.id});
+      assert.equal(context.candidate.binding,originalBinding);
+    }
     const integrate = {taskId:task.id,expectedIntegrationBinding:context.candidate.binding,feedback:'Integrate the approved invoice change'};
     const accepted = await operation('task_integrate',integrate);
+    if (archived) {
+      await stopService();
+      await startService();
+    }
     const repeated = await operation('task_integrate',integrate);
     assert.equal(accepted.integration.commit,repeated.integration.commit);
     assert.equal((await git('rev-list','--parents','-1',accepted.integration.commit)).trim(),accepted.integration.commit+' '+base);
@@ -196,14 +229,8 @@ if (invoiceTotal(1250, 0) !== 1250) throw 'Preserve zero shipping';
     assert.equal(accepted.integration.checks[0].quiescence.activeProcesses,0);
     assert.equal((await git('rev-parse','HEAD')).trim(),base);
     console.log(JSON.stringify({integration:accepted.integration.commit,baseline:base,approvedCheckSha256:digest(check),
-      scriptedReview:true,replayReturnedSameCommit:true,configuredWorkers:0}));
+      scriptedReview:true,replayReturnedSameCommit:true,coordinatorReplacedBeforeAndAfterIntegration:archived,configuredWorkers:0}));
   } finally {
-    if (invoke) await invoke('service_stop',{idempotencyKey:'windows-js-close'}).catch(()=>{});
-    if (child.exitCode === null) {
-      const result = await Promise.race([closed,delay(2500, null,{ref:false})]);
-      if (!result && child.exitCode === null) child.kill();
-    }
-    await closed;
-    lines.close();
+    await stopService();
   }
 }
