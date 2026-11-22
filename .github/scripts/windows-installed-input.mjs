@@ -11,6 +11,16 @@ const historical = {
 };
 export function installedCandidate(host) {
   const env = process.env;
+  if (env.GITHUB_REF === 'refs/heads/codex/windows-js-hosts') {
+    assert.equal(env.RUNNER_ENVIRONMENT, 'github-hosted');
+    assert.ok(!env.MOSAIC_QA_CANDIDATE && !env.MOSAIC_QA_ARTIFACT_ID);
+    return {
+      version:'0.1.0-beta.234',source:'7cf176d1cdb3260182f5e1c1e7ac3a673c93af7b',tree:'17586a60fa4f26b5d7ed23d6314952071eb7be4b',
+      artifactId:14766183423,archiveSha:'78f5ef24be34a7cfefd4cc4f0e07e5bda7181b71c5286c20c7606f42886fd311',
+      manifestSha:'835a3db94530d8744514bc17ebc11c17ebbab4c533aa25098fe4cb4c34f56e83', bootstrapSha:'6a1e53c0d9874ce6839cc7e65a2db5e6cd8992b3c6bc07b8757e325e828342e1',
+      javascriptFingerprint:'dcc13cfd0085e091f3ae444615c0e14eaee4d7368fdf8f6243b1ebab8337b84c',
+    };
+  }
   assert.equal(env.RUNNER_ENVIRONMENT, 'github-hosted');
   if (env.GITHUB_REF === 'refs/heads/codex/windows-' + host + '-installed') {
     assert.ok(!env.MOSAIC_QA_CANDIDATE && !env.MOSAIC_QA_ARTIFACT_ID);

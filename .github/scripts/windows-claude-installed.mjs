@@ -12,7 +12,7 @@ assert.equal(process.platform, 'win32');
 assert.equal(process.arch, 'x64');
 assert.equal(process.versions.node, '24.22.3');
 assert.equal(process.env.RUNNER_ENVIRONMENT, 'github-hosted');
-const {source, tree, archiveSha, manifestSha, bootstrapSha, artifactId} = installedCandidate('claude');
+const {source, tree, archiveSha, manifestSha, bootstrapSha, artifactId, version:packageVersion='0.1.0-beta.229', javascriptFingerprint} = installedCandidate('claude');
 assert.equal(process.argv.length, 5);
 const [home, vendor, bundle] = process.argv.slice(2);
 assert.equal(path.dirname(home), process.env.RUNNER_TEMP);
@@ -82,8 +82,9 @@ assert.equal(candidate.kind, 'mosaic-windows-beta-candidate');
 assert.equal(candidate.platform, 'win32-x64');
 assert.equal(candidate.sourceCommit, source);
 assert.equal(candidate.sourceTree, tree);
-assert.equal(candidate.version, '0.1.0-beta.229');
-assert.equal(candidate.archiveName, 'mosaic-beta-0.1.0-beta.229-win-x64.zip');
+assert.equal(candidate.version, packageVersion);
+assert.equal(candidate.javascriptFingerprint,javascriptFingerprint);
+assert.equal(candidate.archiveName, 'mosaic-beta-'+packageVersion+'-win-x64.zip');
 assert.equal(candidate.archiveSha256, archiveSha);
 assert.equal(candidate.bootstrapSha256, bootstrapSha);
 assert.equal(candidate.packageManifestSha256, manifestSha);
@@ -110,7 +111,7 @@ const load = relative => import(pathToFileURL(path.join(version, 'runtime', rela
 const {locations} = await load('src/beta/files.mjs');
 const {HOST_IDS} = await load('src/beta/hosts/index.mjs');
 const {setupPortable, portableSetupComplete} = await load('src/beta/portable-setup.mjs');
-const {readBundledNativeCheckRuntime} = await load('src/beta/package-contract.mjs');
+const {readBundledNativeCheckRuntime,readBundledJavaScriptCheckRuntime} = await load('src/beta/package-contract.mjs');
 const {readSettings} = await load('src/beta/settings.mjs');
 const {client} = await load('src/beta/client.mjs');
 const {readHostConnection} = await load('src/beta/hosts/connection-evidence.mjs');
@@ -168,8 +169,11 @@ let stopped = false;
 try {
   await absent(path.join(paths.state, 'connection.json'));
   await handshake('before_start', 'failed');
-  const nativeCheckRuntime = await readBundledNativeCheckRuntime();
-  const execution = {backend:'windows-appcontainer', backendRevision:1,
+  const nativeCheckRuntime = javascriptFingerprint
+    ? await readBundledJavaScriptCheckRuntime(path.join(version,'runtime'), (await json(path.join(version,'package-manifest.json'))).javascriptCheckArtifact)
+    : await readBundledNativeCheckRuntime();
+  if (javascriptFingerprint) assert.equal(nativeCheckRuntime.artifactManifestSha256,javascriptFingerprint);
+  const execution = {backend:javascriptFingerprint?'windows-isolated-js':'windows-appcontainer', backendRevision:1,
     runtimeFingerprint:nativeCheckRuntime.artifactManifestSha256};
   const prompts = [
     [/Choose host/u, String(HOST_IDS.indexOf('claude-code') + 1)],
