@@ -95,13 +95,12 @@ const bootstrap = path.join(bundle, 'install.ps1');
 assert.equal(await sha256(archive), archiveSha);
 assert.equal(await sha256(bootstrap), bootstrapSha);
 const powershell = path.join(system, 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+const installEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) =>
+  !/^(?:PATH|PSMODULEPATH|NODE_OPTIONS|NODE_PATH)$/i.test(key)));
+installEnv.Path = [system, process.env.SystemRoot].join(';');
 await run(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
   '-File', bootstrap, '-Archive', archive, '-ArchiveSha256', archiveSha,
-  '-Version', candidate.version, '-NoGuide'], {timeout:120_000, inputEnv:{
-    OS:process.env.OS, SystemRoot:process.env.SystemRoot, WINDIR:process.env.SystemRoot,
-    Path:system, USERPROFILE:process.env.USERPROFILE, LOCALAPPDATA:appData,
-    APPDATA:process.env.APPDATA, TEMP:process.env.TEMP, TMP:process.env.TMP,
-  }});
+  '-Version', candidate.version, '-NoGuide'], {timeout:150_000, inputEnv:installEnv});
 const version = path.join(root, 'versions', candidate.version);
 const receipt = await json(path.join(root, 'config', 'installation.json'));
 assert.equal(receipt.archiveSha256, archiveSha);
