@@ -8,7 +8,7 @@ const exec=promisify(execFile);
 const taskProgram=String.raw`
 $ErrorActionPreference = 'Stop'
 $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-$name = "Mosaic Beta " + $sid + " " + $env:MOSAIC_TASK_SUFFIX
+$name = $env:MOSAIC_TASK_PRODUCT + " " + $sid + " " + $env:MOSAIC_TASK_SUFFIX
 $service = New-Object -ComObject Schedule.Service
 $service.Connect()
 $folder = $service.GetFolder('\')
@@ -27,10 +27,14 @@ if ($env:MOSAIC_TASK_OPERATION -eq 'adopt') {
   $d = $task.Definition
   if ($d.RegistrationInfo.Description -ne $env:MOSAIC_TASK_DESCRIPTION -or
       $d.Actions.Count -ne 1 -or $d.Actions.Item(1).Type -ne 0 -or
-      $d.Actions.Item(1).Path -cne $env:MOSAIC_TASK_LAUNCHER -or
-      $d.Actions.Item(1).Arguments -cne 'serve' -or $d.Actions.Item(1).WorkingDirectory -cne $env:MOSAIC_TASK_STATE -or
+      $d.Actions.Item(1).Path -cne $env:MOSAIC_TASK_EXECUTABLE -or
+      $d.Actions.Item(1).Arguments -cne $env:MOSAIC_TASK_ARGUMENTS -or $d.Actions.Item(1).WorkingDirectory -cne $env:MOSAIC_TASK_STATE -or
       $d.Triggers.Count -ne 1 -or $d.Triggers.Item(1).Type -ne 9 -or
       $d.Principal.LogonType -ne 3 -or $d.Principal.RunLevel -ne 0) { throw 'Interrupted registration differs from its saved intent.' }
+  if ($env:MOSAIC_TASK_PRODUCT -eq 'Mosaic Core' -and
+      ($d.Settings.MultipleInstances -ne 2 -or $d.Settings.DisallowStartIfOnBatteries -or $d.Settings.StopIfGoingOnBatteries -or
+       $d.Settings.ExecutionTimeLimit -ne 'PT0S' -or !$d.Settings.StartWhenAvailable -or
+       $d.Settings.RestartCount -ne 3 -or $d.Settings.RestartInterval -ne 'PT1M')) { throw 'Interrupted core registration has different restart settings.' }
   [Console]::Write((Fingerprint $task))
   exit 0
 }
@@ -51,8 +55,8 @@ if ($env:MOSAIC_TASK_OPERATION -eq 'create') {
   $trigger = $def.Triggers.Create(9)
   $trigger.UserId = $sid
   $action = $def.Actions.Create(0)
-  $action.Path = $env:MOSAIC_TASK_LAUNCHER
-  $action.Arguments = 'serve'
+  $action.Path = $env:MOSAIC_TASK_EXECUTABLE
+  $action.Arguments = $env:MOSAIC_TASK_ARGUMENTS
   $action.WorkingDirectory = $env:MOSAIC_TASK_STATE
   $task = $folder.RegisterTaskDefinition($name,$def,2,$sid,$null,3,$null)
   [Console]::Write((Fingerprint $task))
@@ -66,12 +70,32 @@ switch ($env:MOSAIC_TASK_OPERATION) {
 }
 `;
 export const serviceRecord=paths=>path.join(paths.configDir,'windows-service.json');
-export const serviceDefinition=paths=>JSON.stringify({version:1,launcher:paths.launcher,args:['serve'],state:paths.state});
+const systemPowerShell=()=>path.win32.join(process.env.SystemRoot,'System32','WindowsPowerShell','v1.0','powershell.exe');
+function coreAction(paths) {
+  const {configDir,launcher,state}=paths;
+  if(typeof configDir!=='string'||!/^[A-Za-z]:\\/.test(configDir)||/[\x00-\x1f"<>|?*]/.test(configDir)||
+     path.win32.normalize(configDir)!==configDir||launcher!==path.win32.join(configDir,'mosaic-core.ps1')||
+     state!==path.win32.join(configDir,'state'))throw Error('Invalid Windows core service binding.');
+  const options=['-NoLogo','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File'];
+  return {
+    executable:systemPowerShell(),
+    args:[...options,launcher,'serve'],
+    arguments:options.join(' ')+' "'+launcher+'" serve',
+  };
+}
+export function serviceDefinition(paths) {
+  if(paths.core!==true)return JSON.stringify({version:1,launcher:paths.launcher,args:['serve'],state:paths.state});
+  const {executable,args}=coreAction(paths);
+  return JSON.stringify({version:1,kind:'core',launcher:paths.launcher,executable,args,state:paths.state});
+}
 async function scheduler(paths,op,expected='',nonce='') {
-  const powershell=path.join(process.env.SystemRoot,'System32','WindowsPowerShell','v1.0','powershell.exe');
-  const {stdout}=await exec(powershell,['-NoLogo','-NoProfile','-NonInteractive','-EncodedCommand',
+  const core=paths.core===true,product=core?'Mosaic Core':'Mosaic Beta';
+  const action=core?coreAction(paths):{executable:paths.launcher,arguments:'serve'};
+  const {stdout}=await exec(systemPowerShell(),['-NoLogo','-NoProfile','-NonInteractive','-EncodedCommand',
     Buffer.from(taskProgram,'utf16le').toString('base64')],{windowsHide:true,timeout:20000,maxBuffer:16384,
-    env:{...process.env,MOSAIC_TASK_SUFFIX:hash(paths.launcher.toLowerCase()).slice(0,16),MOSAIC_TASK_DESCRIPTION:'Mosaic Beta coordinator '+nonce,MOSAIC_TASK_OPERATION:op,MOSAIC_TASK_EXPECTED:expected,MOSAIC_TASK_LAUNCHER:paths.launcher,MOSAIC_TASK_STATE:paths.state}});
+    env:{...process.env,MOSAIC_TASK_PRODUCT:product,MOSAIC_TASK_SUFFIX:hash(paths.launcher.toLowerCase()).slice(0,16),
+      MOSAIC_TASK_DESCRIPTION:product+' coordinator '+nonce,MOSAIC_TASK_OPERATION:op,MOSAIC_TASK_EXPECTED:expected,
+      MOSAIC_TASK_EXECUTABLE:action.executable,MOSAIC_TASK_ARGUMENTS:action.arguments,MOSAIC_TASK_STATE:paths.state}});
   return stdout.trim();
 }
 export async function registration(paths) {
