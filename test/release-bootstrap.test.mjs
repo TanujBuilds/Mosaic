@@ -9,7 +9,7 @@ import {promisify} from 'node:util';
 
 const exec = promisify(execFile);
 const source = await readFile(new URL('../install.sh', import.meta.url), 'utf8');
-const version = '0.1.0-beta.227';
+const version = '0.1.0-beta.228';
 const stem = `mosaic-beta-${version}-darwin-arm64`;
 const sha = data => createHash('sha256').update(data).digest('hex');
 const quote = value => "'" + value.replaceAll("'", "'\"'\"'") + "'";
@@ -146,7 +146,7 @@ fs.writeFileSync(arg('--output'), mode.full ? archive : archive.subarray(offset,
         archive_sha:sha(bytes), manifest_sha:sha(manifest(version)), guide_sha:sha(guide), helper_sha:sha('fixture helper\n'),
         guide_revision:'a'.repeat(40), content_sha:contentHash, curl
     })) script = replacePin(script, name, value);
-    script = replaceOnce(script, 'my $archive_bytes = 86315583;', 'my $archive_bytes = ' + bytes.length + ';');
+    script = replaceOnce(script, 'my $archive_bytes = 86315923;', 'my $archive_bytes = ' + bytes.length + ';');
     script = replaceOnce(script, '$offset + 4 * 1024 * 1024 - 1', '$offset + 256 - 1');
     script = replaceOnce(script, "DIR => '/private/tmp'", "DIR => '" + stage + "'");
     script = replaceOnce(script, 'sleep $attempt;', 'sleep 0;');
@@ -184,9 +184,9 @@ test('official installer binds the published archive and immutable onboarding fi
         const local = await readFile(new URL('../distribution/onboarding/' + file, import.meta.url));
         assert.ok(source.includes(`my $${key} = '${sha(local)}';`), file + ' must match the published pin');
     }
-    assert.match(source, /ceec5744bf5bdd47a5404f1d7c500189abf7596cef241149aa0ee403d14fbdcc/);
-    assert.match(source, /my \$archive_bytes = 86315583;/);
-    assert.match(source, /7e2316cadfc1170a32eb4b67de330c8b907377c13ecc131b2fbd9ef1f461461f/);
+    assert.match(source, /a43a5bfba1eea70ed213ad401782250cb4193c0e011940b0f592f963fcfdd6d2/);
+    assert.match(source, /my \$archive_bytes = 86315923;/);
+    assert.match(source, /ecd13a265d568d7cb8bcdf35cf0cbcb9022f3b8097194973873c12d11284e5ae/);
     assert.match(source, /my \$resources = "https:\/\/raw\.githubusercontent\.com\/TanujBuilds\/Mosaic\/\$guide_revision\/distribution\/onboarding"/);
 });
 test('a piped fresh install runs the original package and guide in a terminal; a rerun skips the archive', async t => {
