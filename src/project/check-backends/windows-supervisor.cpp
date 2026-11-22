@@ -447,7 +447,7 @@ static string narrowIdentifier(const wchar_t *s, size_t len, bool hyphens) {
 
 static int run(int argc, wchar_t **argv, bool isolatedJavaScript = false) {
   require(argc >= 6, "missing supervisor arguments");
-  require(!isolatedJavaScript || argc == 6, "unexpected JavaScript supervisor arguments");
+  require(!isolatedJavaScript || argc == 7, "unexpected JavaScript supervisor arguments");
   const string request = narrowIdentifier(argv[1], 36, true),
                binding = narrowIdentifier(argv[2], 64, false);
   wchar_t *tail = nullptr;
@@ -458,6 +458,16 @@ static int run(int argc, wchar_t **argv, bool isolatedJavaScript = false) {
   require(stage.is_absolute() && receipt.is_absolute() &&
               receipt.filename() == L"completion.json",
           "invalid supervisor paths");
+  Handle controller;
+  if (isolatedJavaScript) {
+    tail = nullptr;
+    const DWORD controllerPid = wcstoul(argv[6], &tail, 10);
+    require(controllerPid > 0 && tail && !*tail, "invalid JavaScript controller PID");
+    controller.reset(OpenProcess(SYNCHRONIZE, FALSE, controllerPid));
+    require(controller.h != nullptr, "open live JavaScript controller handle");
+    require(WaitForSingleObject(controller.h, 0) == WAIT_TIMEOUT,
+            "JavaScript controller already exited");
+  }
   std::optional<RegistryReadCapability> registryRead;
   std::optional<Profile> profile;
   if (!isolatedJavaScript) {
@@ -549,7 +559,11 @@ static int run(int argc, wchar_t **argv, bool isolatedJavaScript = false) {
   DWORD code = 1, total = 0;
   ULONGLONG deadline = GetTickCount64() + 30000;
   while (reason.empty()) {
-    const string command = channelClosed ? "control-eof" : control(buffered);
+    const DWORD controllerState = controller.h ? WaitForSingleObject(controller.h, 0) : WAIT_TIMEOUT;
+    require(controllerState == WAIT_OBJECT_0 || controllerState == WAIT_TIMEOUT,
+            "wait for JavaScript controller");
+    const string command = channelClosed || controllerState == WAIT_OBJECT_0
+                               ? "control-eof" : control(buffered);
     if (command == "cancel")
       reason = started ? "cancel" : "startup-cancel";
     else if (command == "control-eof")

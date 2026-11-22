@@ -93,7 +93,7 @@ const hostProgram = String.raw`
   import {openSync, closeSync} from 'node:fs';
   const [supervisor, mode, diagnostics, ...args] = process.argv.slice(1);
   const log = openSync(diagnostics, 'wx');
-  const child = spawn(supervisor, ['--isolated-js', ...args], {
+  const child = spawn(supervisor, ['--isolated-js', ...args, String(process.pid)], {
     windowsHide:true, stdio:['pipe','pipe',log],
   });
   closeSync(log);
