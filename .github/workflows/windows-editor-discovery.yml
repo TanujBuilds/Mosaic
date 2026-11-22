@@ -61,5 +61,6 @@ jobs:
           if ($LASTEXITCODE -ne 0 -or -not $exe) { throw 'Mosaic did not discover the installed editor' }
           $app = Get-Item -LiteralPath $exe
           $signature = Get-AuthenticodeSignature -LiteralPath $exe
+          Write-Output ('Installed ' + $app.Name + ' ' + $app.VersionInfo.ProductVersion + ' SHA-256 ' + (Get-FileHash -LiteralPath $exe).Hash + ' signature ' + $signature.Status + ' ' + $signature.SignerCertificate.Subject)
           if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notlike ('*' + $env:EDITOR_PUBLISHER + '*')) { throw 'Installed app publisher differs from installer' }
-          [ordered]@{editor=$env:EDITOR_ID; version=$app.VersionInfo.ProductVersion; installedExecutable=$app.Name; publisher=$signature.SignerCertificate.Subject; installedSha256=(Get-FileHash -LiteralPath $exe).Hash; discovery='real'; registration='preview'; signedIn=$false} | ConvertTo-Json
+          [ordered]@{editor=$env:EDITOR_ID; version=$app.VersionInfo.ProductVersion; installedExecutable=$app.Name; publisher=$signature.SignerCertificate.Subject; installedSha256=(Get-FileHash -LiteralPath $exe).Hash; discovery='real'; registration='preview'; signInTested=$false} | ConvertTo-Json
