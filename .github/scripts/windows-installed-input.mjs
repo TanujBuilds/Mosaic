@@ -11,9 +11,15 @@ const historical = {
 };
 export function installedCandidate(host) {
   const env = process.env;
-  if (env.GITHUB_REF === 'refs/heads/codex/windows-js-hosts') {
+  if (['refs/heads/codex/windows-js-hosts','refs/heads/codex/windows-js-worker-hosts'].includes(env.GITHUB_REF)) {
     assert.equal(env.RUNNER_ENVIRONMENT, 'github-hosted');
     assert.ok(!env.MOSAIC_QA_CANDIDATE && !env.MOSAIC_QA_ARTIFACT_ID);
+    if (env.GITHUB_REF === 'refs/heads/codex/windows-js-worker-hosts') return {
+      version:'0.1.0-beta.235',source:'784766c5dd98ac8f8046182fa6a359952a9ad006',tree:'bd524ff96f52223ad2a71311e6e4ba3b8c3f70ce',
+      artifactId:14767202712,archiveSha:'fb99b8a849d6cd42cd80a7a0ad07871f07b648ba5921a9e5cc5cee7d35c9f53b',
+      manifestSha:'ba383c352bce919f73088c98d25a0dcf6249b31f2555eeda63657ecdaf228062', bootstrapSha:'6a1e53c0d9874ce6839cc7e65a2db5e6cd8992b3c6bc07b8757e325e828342e1',
+      javascriptFingerprint:'dcc13cfd0085e091f3ae444615c0e14eaee4d7368fdf8f6243b1ebab8337b84c',
+    };
     return {
       version:'0.1.0-beta.234',source:'7cf176d1cdb3260182f5e1c1e7ac3a673c93af7b',tree:'17586a60fa4f26b5d7ed23d6314952071eb7be4b',
       artifactId:14766183423,archiveSha:'78f5ef24be34a7cfefd4cc4f0e07e5bda7181b71c5286c20c7606f42886fd311',
