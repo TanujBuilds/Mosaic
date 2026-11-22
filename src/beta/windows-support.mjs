@@ -67,6 +67,8 @@ public static class MosaicSupport {
     [DllImport("kernel32.dll", CharSet=CharSet.Unicode)]
     static extern uint GetDriveTypeW(string root);
     [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+    static extern uint GetLongPathNameW(string path, StringBuilder buffer, uint size);
+    [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
     static extern uint GetFinalPathNameByHandleW(SafeFileHandle h, StringBuilder buffer, uint size, uint flags);
     [DllImport("kernel32.dll", SetLastError=true)]
     static extern bool SetFileInformationByHandle(SafeFileHandle h, int kind, byte[] data, uint size);
@@ -83,8 +85,10 @@ public static class MosaicSupport {
         Check((kind & FileAttributes.Directory) != 0 && (kind & FileAttributes.ReparsePoint) == 0);
         var actual = new StringBuilder(32768);
         uint n = GetFinalPathNameByHandleW(handle, actual, (uint)actual.Capacity, 0);
-        Check(n > 0 && n < actual.Capacity &&
-            String.Equals(actual.ToString(), @"\\?\" + folder, StringComparison.OrdinalIgnoreCase));
+        var expected = new StringBuilder(32768);
+        uint length = GetLongPathNameW(folder,expected,(uint)expected.Capacity);
+        Check(length > 0 && length < expected.Capacity && n > 0 && n < actual.Capacity &&
+            String.Equals(actual.ToString(), @"\\?\" + expected.ToString(), StringComparison.OrdinalIgnoreCase));
     }
     static void CheckOwner(string dir, SecurityIdentifier user, bool requirePrivate) {
         var acl = Directory.GetAccessControl(dir, AccessControlSections.Owner | AccessControlSections.Access);

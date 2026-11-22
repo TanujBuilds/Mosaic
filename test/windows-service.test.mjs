@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {mkdtemp,mkdir,copyFile,rm,readFile} from 'node:fs/promises';
+import {mkdtemp,mkdir,cp,rm,readFile} from 'node:fs/promises';
 import {execFileSync} from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
@@ -30,9 +30,8 @@ test('native scheduled task can be created, verified, removed and registered aga
   t.after(async()=>{try{for(const remove of cleanup.reverse())await remove();}finally{await rm(tmp,{recursive:true,force:true});}});
   const root=fileURLToPath(new URL('../',import.meta.url));
   const beta=path.join(tmp,'src','beta'),bin=path.join(tmp,'bin');
-  await mkdir(beta,{recursive:true});await mkdir(bin);
-  for(const name of ['windows-service.mjs','windows-files.mjs','files.mjs'])
-    await copyFile(path.join(root,'src','beta',name),path.join(beta,name));
+  await cp(path.join(root,'src'),path.join(tmp,'src'),{recursive:true});
+  await mkdir(bin);
   execFileSync(process.env.ComSpec,['/d','/s','/c','call "%MOSAIC_BUILD_SCRIPT%" "%MOSAIC_TEST_BINARY%"'],{
     cwd:tmp,env:{...process.env,MOSAIC_BUILD_SCRIPT:path.join(root,'distribution','win32-files','build.cmd'),MOSAIC_TEST_BINARY:path.join(bin,'mosaic-files.exe')},windowsVerbatimArguments:true,stdio:'inherit'
   });

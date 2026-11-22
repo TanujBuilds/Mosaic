@@ -219,7 +219,13 @@ test('Windows source coordinator qualifies four selected host configurations and
     }
     if (scenario.version === 2) {
       assert.deepEqual(goal.manifest.overnightPolicy.preflightCheckIds, ['sample-check']);
-      assert.equal(goal.overnightRun, null);
+      // The observer may already have materialized the draft preparation report.
+      if(goal.overnightRun){
+        assert.equal(goal.overnightRun.phase,'preparation');
+        assert.equal(goal.overnightRun.approvalHash,prepared.hash);
+        assert.equal(goal.overnightRun.deadline,null);
+        assert.equal(goal.overnightRun.taskId,null);
+      }
     }
 
     assert.equal(goal.planning, null);
