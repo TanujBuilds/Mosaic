@@ -13,7 +13,8 @@ import {makeInstallCommand} from '../../scripts/package-windows-beta.mjs';
 
 assert.equal(process.platform,'win32');
 assert.equal(process.arch,'x64');
-assert.equal(process.env.GITHUB_ACTIONS,'true','Use a disposable Windows runner account');
+assert.equal(process.env.GITHUB_ACTIONS,'true');
+assert.equal(process.env.RUNNER_ENVIRONMENT,'github-hosted','The TLS fixture requires a disposable GitHub-hosted VM');
 assert.equal(process.argv.length,3,'Provide the directory containing candidate.json');
 const directory=path.resolve(process.argv[2]);
 const candidate=JSON.parse(await readFile(path.join(directory,'candidate.json'),'utf8'));
@@ -57,7 +58,7 @@ $null=Get-PSDrive -Name Cert -ErrorAction Stop
 `;
 const certScript=certModule+String.raw`
 $cert=$null
-$store=[Security.Cryptography.X509Certificates.X509Store]::new('Root','CurrentUser')
+$store=[Security.Cryptography.X509Certificates.X509Store]::new('Root','LocalMachine')
 try {
   $params=@{
     Subject=("CN=Mosaic fixture "+$env:MOSAIC_CERT_ID); Type='Custom'
@@ -71,6 +72,8 @@ try {
   [Console]::Out.Flush()
   $password=ConvertTo-SecureString $env:MOSAIC_PFX_PASSWORD -AsPlainText -Force
   Export-PfxCertificate -Cert $cert -FilePath 'fixture.pfx' -Password $password -CryptoAlgorithmOption AES256_SHA256 -ChainOption EndEntityCertOnly | Out-Null
+  [Console]::WriteLine('PFX')
+  [Console]::Out.Flush()
   $store.Open('ReadWrite')
   if($store.Certificates.Find('FindByThumbprint',$cert.Thumbprint,$false).Count){throw 'Certificate collision'}
   $public=[Security.Cryptography.X509Certificates.X509Certificate2]::new($cert.RawData)
@@ -95,11 +98,12 @@ const ownerClosed=once(owner,'close');
 const lines=createInterface({input:owner.stdout});
 let certErrors='';
 owner.stderr.setEncoding('utf8').on('data',chunk=>{certErrors=(certErrors+chunk).slice(-4096);});
-let server,certReadyTimer,createdCert;
+let server,certReadyTimer,createdCert,primaryError;
 const ready=new Promise(resolve=>lines.on('line',line=>{
   const created=/^CREATED ([0-9A-F]{40})$/i.exec(line.trim());
-  if(created)createdCert=created[1];
-  else if(createdCert && line.trim()===createdCert)resolve(createdCert);
+  if(created){createdCert=created[1];console.log('Created one-hour loopback TLS certificate.');}
+  else if(line==='PFX'){console.log('Exported temporary TLS key for the loopback server.');}
+  else if(createdCert && line.trim()===createdCert){console.log('Trusted the exact loopback certificate on the disposable VM.');resolve(createdCert);}
 }));
 try {
   const thumbprint=await Promise.race([
@@ -184,7 +188,7 @@ try {
   assert.equal(await hash(launcher),receipt.launcherHash);
   assert.match((await exec(launcher,['--help'],options)).stdout,/Mosaic Beta/);
   console.log('Stock Windows PowerShell resumed the verified HTTPS archive at byte',cut,'and validated',manifest.files.length,'installed files and the launcher. Interactive setup awaits an attached console.');
-} finally {
+} catch(error){primaryError=error;throw error;} finally {
   clearTimeout(certReadyTimer);
   lines.close();
   if(server){server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}
@@ -195,17 +199,20 @@ try {
     // Verify independently of the owner. Also reclaim the exact certificate if the owner stalled.
     if(createdCert){
       const cleanup=certModule+String.raw`
-foreach($store in @('Root','My')){
- $file="Cert:\CurrentUser\$store\$env:MOSAIC_CERT_HASH"
+foreach($folder in @('LocalMachine\Root','CurrentUser\My')){
+ $file="Cert:\$folder\$env:MOSAIC_CERT_HASH"
  $cert=Get-Item -LiteralPath $file -ErrorAction SilentlyContinue
  if($cert){
   if($cert.Subject -ne ('CN=Mosaic fixture '+$env:MOSAIC_CERT_ID)){throw 'Certificate ownership mismatch'}
-  if($store -eq 'My'){Remove-Item -LiteralPath $file -DeleteKey -Force}else{Remove-Item -LiteralPath $file -Force}
+  if($folder -eq 'CurrentUser\My'){Remove-Item -LiteralPath $file -DeleteKey -Force}else{Remove-Item -LiteralPath $file -Force}
  }
  if(Test-Path -LiteralPath $file){throw 'Certificate cleanup incomplete'}
 }`;
       await exec(shell,psArgs(cleanup),{...options,timeout:30000,env:{...env,MOSAIC_CERT_HASH:createdCert,MOSAIC_CERT_ID:certId}});
     }
     assert.equal(code,0,'Fixture certificate cleanup or setup failed: '+certErrors);
+  } catch(cleanupError){
+    if(primaryError)throw new AggregateError([primaryError,cleanupError],'Download test and cleanup both failed');
+    throw cleanupError;
   } finally {clearTimeout(watchdog);await rm(scratch,{recursive:true,force:true,maxRetries:5});}
 }

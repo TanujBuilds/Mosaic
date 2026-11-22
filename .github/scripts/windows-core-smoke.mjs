@@ -20,9 +20,9 @@ assert.equal(sha256(await readFile(archive)), candidate.archiveSha256);
 const scratch = await mkdtemp(path.join(process.env.RUNNER_TEMP, 'Mosaic core smoke '));
 const payload = path.join(scratch, 'Expanded Beta archive');
 const corePackage = path.join(scratch, 'Core candidate');
-const appData = path.join(scratch, 'Isolated core profile');
+const appData = process.env.LOCALAPPDATA;
 const fixtureProfile = path.join(scratch, "Core user O'Brien");
-await Promise.all([mkdir(payload), mkdir(appData), mkdir(fixtureProfile)]);
+await Promise.all([mkdir(payload), mkdir(fixtureProfile)]);
 const system32 = path.join(process.env.SystemRoot, 'System32');
 const powershell = path.join(system32, 'WindowsPowerShell', 'v1.0', 'powershell.exe');
 const shellArgs = ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File'];
@@ -48,6 +48,7 @@ async function isAbsent(file) {
 
 const betaRoot = path.join(process.env.LOCALAPPDATA, 'Mosaic Beta');
 const betaState = path.join(betaRoot, 'state', 'connection.json');
+assert.ok(await isAbsent(path.join(appData,'Mosaic')), 'Use a clean hosted Windows profile for core coexistence');
 assert.ok(await isAbsent(betaRoot), 'Use a fresh disposable profile before the coexistence smoke');
 const betaBootstrap = path.join(bundle, 'install.ps1');
 assert.equal(sha256(await readFile(betaBootstrap)), candidate.bootstrapSha256);
@@ -144,6 +145,10 @@ try {
   assert.equal(observer.status, 200);
   assert.match(await observer.text(), /Mosaic/);
   assert.ok(JSON.parse(await invoke('call', '--tool', 'tools_list')).some(tool => tool.name === 'registry_list'));
+  const observed=await run(path.join(betaRoot,'bin','mosaic.exe'),['--source','core','status','--once'],{env:runnerEnv});
+  assert.match(observed,/Mosaic core \(frontier-harness\)/);
+  assert.ok(await isAbsent(betaState));
+  console.log('The installed Beta observer read the active core while the separate Beta coordinator was offline.');
   await invoke('stop');
   let stopped = false;
   for (let attempt = 0; attempt < 40 && !stopped; attempt++) {

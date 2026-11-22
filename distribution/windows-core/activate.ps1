@@ -93,8 +93,27 @@ try {
         $currentBytes = [IO.File]::ReadAllBytes($stable)
         $nextBytes = [IO.File]::ReadAllBytes($template)
         if ([Convert]::ToBase64String($currentBytes) -cne [Convert]::ToBase64String($nextBytes)) {
-            if (([IO.File]::GetAttributes($locator) -band [IO.FileAttributes]::ReparsePoint) -or
-                ([IO.File]::ReadAllText($locator) | ConvertFrom-Json).launcherSha256 -cne [BitConverter]::ToString($hasher.ComputeHash($currentBytes)).Replace('-','').ToLowerInvariant()) { throw 'Existing core launcher differs from its installation receipt' }
+            if ([IO.File]::GetAttributes($locator) -band [IO.FileAttributes]::ReparsePoint) { throw 'Redirected core locator' }
+            $old = [IO.File]::ReadAllText($locator) | ConvertFrom-Json
+            $stableHash = [BitConverter]::ToString($hasher.ComputeHash($currentBytes)).Replace('-','').ToLowerInvariant()
+            if ($old.archiveSha256 -cnotmatch '^[a-f0-9]{64}$') { throw 'Invalid previous core locator' }
+            if (!$old.PSObject.Properties['launcherSha256']) {
+                # The first two qualification launchers predate launcher receipts. Git for Windows may check them out with CRLF.
+                $legacy = @(
+                    '4ba9a76ee8a6b7cc75569110fab582e4900ed161df447565d6bb0fef2f1bd97f',
+                    'b12ca28d3b4cc1db765c159515415d7b8d99f7a2d4df67818227e8fb48440ff7',
+                    '0156135a53e8155b91b04ab60773e84489b27ce828348d17e1e0f759ed74d315',
+                    '933af70862284e523887d783cb986d70091b4a3fabeaa8e2e676d586032183a9'
+                )
+                $retained = Join-Path $versions $old.archiveSha256
+                PrivateDirectory $retained
+                $wrapper = Join-Path $retained 'distribution/windows-core/mosaic-core.ps1'
+                foreach ($item in @((Join-Path $retained 'distribution'),(Join-Path $retained 'distribution/windows-core'),$wrapper)) {
+                    if ([IO.File]::GetAttributes($item) -band [IO.FileAttributes]::ReparsePoint) { throw 'Redirected legacy core launcher' }
+                }
+                if ($legacy -cnotcontains $stableHash -or
+                    [Convert]::ToBase64String([IO.File]::ReadAllBytes($wrapper)) -cne [Convert]::ToBase64String($currentBytes)) { throw 'Unrecognized legacy core launcher' }
+            } elseif ($old.launcherSha256 -cne $stableHash) { throw 'Existing core launcher differs from its installation receipt' }
             $replacement = Join-Path $root ('.launcher-' + [guid]::NewGuid().ToString('N'))
             [IO.File]::WriteAllBytes($replacement,$nextBytes)
             [IO.File]::Replace($replacement,$stable,$null)

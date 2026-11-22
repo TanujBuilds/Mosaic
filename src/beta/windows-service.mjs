@@ -25,16 +25,22 @@ if ($env:MOSAIC_TASK_OPERATION -eq 'query') {
 if ($env:MOSAIC_TASK_OPERATION -eq 'adopt') {
   if (!$task) { exit 0 }
   $d = $task.Definition
+  function Resolve-UserSid([string] $identity) {
+    if (!$identity) { return '' }
+    if ($identity -match '^S-[0-9]+-[0-9-]+$') { return ([Security.Principal.SecurityIdentifier]::new($identity)).Value }
+    return ([Security.Principal.NTAccount]::new($identity)).Translate([Security.Principal.SecurityIdentifier]).Value
+  }
   if ($d.RegistrationInfo.Description -ne $env:MOSAIC_TASK_DESCRIPTION -or
       $d.Actions.Count -ne 1 -or $d.Actions.Item(1).Type -ne 0 -or
       $d.Actions.Item(1).Path -cne $env:MOSAIC_TASK_EXECUTABLE -or
       $d.Actions.Item(1).Arguments -cne $env:MOSAIC_TASK_ARGUMENTS -or $d.Actions.Item(1).WorkingDirectory -cne $env:MOSAIC_TASK_STATE -or
       $d.Triggers.Count -ne 1 -or $d.Triggers.Item(1).Type -ne 9 -or
+      (Resolve-UserSid $d.Principal.UserId) -cne $sid -or
+      (Resolve-UserSid ($d.Triggers.Item(1).UserId)) -cne $sid -or
       $d.Principal.LogonType -ne 3 -or $d.Principal.RunLevel -ne 0) { throw 'Interrupted registration differs from its saved intent.' }
-  if ($env:MOSAIC_TASK_PRODUCT -eq 'Mosaic Core' -and
-      ($d.Settings.MultipleInstances -ne 2 -or $d.Settings.DisallowStartIfOnBatteries -or $d.Settings.StopIfGoingOnBatteries -or
+  if (($d.Settings.MultipleInstances -ne 2 -or $d.Settings.DisallowStartIfOnBatteries -or $d.Settings.StopIfGoingOnBatteries -or
        $d.Settings.ExecutionTimeLimit -ne 'PT0S' -or !$d.Settings.StartWhenAvailable -or
-       $d.Settings.RestartCount -ne 3 -or $d.Settings.RestartInterval -ne 'PT1M')) { throw 'Interrupted core registration has different restart settings.' }
+       $d.Settings.RestartCount -ne 3 -or $d.Settings.RestartInterval -ne 'PT1M')) { throw 'Interrupted registration has different restart settings.' }
   [Console]::Write((Fingerprint $task))
   exit 0
 }

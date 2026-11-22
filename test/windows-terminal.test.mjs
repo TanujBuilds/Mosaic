@@ -131,7 +131,13 @@ function withoutVt(output) {
 }
 
 async function interactive(stage, env) {
-  const child = spawn(stage.probe, [process.execPath, ...stage.args], {
+  const requireTty = 'data:text/javascript,' + encodeURIComponent(`
+    if (!process.stdin.isTTY || !process.stdout.isTTY) {
+      throw Error('ConPTY observer needs native stdin and stdout: ' +
+        JSON.stringify({stdin: Boolean(process.stdin.isTTY), stdout: Boolean(process.stdout.isTTY)}));
+    }
+  `);
+  const child = spawn(stage.probe, [process.execPath, '--import', requireTty, ...stage.args], {
     cwd: stage.root, env, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'],
   });
   let transcript = '', stderr = '', result;
@@ -159,7 +165,7 @@ async function interactive(stage, env) {
   };
 
   try {
-    await screen('initial observer', [initial]);
+    await screen('initial interactive observer', [initial, 'n Needs You']);
     await key('n', 'Needs You', [decision, details]);
     await key('b', 'Queue', [assignment, 'Enter Details']);
     await key('a', 'Current', [current]);
@@ -184,24 +190,28 @@ test('Windows terminal observer navigates saved views by key and exits, and redi
   const viewer = await viewerFixture(t, runtime);
   const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => name.toUpperCase() !== 'NO_COLOR'));
 
-  await interactive(runtime, env);
-  assert.ok(viewer.calls.some(call => call.name === 'observer_current_activity' && call.input.after === 0),
-    'Current requested saved activity through the viewer connection');
+  await t.test('interactive ConPTY keyboard and viewer reads', async () => {
+    await interactive(runtime, env);
+    assert.ok(viewer.calls.some(call => call.name === 'observer_current_activity' && call.input.after === 0),
+      'Current requested saved activity through the viewer connection');
+  });
 
-  for (const flags of [[], ['--once']]) {
-    const from = viewer.calls.length;
-    const {stdout, stderr} = await exec(process.execPath, [...runtime.args, ...flags], {
-      cwd: runtime.root, env, windowsHide: true, timeout: 12_000, maxBuffer: 256 * 1024,
-    });
-    assert.equal(stderr, '');
-    assert.ok(stdout.includes(initial));
-    assert.match(stdout, /Terminal observer/u);
-    assert.doesNotMatch(stdout, /\x1b/u);
-    assert.equal(stdout.includes(viewer.token), false);
-    const calls = viewer.calls.slice(from);
-    assert.equal(calls.filter(call => call.name === 'observer_snapshot').length, 1);
-    assert.equal(calls.some(call => call.name === 'observer_current_activity'), false);
-  }
+  await t.test('redirected output returns once per invocation', async () => {
+    for (const flags of [[], ['--once']]) {
+      const from = viewer.calls.length;
+      const {stdout, stderr} = await exec(process.execPath, [...runtime.args, ...flags], {
+        cwd: runtime.root, env, windowsHide: true, timeout: 12_000, maxBuffer: 256 * 1024,
+      });
+      assert.equal(stderr, '');
+      assert.ok(stdout.includes(initial));
+      assert.match(stdout, /Terminal observer/u);
+      assert.doesNotMatch(stdout, /\x1b/u);
+      assert.equal(stdout.includes(viewer.token), false);
+      const calls = viewer.calls.slice(from);
+      assert.equal(calls.filter(call => call.name === 'observer_snapshot').length, 1);
+      assert.equal(calls.some(call => call.name === 'observer_current_activity'), false);
+    }
+  });
 
   assert.ok(viewer.calls.length > 0 && viewer.calls.every(call => call.allowed), 'the observer used only authenticated read tools');
   assert.deepEqual(await readFile(viewer.connection), viewer.before);

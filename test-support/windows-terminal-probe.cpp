@@ -113,6 +113,9 @@ int wmain(int argc, wchar_t** argv) {
     if (!attributes.initialize(console.value)) return fail("could not attach the pseudoconsole", GetLastError());
     STARTUPINFOEXW startup{};
     startup.StartupInfo.cb = sizeof(startup);
+    // The driver itself has redirected streams. Explicit null standard
+    // handles let Windows populate all three handles from the pseudoconsole.
+    startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
     startup.lpAttributeList = attributes.value;
     PROCESS_INFORMATION created{};
     if (!CreateProcessW(argv[1], command.data(), nullptr, nullptr, FALSE,
