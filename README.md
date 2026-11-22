@@ -2,46 +2,19 @@
 
 Mosaic coordinates bounded coding work between your coding app and an existing model API. You describe the outcome, review the scope, checks and limits, and keep one record of the plan, implementation, review and corrections.
 
-**Experimental MIT project.** [Mosaic Beta .204](https://github.com/TanujBuilds/Mosaic/releases/tag/v0.1.0-beta.204) is an Apple Silicon terminal prerelease. The [six-stage roadmap](docs/ROADMAP.md) tracks the remaining product and distribution checks.
+## Install Mosaic on an Apple Silicon Mac
 
-## Install Mosaic Beta on Apple Silicon
-
-[Download `install-mosaic.sh`](https://github.com/TanujBuilds/Mosaic/releases/download/v0.1.0-beta.204/install-mosaic.sh) and save it to your Home folder. You can open the file in a text editor to see what it does. Then run this in Terminal.
+On an Apple Silicon Mac running macOS 26 or later, paste this line into Terminal from any folder. It installs the [Mosaic Beta .227 release](https://github.com/TanujBuilds/Mosaic/releases/tag/v0.1.0-beta.227) for your Mac account and guides you to your first coding task.
 
 ```sh
-sh ~/install-mosaic.sh
+curl -fsSL https://raw.githubusercontent.com/TanujBuilds/Mosaic/main/install.sh | /bin/sh
 ```
 
-If you saved it elsewhere, type `sh ` in Terminal, drag the downloaded file into the window, and press Return. The script downloads and checks the Mosaic archive and opens setup on a fresh install.
+1. **Install.** Mosaic verifies the download and brings its own Node runtime. If Git needs Apple’s Command Line Tools, the guide offers to open the macOS installer and waits while you finish.
+2. **Connect.** Choose your coding app and, if you want it to delegate work, a local model server or hosted provider. Setup collects provider keys privately. Follow the guide in your chosen app to confirm it can call Mosaic.
+3. **Start a task.** Choose a local Git project with a commit, or paste the HTTPS URL of a public GitHub repository to clone it. Describe the change, the files Mosaic can use, and the check it should pass. Review the resulting draft in your coding app before approving work.
 
-<details>
-<summary>Verify both downloads and install in one paste</summary>
-
-This command downloads the installer, checks its SHA-256, and runs it. Copy the whole block into Terminal.
-
-```sh
-(
-  mosaic_installer=$(/usr/bin/mktemp "${TMPDIR:-/private/tmp}/mosaic-install.XXXXXXXX") &&
-  trap '/bin/rm -f "$mosaic_installer"' EXIT &&
-  /usr/bin/curl -q -fsSL --max-redirs 3 --proto '=https' --proto-redir '=https' \
-    -o "$mosaic_installer" \
-    https://github.com/TanujBuilds/Mosaic/releases/download/v0.1.0-beta.204/install-mosaic.sh &&
-  [ "$(/usr/bin/shasum -a 256 < "$mosaic_installer")" = "f1c72cb4252d101c0f3c54314ead70109bae75f4eae65ee8bca649105cef4be1  -" ] &&
-  /bin/sh "$mosaic_installer"
-)
-```
-
-</details>
-
-In the setup wizard:
-
-1. Pick **Codex**, **Claude Code**, **Cursor**, or **Antigravity**.
-2. Pick **Model on this Mac** or **Model on another computer**. Enter the API base URL and exact model ID from your running OpenAI-compatible server. If the server requires a key, the wizard collects it at a hidden prompt. For a server on another computer, use an address your Mac can reach.
-3. Review and save your settings. Follow the connection instructions Mosaic prints for your coding app, then open a new session in that app. Run `~/.local/bin/mosaic connect` to see those instructions again.
-
-You can choose **No worker yet** to start with just the coding app. Mosaic uses a model server you already run. The optional model discovery and connection checks ask before contacting your server.
-
-After registering Mosaic, check that your coding app can see the `mosaic-beta` tools and call `registry_list` with `{}`.
+To pick up after an interruption, run the same install command again. [Read the installer](install.sh) · [Release downloads](https://github.com/TanujBuilds/Mosaic/releases/tag/v0.1.0-beta.227)
 
 ## Try the source
 
@@ -61,7 +34,7 @@ The demo prints **FAKE MODEL DEMO**, automatically approves a scripted plan, and
 
 - **Develop from source.** Install the locked dependencies with `npm ci --ignore-scripts --no-audit --no-fund`, then use `npm test` for the portable source profile. The development guide covers prerequisites, CLI help and the Mac test profile. [Development setup](docs/DEVELOPMENT.md)
 - **Use the coding core already installed in Codex.** Open a chat in your project and ask Codex to list Mosaic’s registered modes using `frontier-harness`. Confirm the tool call succeeds, then describe your coding task and review its scope, checks and limits before approving a start. [Mosaic in Codex](docs/MOSAIC_CODING_CORE.md) · [Assignment handoff](docs/MOSAIC_ASSIGNMENT_HANDOFF.md)
-- **Install Mosaic Beta.** The [one-command install](#install-mosaic-beta-on-apple-silicon) includes the Apple Silicon runtime and dependencies and opens setup. [Terminal Beta](docs/TERMINAL_BETA.md) · [Installation and recovery](docs/PORTABLE_BETA_INSTALL.md)
+- **Install Mosaic Beta.** The [one-command install](#install-mosaic-on-an-apple-silicon-mac) includes the Apple Silicon runtime and dependencies and opens setup. [Terminal Beta](docs/TERMINAL_BETA.md) · [Installation and recovery](docs/PORTABLE_BETA_INSTALL.md)
 
 ## The coding workflow
 

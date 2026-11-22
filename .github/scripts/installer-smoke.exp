@@ -1,0 +1,74 @@
+# Run only in a disposable macOS CI login. Exercise the bootstrap as a pipe and
+# the setup wizard in its terminal. A scripted MCP client stands in for Cursor.
+set timeout 480
+if {![info exists env(GITHUB_ACTIONS)] || $env(GITHUB_ACTIONS) ne "true" || [file exists [file join $env(HOME) .local bin mosaic]]} {
+    error "This smoke test requires a fresh hosted runner account"
+}
+set env(TERM) dumb
+spawn /bin/sh -c {cat install.sh | /bin/sh}
+expect {
+    "Append the PATH block?" { send -- "n\r"; exp_continue }
+    "Choose host" { send -- "3\r" }
+    timeout { error "Installer did not reach Mosaic setup" }
+    eof { error "Installer exited before setup" }
+}
+expect {
+    "Choose worker setup" { send -- "4\r" }
+    timeout { error "Missing worker setup" }
+    eof { error "Setup exited before worker choice" }
+}
+expect {
+    -re {Show technical settings details\?|Run optional model discovery check\?|Run optional inference connectivity test[^?]*\?} {
+        send -- "n\r"
+        exp_continue
+    }
+    "Save this local setup and reviewed manual host instructions?" { send -- "y\r" }
+    timeout { error "Could not save normal setup" }
+    eof { error "Wizard exited before saving setup" }
+}
+expect {
+    "Local setup saved." {}
+    timeout { error "Wizard did not confirm saved settings" }
+    eof { error "Wizard exited before confirming save" }
+}
+proc answer {prompt value} {
+    expect {
+        -exact $prompt { send -- "$value\r" }
+        timeout { error "Timed out waiting for $prompt" }
+        eof { error "Guide exited before $prompt" }
+    }
+}
+answer "Open the app now, or continue" continue
+answer "Is the name free, already a match" match
+expect {
+    "check its Mosaic receipt here." {}
+    timeout { error "Missing host verification prompt" }
+    eof { error "Guide exited before checking its host connection" }
+}
+set node [file join $env(HOME) "Library/Application Support/Mosaic Beta/versions/0.1.0-beta.227/runtime/bin/node"]
+exec $node .github/scripts/registry-smoke.mjs >@stdout 2>@stderr
+send -- "check\r"
+answer "Git project path" [file join $env(RUNNER_TEMP) "First Mosaic project"]
+answer "Choose a workflow" 1
+answer "What small coding task" "Document the exported value."
+answer "How will you know" "The comment explains the value and the check passes."
+answer "What may Mosaic read" "src/,checks/"
+answer "What may Mosaic edit" "src/value.mjs"
+answer "Protected check command" "node checks/verify.mjs"
+expect {
+    -re {Goal ID: ([a-z0-9-]+)} { set goal $expect_out(1,string) }
+    timeout { error "First task did not save a goal" }
+    eof { error "Guide exited without saving a goal" }
+}
+expect {
+    "After I approve activation and work" {}
+    timeout { error "First task did not present its approval handoff" }
+    eof { error "Missing approval handoff" }
+}
+expect eof
+set result [wait]
+if {[lindex $result 2] != 0 || [lindex $result 3] != 0} { error "Installer failed: $result" }
+set launcher [file join $env(HOME) .local bin mosaic]
+set saved [exec $launcher first-task result --goal $goal]
+if {[string first {Prepared draft} $saved] == -1} { error "Draft could not be reopened" }
+puts "Verified a first-task draft with a real coordinator and scripted MCP client."

@@ -1,0 +1,46 @@
+name: Apple Silicon installer
+
+on:
+  push:
+    paths:
+      - install.sh
+      - distribution/onboarding/**
+      - test/release-*.test.mjs
+      - .github/scripts/installer-smoke.exp
+      - .github/scripts/registry-smoke.mjs
+      - .github/workflows/installer.yml
+
+permissions:
+  contents: read
+
+jobs:
+  install:
+    runs-on: macos-26
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24.22.0'
+          package-manager-cache: false
+      - name: Check installer, host setup, and recovery
+        run: node --test test/release-bootstrap.test.mjs test/release-host-onboarding.test.mjs test/release-guide.test.mjs
+      - name: Prepare a disposable Git project and scripted host
+        shell: bash
+        run: |
+          project="$RUNNER_TEMP/First Mosaic project"
+          mkdir -p "$project/src" "$project/checks"
+          git -C "$project" init -q
+          git -C "$project" config user.name 'Installer test'
+          git -C "$project" config user.email 'test@example.invalid'
+          echo 'export const value = 1;' > "$project/src/value.mjs"
+          echo 'import {value} from "../src/value.mjs"; if (value !== 1) process.exitCode = 1;' > "$project/checks/verify.mjs"
+          git -C "$project" add src checks
+          git -C "$project" commit -qm "Create a committed project"
+          # The scripted MCP client substitutes for a signed-in GUI application.
+          mkdir -p "$HOME/Applications/Cursor.app/Contents"
+          touch "$HOME/Applications/Cursor.app/Contents/Info.plist"
+      - name: Exercise pasted installation through the first-task approval handoff
+        run: /usr/bin/expect .github/scripts/installer-smoke.exp

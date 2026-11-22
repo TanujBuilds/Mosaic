@@ -15,6 +15,9 @@ group('Darwin PTY or filesystem flags; mixed source and macOS checks', [
   'beta-install', 'beta-observer', 'beta-setup', 'mosaic-m019-terminal-width'
 ]);
 group('Darwin arm64 downloader with system shell/Perl archive fixtures', ['download-bootstrap']);
+group('Apple Silicon release installer and terminal onboarding; covered by the installer workflow', [
+  'release-bootstrap', 'release-guide'
+]);
 group('Builds standalone runtime snapshots and needs exact-lock offline package inputs', [
   'harness-package', 'harness-research-review-package', 'harness-targeted-repair-package'
 ]);
