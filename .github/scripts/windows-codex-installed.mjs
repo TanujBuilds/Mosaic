@@ -1,3 +1,4 @@
+import {installedCandidate} from './windows-installed-input.mjs';
 import assert from 'node:assert/strict';
 import {execFile, spawn} from 'node:child_process';
 import {createHash} from 'node:crypto';
@@ -13,7 +14,7 @@ assert.equal(process.platform, 'win32');
 assert.equal(process.arch, 'x64');
 assert.equal(process.versions.node, '24.22.3');
 assert.equal(process.env.RUNNER_ENVIRONMENT, 'github-hosted');
-assert.equal(process.env.GITHUB_REF, 'refs/heads/codex/windows-codex-installed');
+const {source, tree, archiveSha, manifestSha, bootstrapSha, artifactId} = installedCandidate('codex');
 assert.equal(process.argv.length, 5);
 const [home, vendor, bundle] = process.argv.slice(2);
 assert.equal(path.dirname(home), process.env.RUNNER_TEMP);
@@ -21,10 +22,6 @@ assert.equal(path.dirname(bundle), process.env.RUNNER_TEMP);
 assert.equal(vendor, path.join(home, '.codex', 'packages', 'standalone', 'current', 'bin', 'codex.exe'));
 
 const exec = promisify(execFile);
-const source = '97b7ae388f3e8d03f4eba132a24c57e3997d62df';
-const archiveSha = 'bfcaf46c70228dea09b80746455233b89a6c3667c8e5549b24a8666d0cc4ddaf';
-const manifestSha = 'ef7e57ef39cb25eb5a56e4b90b52a0c8bc5b1947eb066058ff948a616f2be21e';
-const bootstrapSha = '6a1e53c0d9874ce6839cc7e65a2db5e6cd8992b3c6bc07b8757e325e828342e1';
 const vendorSha = 'cefea4ffee1fff04983a99c0dda99944d8b380e891e740a28b32f4b815a6e0b7';
 const system = path.join(process.env.SystemRoot, 'System32');
 const appData = process.env.LOCALAPPDATA;
@@ -67,7 +64,7 @@ async function run(command, args, {timeout = 45_000, inputEnv = env} = {}) {
 }
 const codex = (...args) => run(vendor, args);
 const mosaic = (...args) => run(launcher, args);
-const record = {source, archiveSha256:archiveSha, manifestSha256:manifestSha, artifactId:14742128055,
+const record = {source, archiveSha256:archiveSha, manifestSha256:manifestSha, artifactId,
   vendor:{version:'0.171.0', sha256:vendorSha}, handshake:{}};
 await absent(root);
 assert.equal(await sha256(vendor), vendorSha);
@@ -81,7 +78,7 @@ const candidate = await json(path.join(bundle, 'candidate.json'));
 assert.equal(candidate.kind, 'mosaic-windows-beta-candidate');
 assert.equal(candidate.platform, 'win32-x64');
 assert.equal(candidate.sourceCommit, source);
-assert.equal(candidate.sourceTree, '88aef246de25262301203e1be9a60a681a0c201c');
+assert.equal(candidate.sourceTree, tree);
 assert.equal(candidate.version, '0.1.0-beta.229');
 assert.equal(candidate.archiveName, 'mosaic-beta-0.1.0-beta.229-win-x64.zip');
 assert.equal(candidate.archiveSha256, archiveSha);
