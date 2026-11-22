@@ -115,6 +115,7 @@ test('PowerShell checks the archive and installs only its verified inventory', {
     '$verified = Expand-Release $archive $destination',
     'if ($verified.ManifestSha256 -cne ' + literal(sha256(manifest)) + ') { throw "Manifest hash mismatch" }',
     '$null = Test-VersionDirectory $destination $verified.ManifestSha256 $Version',
+    '$null = Test-VersionDirectory ($destination + [IO.Path]::DirectorySeparatorChar) $verified.ManifestSha256 $Version',
     '$history = New-Item -ItemType Directory -Path (Join-Path ' + literal(folder) + ' "history")',
     '$launcher = Join-Path ' + literal(folder) + ' "mosaic.exe"',
     '$backup = Join-Path ' + literal(folder) + ' "backup.exe"',

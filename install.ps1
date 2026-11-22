@@ -31,6 +31,11 @@ function Get-PlainItem([string] $Path, [switch] $Directory) {
 }
 
 function Get-PlainDirectory([string] $Path) {
+    if ($Maintenance -eq 'verify') {
+        if (-not (Get-PlainItem $Path -Directory)) { throw 'A Mosaic installation directory is missing.' }
+        Assert-PrivateRoot $Path
+        return Get-PlainItem $Path -Directory
+    }
     Initialize-Root $Path
     return Get-PlainItem $Path -Directory
 }
@@ -202,16 +207,16 @@ function Test-VersionDirectory([string] $Path, [string] $ManifestHash, [string] 
     if (-not $manifest -or (Get-Sha256 $manifestFile) -cne $ManifestHash) { throw 'Mosaic package manifest checksum mismatch.' }
     $inventory = Read-Inventory $manifest $ExpectedVersion
     $seen = @{}
-    $directories = New-Object 'Collections.Generic.Stack[string]'
-    $directories.Push($Path)
+    $directories = New-Object 'Collections.Generic.Stack[object]'
+    $directories.Push(@{Path = $Path; Relative = ''})
     while ($directories.Count) {
         $directory = $directories.Pop()
-        foreach ($item in Get-ChildItem -LiteralPath $directory -Force) {
-            $relative = $item.FullName.Substring($Path.Length + 1).Replace('\', '/')
+        foreach ($item in Get-ChildItem -LiteralPath $directory.Path -Force) {
+            $relative = if ($directory.Relative) { $directory.Relative + '/' + $item.Name } else { $item.Name }
             if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw "Unsafe installed Mosaic path: $relative" }
             if ($item.PSIsContainer) {
                 if (-not $inventory.Folders.ContainsKey($relative) -or $inventory.Folders[$relative] -cne $relative) { throw "Unexpected Mosaic directory: $relative" }
-                $directories.Push($item.FullName)
+                $directories.Push(@{Path = $item.FullName; Relative = $relative})
             } elseif ($relative -cne 'package-manifest.json') {
                 $record = $inventory.Files[$relative]
                 if (-not $record -or $record.path -cne $relative -or $record.bytes -ne $item.Length -or
@@ -364,7 +369,8 @@ Initialize-Root $root
 $lockPath = Join-Path $root 'install.lock'
 Get-PlainItem $lockPath | Out-Null
 
-try { $lock = [IO.File]::Open($lockPath, [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None) }
+$lockMode = if ($Maintenance -eq 'verify') { [IO.FileMode]::Open } else { [IO.FileMode]::OpenOrCreate }
+try { $lock = [IO.File]::Open($lockPath, $lockMode, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None) }
 catch { throw 'Mosaic installation or startup is already in progress. Close duplicate installers and retry.' }
 try {
     $bin = (Get-PlainDirectory (Join-Path $root 'bin')).FullName
@@ -401,7 +407,10 @@ try {
         Test-RetainedVersion $versions $receipt | Out-Null
         return
     }
-    if ($Maintenance -eq 'uninstall' -or ($Maintenance -eq 'recover' -and $intent.operation -eq 'uninstall')) {
+    $resumeUninstall = $intent.operation -eq 'uninstall' -and
+        ($Maintenance -eq 'recover' -or (-not $Maintenance -and $Version -ceq $intent.previous.version -and
+            $ArchiveSha256 -ceq $intent.previous.archiveSha256))
+    if ($Maintenance -eq 'uninstall' -or $resumeUninstall) {
         if ($TargetVersion) { throw 'Uninstall does not take a version.' }
         if (-not $intent) {
             if ($inactive) { Write-Host 'Mosaic is already inactive. Its saved data and releases are retained.'; return }
@@ -423,7 +432,13 @@ try {
         Complete-Uninstall $intent.previous $pointerPath $launcher $backupPath $disabledPath
         [IO.File]::Delete($intentPath)
         Write-Host 'Mosaic was deactivated for this user. Its saved data and releases are retained.'
-        return
+        if ($Maintenance) { return }
+        $intent = $null
+        $current = $null
+        $disabled = $receipt
+        $inactive = $true
+        $active = $false
+        $launcherHash = if (Get-PlainItem $launcher) { Get-Sha256 $launcher } else { $null }
     }
     if ($Maintenance -eq 'rollback') {
         if ($TargetVersion -cnotmatch $versionPattern -or -not $active -or $intent -or (Compare-Version $TargetVersion $current) -ge 0) {
