@@ -327,20 +327,52 @@ static string control(string &buffer) {
   require(command == "go" || command == "cancel", "invalid control command");
   return command;
 }
+// Prove the LPAC property with the suspended child's actual token. The
+// TokenIsLessPrivilegedAppContainer information class returns error 87 on
+// some supported Server builds. This paired AccessCheck measures the access
+// that matters: an explicit package grant succeeds; the ambient grant fails.
+static bool grantsRead(HANDLE token, const wstring &user,
+                       const wstring &package) {
+  const wstring dacl =
+      L"O:SYG:SYD:(A;;0x1;;;" + user + L")(A;;0x1;;;" + package + L")";
+  PSECURITY_DESCRIPTOR sd = nullptr;
+  require(ConvertStringSecurityDescriptorToSecurityDescriptorW(
+              dacl.c_str(), SDDL_REVISION_1, &sd, nullptr) != 0,
+          "build LPAC access probe");
+  Local allocation{reinterpret_cast<HLOCAL>(sd)};
+  GENERIC_MAPPING mapping{FILE_GENERIC_READ, FILE_GENERIC_WRITE,
+                          FILE_GENERIC_EXECUTE, FILE_ALL_ACCESS};
+  alignas(PRIVILEGE_SET) BYTE privileges[1024]{};
+  DWORD size = sizeof(privileges), granted = 0;
+  BOOL allowed = FALSE;
+  require(AccessCheck(sd, token, FILE_READ_DATA, &mapping,
+                      reinterpret_cast<PRIVILEGE_SET *>(privileges), &size,
+                      &granted, &allowed) != 0,
+          "evaluate LPAC access probe");
+  return allowed && (granted & FILE_READ_DATA) != 0;
+}
 static void verifyProcess(HANDLE process, HANDLE job, PSID expectedSid) {
   BOOL assigned = FALSE;
   require(IsProcessInJob(process, job, &assigned) && assigned,
           "check Job membership");
   Handle token;
-  require(OpenProcessToken(process, TOKEN_QUERY, &token.h) != 0,
+  require(OpenProcessToken(process, TOKEN_QUERY | TOKEN_DUPLICATE, &token.h) !=
+              0,
           "open suspended check token");
-  for (const auto kind :
-       {TokenIsAppContainer, TokenIsLessPrivilegedAppContainer}) {
-    const auto value = tokenInfo(token.h, kind);
-    require(value.size() == sizeof(DWORD) &&
-                *reinterpret_cast<const DWORD *>(value.data()) != 0,
-            "verify low privilege AppContainer token");
-  }
+  const auto value = tokenInfo(token.h, TokenIsAppContainer);
+  require(value.size() == sizeof(DWORD) &&
+              *reinterpret_cast<const DWORD *>(value.data()) != 0,
+          "verify AppContainer token");
+  Handle impersonation;
+  require(DuplicateToken(token.h, SecurityImpersonation, &impersonation.h) != 0,
+          "duplicate token for access probe");
+  const auto user = tokenInfo(token.h, TokenUser);
+  const wstring userSid =
+      sidString(reinterpret_cast<const TOKEN_USER *>(user.data())->User.Sid);
+  require(grantsRead(impersonation.h, userSid, sidString(expectedSid)),
+          "LPAC explicit package access control failed");
+  require(!grantsRead(impersonation.h, userSid, L"S-1-15-2-1"),
+          "LPAC ambient package access was granted");
   const auto package = tokenInfo(token.h, TokenAppContainerSid),
              capabilities = tokenInfo(token.h, TokenCapabilities);
   require(EqualSid(reinterpret_cast<const TOKEN_APPCONTAINER_INFORMATION *>(
