@@ -5,11 +5,21 @@ on:
     paths:
       - install.sh
       - distribution/onboarding/**
+      - distribution/archive/**
+      - src/adapters/**
+      - src/beta/**
+      - src/harness/**
+      - src/project/**
+      - package-lock.json
+      - package.json
+      - scripts/package-beta.mjs
+      - scripts/lib/beta-*.mjs
       - test/release-*.test.mjs
       - .github/scripts/installer-smoke.exp
       - .github/scripts/registry-smoke.mjs
       - .github/scripts/finish-first-task.mjs
       - .github/workflows/installer.yml
+  workflow_dispatch:
 
 permissions:
   contents: read
