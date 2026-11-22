@@ -444,8 +444,9 @@ static string narrowIdentifier(const wchar_t *s, size_t len, bool hyphens) {
   return string(value.begin(), value.end());
 }
 
-static int run(int argc, wchar_t **argv) {
+static int run(int argc, wchar_t **argv, bool isolatedJavaScript = false) {
   require(argc >= 6, "missing supervisor arguments");
+  require(!isolatedJavaScript || argc == 6, "unexpected JavaScript supervisor arguments");
   const string request = narrowIdentifier(argv[1], 36, true),
                binding = narrowIdentifier(argv[2], 64, false);
   wchar_t *tail = nullptr;
@@ -462,15 +463,23 @@ static int run(int argc, wchar_t **argv) {
   const fs::path executable = stage / L"runtime" / L"node.exe",
                  cwd = stage / L"work";
   wstring args = quote(executable.wstring());
-  for (int i = 6; i < argc; ++i)
-    args += L" " + quote(argv[i]);
+  if (isolatedJavaScript) {
+    args += L" -- " + quote((stage / L"runtime" / L"isolated-js-program.mjs").wstring());
+  } else {
+    for (int i = 6; i < argc; ++i)
+      args += L" " + quote(argv[i]);
+  }
   auto env = environment(stage);
   Handle job(CreateJobObjectW(nullptr, nullptr));
   require(job.h != nullptr, "create Job Object");
   JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
   limits.BasicLimitInformation.LimitFlags =
       JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_ACTIVE_PROCESS;
-  limits.BasicLimitInformation.ActiveProcessLimit = 64;
+  limits.BasicLimitInformation.ActiveProcessLimit = isolatedJavaScript ? 1 : 64;
+  if (isolatedJavaScript) {
+    limits.BasicLimitInformation.LimitFlags |= JOB_OBJECT_LIMIT_JOB_MEMORY;
+    limits.JobMemoryLimit = 512ULL * 1024 * 1024;
+  }
   require(SetInformationJobObject(job.h, JobObjectExtendedLimitInformation,
                                   &limits, sizeof(limits)) != 0,
           "configure Job Object limits");
@@ -681,6 +690,8 @@ int wmain(int argc, wchar_t **argv) {
       return hostSecurity();
     if (argc == 2 && wstring(argv[1]) == L"--boot-id")
       return bootId();
+    if (argc >= 2 && wstring(argv[1]) == L"--isolated-js")
+      return run(argc - 1, argv + 1, true);
     return run(argc, argv);
   } catch (const std::exception &error) {
     std::fprintf(stderr, "Mosaic Windows supervisor: %s\n", error.what());

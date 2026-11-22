@@ -2,7 +2,7 @@ name: Windows protected JavaScript feasibility
 
 'on':
   push:
-    branches: [codex/windows-protected-js-probe]
+    branches: [codex/windows-protected-js-probe, codex/windows-protected-js-supervisor]
   workflow_dispatch:
 
 permissions:
@@ -20,6 +20,23 @@ jobs:
         with:
           node-version: '24.22.3'
           package-manager-cache: false
+      - name: Find the x64 MSVC build tools
+        shell: pwsh
+        run: |
+          $finder = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
+          $vs = & $finder -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if ($LASTEXITCODE -ne 0 -or -not $vs) { throw 'Missing x64 MSVC' }
+          "MOSAIC_DEV_CMD=$(Join-Path $vs 'Common7/Tools/VsDevCmd.bat')" >> $env:GITHUB_ENV
+      - name: Build the Windows supervisor
+        shell: cmd
+        run: |
+          call "%MOSAIC_DEV_CMD%" -arch=x64 -host_arch=x64
+          if errorlevel 1 exit /b 1
+          pushd "%RUNNER_TEMP%"
+          cl /nologo /std:c++17 /EHsc /W4 /DUNICODE /D_UNICODE "%GITHUB_WORKSPACE%\src\project\check-backends\windows-supervisor.cpp" /Fe:mosaic-js-test-supervisor.exe /link advapi32.lib userenv.lib
+          if errorlevel 1 exit /b 1
+          >>"%GITHUB_ENV%" echo MOSAIC_TEST_JS_SUPERVISOR=%RUNNER_TEMP%\mosaic-js-test-supervisor.exe
+          popd
       - name: Verify the proof-of-concept runtime and run Windows tests
         shell: pwsh
         env:

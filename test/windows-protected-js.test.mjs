@@ -1,10 +1,15 @@
 import assert from 'node:assert/strict';
-import {execFileSync} from 'node:child_process';
-import {mkdtemp, readFile, realpath, rm, writeFile} from 'node:fs/promises';
+import {execFileSync, spawn} from 'node:child_process';
+import {copyFile, cp, mkdir, mkdtemp, readFile, realpath, rm, writeFile} from 'node:fs/promises';
+import {createHash, randomUUID} from 'node:crypto';
+import {once} from 'node:events';
 import {createServer} from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import {test} from 'node:test';
+import {createInterface} from 'node:readline';
+import {setTimeout as delay} from 'node:timers/promises';
+import {fileURLToPath} from 'node:url';
 import {runIsolatedJavaScript} from '../src/project/check-backends/isolated-js.mjs';
 
 const qualified = process.env.MOSAIC_ISOLATED_JS_PROBE === '1';
@@ -79,4 +84,100 @@ test('module inventory rejects duplicate, invalid and oversized entries before s
   await assert.rejects(runIsolatedJavaScript(entry, [[entry,''],[entry,'']]), /inventory/i);
   await assert.rejects(runIsolatedJavaScript(entry, [[entry,''],['../outside.mjs','']]), /inventory/i);
   await assert.rejects(runIsolatedJavaScript(entry, [[entry,' '.repeat(2**21)]]), /inventory/i);
+});
+
+const supervisor = qualified && process.env.MOSAIC_TEST_JS_SUPERVISOR;
+const hostProgram = String.raw`
+  import {spawn} from 'node:child_process';
+  import {createInterface} from 'node:readline';
+  const [supervisor, mode, ...args] = process.argv.slice(1);
+  const child = spawn(supervisor, ['--isolated-js', ...args], {
+    windowsHide:true, stdio:['pipe','pipe','inherit'],
+  });
+  child.stdin.on('error', () => {});
+  const lines = createInterface({input:child.stdout});
+  lines.on('line', line => {
+    const event = JSON.parse(line);
+    process.stdout.write(line + '\n');
+    if (event.type === 'prepared' && mode !== 'before-go') child.stdin.write('go\n');
+  });
+  child.on('close', code => { process.exitCode = code; });
+`;
+
+async function nativeTrial(t, {guest, crash, timeoutMs = 4000}) {
+  const root = await mkdtemp(path.join(await realpath(os.tmpdir()), 'Mosaic JS Job '));
+  t.after(() => rm(root, {recursive:true, force:true, maxRetries:8, retryDelay:200}));
+  const stage = path.join(root, 'staging'), runtime = path.join(stage, 'runtime'), inputs = path.join(stage, 'inputs');
+  const receipts = path.join(root, 'receipts'), completion = path.join(receipts, 'completion.json');
+  await Promise.all([mkdir(path.join(runtime, 'node_modules'), {recursive:true}), mkdir(inputs, {recursive:true}),
+    mkdir(path.join(stage, 'work', '.overnight-output', 'tmp'), {recursive:true}), mkdir(receipts)]);
+  await Promise.all([
+    copyFile(process.execPath, path.join(runtime, 'node.exe')),
+    cp(path.dirname(fileURLToPath(import.meta.resolve('quickjs-wasi/package.json'))),
+      path.join(runtime, 'node_modules', 'quickjs-wasi'), {recursive:true}),
+    ...['isolated-js-program.mjs','isolated-js.mjs','isolated-js-child.mjs'].map(name =>
+      copyFile(new URL('../src/project/check-backends/' + name, import.meta.url), path.join(runtime, name))),
+  ]);
+  const payload = JSON.stringify({entry, modules:[[entry,guest]], timeoutMs});
+  await writeFile(path.join(inputs, 'check.json'), payload);
+  const requestId = randomUUID(), bindingHash = createHash('sha256').update(payload).digest('hex');
+  const controller = spawn(process.execPath, ['--input-type=module', '-e', hostProgram,
+    supervisor, crash ?? 'none', requestId, bindingHash, completion, String(timeoutMs + 2000), stage],
+  {stdio:['ignore','pipe','pipe'], windowsHide:true});
+  const closed = once(controller,'close');
+  const lines = createInterface({input:controller.stdout});
+  let prepared, stderr = '', stdout = '';
+  controller.stderr.on('data', bytes => { stderr += bytes; });
+  for await (const line of lines) {
+    const event = JSON.parse(line);
+    if (event.type === 'prepared') {
+      prepared = event;
+      if (crash === 'before-go') assert.ok(controller.kill());
+    } else if (event.type === 'output' && event.stream === 'stdout') {
+      stdout += Buffer.from(event.hex, 'hex').toString('utf8');
+      if (crash === 'running' && stdout === 'ready\n') assert.ok(controller.kill());
+    }
+  }
+  const [code] = await closed;
+  if (!crash) assert.equal(code,0,stderr);
+  assert.ok(prepared,stderr);
+  let receipt;
+  const deadline = Date.now() + 12000;
+  while (!receipt) {
+    try { receipt = JSON.parse(await readFile(completion,'utf8')); }
+    catch (error) {
+      if (error.code !== 'ENOENT' || Date.now() >= deadline) throw error;
+      await delay(50);
+    }
+  }
+  assert.equal(receipt.requestId, requestId);
+  assert.equal(receipt.bindingHash, bindingHash);
+  assert.equal(receipt.helperPid, prepared.helperPid);
+  assert.equal(receipt.leaderPid, prepared.leaderPid);
+  assert.equal(receipt.activeProcesses, 0);
+  assert.equal(receipt.leaderExited, true);
+  return {receipt, stdout};
+}
+
+test('native Windows Job returns exact zero-process receipts for good and failed checks', {
+  skip:!supervisor, timeout:90000,
+}, async t => {
+  const good = await nativeTrial(t,{guest:'export {};'});
+  assert.equal(good.stdout, 'ready\npassed\n');
+  assert.equal(good.receipt.code,0);
+  assert.equal(good.receipt.reason,'exit');
+  const bad = await nativeTrial(t,{guest:"throw 'Check failed';"});
+  assert.equal(bad.stdout, 'ready\nfailed\n');
+  assert.equal(bad.receipt.code,1);
+  assert.equal(bad.receipt.reason,'exit');
+});
+
+test('native Windows Job records quiescence after real controller death before and after GO', {
+  skip:!supervisor, timeout:90000,
+}, async t => {
+  for (const crash of ['before-go','running']) {
+    const run = await nativeTrial(t,{guest:'while (true) {}', crash, timeoutMs:12000});
+    assert.equal(run.receipt.reason,'control-eof');
+    assert.equal(run.stdout, crash === 'running' ? 'ready\n' : '');
+  }
 });
