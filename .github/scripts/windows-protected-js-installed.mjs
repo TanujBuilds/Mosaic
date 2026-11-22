@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import {execFile} from 'node:child_process';
 import {createHash} from 'node:crypto';
-import {cp, mkdtemp, readFile, rm, writeFile} from 'node:fs/promises';
+import {cp, lstat, mkdtemp, readFile, rm, writeFile} from 'node:fs/promises';
 import path from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {promisify} from 'node:util';
@@ -18,14 +18,16 @@ const digest = bytes => createHash('sha256').update(bytes).digest('hex');
 assert.equal(digest(await readFile(bootstrap)), candidate.bootstrapSha256);
 assert.equal(digest(await readFile(archive)), candidate.archiveSha256);
 const root = await mkdtemp(path.join(process.env.RUNNER_TEMP,'Mosaic isolated JS install '));
-const env = {...process.env, LOCALAPPDATA:root};
+const env = {...process.env};
+const installRoot = path.join(env.LOCALAPPDATA,'Mosaic Beta');
+await assert.rejects(lstat(installRoot),{code:'ENOENT'});
 const exec = promisify(execFile);
 const ps = path.join(process.env.SystemRoot,'System32','WindowsPowerShell','v1.0','powershell.exe');
 try {
   await exec(ps,['-NoLogo','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',bootstrap,
     '-Archive',archive,'-ArchiveSha256',candidate.archiveSha256,'-Version',candidate.version,'-NoGuide'],
   {env, windowsHide:true, timeout:150000});
-  const installed = path.join(root,'Mosaic Beta','versions',candidate.version);
+  const installed = path.join(installRoot,'versions',candidate.version);
   const runtime = path.join(installed,'runtime'), artifact = path.join(runtime,'javascript-check-artifact');
   const metadata = await readFile(path.join(installed,'package-manifest.json'));
   assert.equal(digest(metadata), candidate.packageManifestSha256);
@@ -49,10 +51,11 @@ try {
   await cp(artifact,tampered,{recursive:true});
   await writeFile(path.join(tampered,'isolated-js-program.mjs'),'throw Error("Must never run");\n');
   await assert.rejects(check(tampered), error => error.stderr.includes('Isolated JavaScript artifact file changed'));
-  const help = await exec(path.join(root,'Mosaic Beta','bin','mosaic.exe'),['--help'],{env,windowsHide:true,timeout:30000});
+  const help = await exec(path.join(installRoot,'bin','mosaic.exe'),['--help'],{env,windowsHide:true,timeout:30000});
   assert.match(help.stdout,/Mosaic/);
   console.log(JSON.stringify({source:candidate.sourceCommit, fingerprint:verified.fingerprint, verified:verified.files.length,
     tamperedBootstrapRejected:true, productionCodingEnabled:false}));
 } finally {
+  await rm(installRoot,{recursive:true,force:true,maxRetries:8,retryDelay:200});
   await rm(root,{recursive:true,force:true,maxRetries:8,retryDelay:200});
 }
