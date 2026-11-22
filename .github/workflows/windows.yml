@@ -179,3 +179,84 @@ jobs:
           The exact local artifact passed installation and interrupted extraction recovery on Windows Server 2025 x64. The stable launcher found bundled Node with system tools only on PATH.
           Anonymous HTTPS download, a clean Windows 11 client and real signed-in coding apps still require qualification before publishing a Windows install link.
           '@ >> $env:GITHUB_STEP_SUMMARY
+      - name: Detect the separate Windows coding core
+        id: core
+        shell: pwsh
+        run: |
+          $present = Test-Path -LiteralPath 'scripts/package-windows-core.mjs' -PathType Leaf
+          if (-not $present) {
+            'Windows coding core smoke: pending source.' >> $env:GITHUB_STEP_SUMMARY
+            'available=false' >> $env:GITHUB_OUTPUT
+            exit 0
+          }
+          foreach ($file in @('activate.ps1', 'core.mjs', 'mosaic-core.ps1')) {
+            if (-not (Test-Path -LiteralPath "distribution/windows-core/$file" -PathType Leaf)) {
+              throw "The Windows coding core is missing $file."
+            }
+          }
+          'available=true' >> $env:GITHUB_OUTPUT
+      - name: Independently build, install, and exercise the Windows coding core
+        if: steps.core.outputs.available == 'true'
+        shell: pwsh
+        run: node .github/scripts/windows-core-smoke.mjs "$env:MOSAIC_PACKAGE_DIR"
+
+  windows-arm-diagnostics:
+    name: Windows 11 ARM64 host capability diagnostics
+    runs-on: windows-11-arm
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Locate MSVC ARM64 tools for the diagnostic
+        id: inputs
+        shell: pwsh
+        run: |
+          $source = 'src/project/check-backends/windows-supervisor.cpp'
+          if (-not (Test-Path -LiteralPath $source -PathType Leaf) -or -not (Select-String -LiteralPath $source -SimpleMatch '--host-security' -Quiet)) {
+            'Windows 11 ARM64 diagnostic: pending host probe.' >> $env:GITHUB_STEP_SUMMARY
+            'available=false' >> $env:GITHUB_OUTPUT
+            exit 0
+          }
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
+          $visualStudio = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.ARM64 -property installationPath
+          if ($LASTEXITCODE -ne 0 -or -not $visualStudio) { throw 'The ARM64 MSVC toolchain is unavailable.' }
+          $devCmd = Join-Path $visualStudio 'Common7/Tools/VsDevCmd.bat'
+          if (-not (Test-Path -LiteralPath $devCmd -PathType Leaf)) { throw 'VsDevCmd.bat is unavailable.' }
+          "MOSAIC_ARM_VS_DEV_CMD=$devCmd" >> $env:GITHUB_ENV
+          'available=true' >> $env:GITHUB_OUTPUT
+      - name: Compile the native ARM64 supervisor
+        if: steps.inputs.outputs.available == 'true'
+        shell: cmd
+        run: |
+          call "%MOSAIC_ARM_VS_DEV_CMD%" -arch=arm64 -host_arch=arm64
+          if errorlevel 1 exit /b 1
+          pushd "%RUNNER_TEMP%"
+          if errorlevel 1 exit /b 1
+          cl /nologo /std:c++17 /EHsc /W4 /DUNICODE /D_UNICODE "%GITHUB_WORKSPACE%\src\project\check-backends\windows-supervisor.cpp" /Fe:mosaic-arm-supervisor.exe /link advapi32.lib userenv.lib
+          if errorlevel 1 exit /b 1
+          if not exist "mosaic-arm-supervisor.exe" exit /b 1
+          popd
+      - name: Record Windows and process security environment capabilities
+        if: steps.inputs.outputs.available == 'true'
+        shell: pwsh
+        run: |
+          $exe = Join-Path $env:RUNNER_TEMP 'mosaic-arm-supervisor.exe'
+          $bytes = [IO.File]::ReadAllBytes($exe)
+          $pe = [BitConverter]::ToInt32($bytes, 60)
+          if ([BitConverter]::ToUInt16($bytes, $pe + 4) -ne 0xaa64) { throw 'The diagnostic executable is not native ARM64.' }
+          $os = Get-CimInstance Win32_OperatingSystem
+          Write-Output "$($os.Caption) $($os.Version) $($os.OSArchitecture)"
+          $dll = Get-Item -LiteralPath (Join-Path ([Environment]::SystemDirectory) 'processmodel.dll') -ErrorAction SilentlyContinue
+          if ($dll) { Write-Output "processmodel.dll $($dll.VersionInfo.FileVersion)" }
+          else { Write-Output 'processmodel.dll is unavailable in System32.' }
+          $raw = & $exe --host-security
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $diagnostic = $raw | ConvertFrom-Json
+          foreach ($name in @('build', 'revision', 'client', 'processModel', 'createEnvironment', 'closeEnvironment',
+              'versionResult', 'version1', 'minor', 'supportResult', 'supportFlags')) {
+            if ($name -notin $diagnostic.PSObject.Properties.Name) { throw "Host diagnostic field missing: $name" }
+          }
+          $raw | Write-Output
+          'Windows 11 ARM64 host capability diagnostics. This run does not qualify protected execution or Windows 11 x64.' >> $env:GITHUB_STEP_SUMMARY
+          "Host probe: $raw" >> $env:GITHUB_STEP_SUMMARY
