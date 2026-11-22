@@ -1,0 +1,30 @@
+name: Windows source pilot and simulated live job
+
+'on':
+  push:
+    branches: [codex/windows-source-pilot, codex/windows-ci-qualification]
+  pull_request:
+    paths:
+      - 'src/pilot.mjs'
+      - 'src/live.mjs'
+      - 'examples/web-ui-pilot/**'
+      - '.github/scripts/windows-source-pilot.mjs'
+      - '.github/workflows/windows-source-pilot.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  source-pilot:
+    runs-on: windows-2025
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24.22.3'
+          package-manager-cache: false
+      - name: Prepare a pilot repository and run a simulated approved job
+        run: node .github/scripts/windows-source-pilot.mjs
