@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import {execFile} from 'node:child_process';
 import {createHash} from 'node:crypto';
-import {access, mkdir, mkdtemp, readFile, writeFile} from 'node:fs/promises';
+import {access, copyFile, mkdir, mkdtemp, readFile, writeFile} from 'node:fs/promises';
+import {windowsGitProcess} from '../../src/project/windows-git.mjs';
 import path from 'node:path';
 import {setTimeout as delay} from 'node:timers/promises';
 import {promisify} from 'node:util';
@@ -27,6 +28,16 @@ const system32 = path.join(process.env.SystemRoot, 'System32');
 const powershell = path.join(system32, 'WindowsPowerShell', 'v1.0', 'powershell.exe');
 const shellArgs = ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File'];
 const workspace = process.env.GITHUB_WORKSPACE;
+const git = windowsGitProcess();
+assert.ok(git, 'A trusted Git for Windows executable is required');
+const gitBytes = async (...args) => (await exec(git.executable, ['-C', workspace, ...args],
+  {env: git.env, cwd: git.cwd, encoding: 'buffer', windowsHide: true})).stdout;
+assert.equal(candidate.sourceCommit, process.env.GITHUB_SHA);
+const sourceTree = (await gitBytes('rev-parse','HEAD^{tree}')).toString().trim();
+assert.equal(sourceTree, candidate.sourceTree);
+const activator = path.join(scratch, 'activate.ps1');
+const activatorBytes = await gitBytes('cat-file','blob','HEAD:distribution/windows-core/activate.ps1');
+await writeFile(activator, activatorBytes, {flag: 'wx'});
 const runnerEnv = Object.fromEntries(Object.entries(process.env).filter(([name]) => !/^NODE_(?:OPTIONS|PATH)$/i.test(name)));
 const env = {...Object.fromEntries(Object.entries(runnerEnv).filter(([name]) => !/^(?:LOCALAPPDATA|USERPROFILE)$/i.test(name))),
   LOCALAPPDATA: appData, USERPROFILE: fixtureProfile};
@@ -64,7 +75,7 @@ const build = JSON.parse((await run(process.execPath, ['scripts/package-windows-
 assert.equal(build.source, candidate.sourceCommit);
 assert.equal(path.resolve(build.archive), path.resolve(corePackage + '.zip'));
 assert.equal(sha256(await readFile(build.archive)), build.archiveSha256);
-await run(powershell, [...shellArgs, path.join(workspace, 'distribution/windows-core/activate.ps1'),
+await run(powershell, [...shellArgs, activator,
   '-Archive', build.archive, '-Sha256', build.archiveSha256]);
 
 const root = path.join(appData, 'Mosaic');
@@ -72,6 +83,15 @@ const launcher = path.join(root, 'mosaic-core.ps1');
 const version = path.join(root, 'versions', build.archiveSha256);
 const manifest = await readFile(path.join(version, 'package-manifest.json'));
 assert.equal(sha256(manifest), build.manifestSha256);
+const coreManifest = JSON.parse(manifest);
+assert.equal(coreManifest.sourceCommit, candidate.sourceCommit);
+assert.equal(coreManifest.sourceDirty, false);
+assert.equal(coreManifest.runtimeInputHash, candidate.packageManifestSha256);
+const names = coreManifest.files.map(file => file.path);
+const archiveNames = (await run(path.join(system32, 'tar.exe'), ['-tf', build.archive], {maxBuffer: 8 * 1024 * 1024})).split(/\r?\n/);
+assert.deepEqual(archiveNames.sort(), [...names, 'package-manifest.json'].sort());
+const privatePath = /(?:^|\/)(?:\.git|\.data|\.codex|\.claude|\.env|\.npmrc|connection\.json|viewer-connection\.json|credentials\.json|harness\.sqlite3(?:-wal|-shm)?)(?:\/|$)/i;
+assert.ok(names.every(name => !privatePath.test(name)), 'Private state or credential files appeared in the core inventory');
 const skills = ['frontier-harness', 'frontier-collaborate', 'frontier-deepseek-only', 'frontier-codex-only'];
 for (const skill of skills) {
   assert.match(await readFile(path.join(version, 'skills', skill, 'SKILL.md'), 'utf8'), /^---/);
@@ -168,3 +188,21 @@ try {
   await invoke('stop').catch(() => {});
   await invoke('remove-startup').catch(() => {});
 }
+
+// Retain build inputs by name only. The temporary app profile, connections and
+// SQLite state are separate from the archive that was opened before core setup.
+const output = path.join(process.env.RUNNER_TEMP, 'Verified standalone core');
+await mkdir(output);
+const archiveName = 'mosaic-core-windows-x64.zip';
+const retained = path.join(output, archiveName);
+await copyFile(build.archive, retained);
+const bytes = await readFile(retained);
+assert.equal(sha256(bytes), build.archiveSha256);
+assert.deepEqual(await readFile(activator), activatorBytes);
+await writeFile(path.join(output, 'activate.ps1'), activatorBytes, {flag: 'wx'});
+await writeFile(path.join(output, 'package-manifest.json'), manifest, {flag: 'wx'});
+const receipt = {schema: 1, kind: 'mosaic-windows-standalone-core-candidate', platform: 'win32-x64',
+  sourceCommit: candidate.sourceCommit, sourceTree, archiveName, archiveBytes: bytes.length, archiveSha256: build.archiveSha256,
+  activatorSha256: sha256(activatorBytes), packageManifestSha256: build.manifestSha256,
+  runtimeInputManifestSha256: candidate.packageManifestSha256};
+await writeFile(path.join(output, 'candidate.json'), JSON.stringify(receipt, null, 2) + '\n', {flag: 'wx'});
