@@ -247,6 +247,20 @@ jobs:
         shell: pwsh
         run: node .github/scripts/windows-core-smoke.mjs (Join-Path $env:RUNNER_TEMP 'Mosaic Windows candidate')
 
+      - name: Retain the exercised standalone core candidate
+        if: steps.core.outputs.available == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: mosaic-windows-x64-core-candidate-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/Verified standalone core/mosaic-core-windows-x64.zip
+            ${{ runner.temp }}/Verified standalone core/activate.ps1
+            ${{ runner.temp }}/Verified standalone core/package-manifest.json
+            ${{ runner.temp }}/Verified standalone core/candidate.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
   windows-maintenance:
     name: Windows x64 installed maintenance
     needs: package
