@@ -1,0 +1,23 @@
+name: Private Windows trial transport
+
+'on':
+  push:
+    branches: [codex/windows-private-trial]
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  powershell:
+    runs-on: windows-2025
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Resume and verify the frozen Windows trial in stock PowerShell
+        shell: powershell
+        env:
+          GITHUB_TRIAL_READ_TOKEN: ${{ github.token }}
+        run: .github/scripts/windows-private-trial.ps1
