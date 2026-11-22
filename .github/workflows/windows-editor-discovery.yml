@@ -2,7 +2,7 @@ name: Actual Windows editor discovery
 
 'on':
   push:
-    branches: [codex/windows-editor-discovery]
+    branches: [codex/windows-editor-discovery, codex/windows-ci-qualification]
   workflow_dispatch:
 
 permissions:
