@@ -4,22 +4,22 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark">
-  <title>Frontier Orchestrator · Job timeline</title>
+  <title>Mosaic · Job timeline</title>
   <link rel="stylesheet" href="/style.css">
   <script type="module" src="/app.js"></script>
 </head>
 <body>
   <div class="shell">
     <aside class="sidebar">
-      <div class="brand"><span class="brand-mark">F<span>·</span>O</span><div><strong>Frontier<br>Orchestrator</strong><small>LOCAL JOB VIEWER</small></div></div>
+      <div class="brand"><span class="brand-mark" aria-hidden="true">M</span><div><strong>Mosaic</strong><small>LOCAL JOB VIEWER</small></div></div>
       <div class="side-head"><span>RECENT JOBS</span><span id="jobCount">—</span></div>
       <nav id="jobList" aria-label="Recent jobs"></nav>
-      <div class="side-footer"><span class="lock-icon" aria-hidden="true">◈</span><div><strong>On this Mac</strong><p>Reads saved job logs. This viewer cannot start, approve, or edit a job.</p></div></div>
+      <div class="side-footer"><span class="lock-icon" aria-hidden="true">◈</span><div><strong>Local job history</strong><p>Reads saved job logs. This viewer cannot start, approve, or edit a job.</p></div></div>
     </aside>
 
     <main>
       <header class="topbar">
-        <div class="breadcrumb">FRONTIER ORCHESTRATOR <span>/</span> JOB ACTIVITY</div>
+        <div class="breadcrumb">MOSAIC <span>/</span> JOB ACTIVITY</div>
         <div class="watch-pill"><span class="watch-dot"></span><span id="watchState">Connecting to local log</span></div>
       </header>
       <div class="main-content">
@@ -31,17 +31,17 @@
         </section>
 
         <section class="flow-section" aria-labelledby="flowHeading">
-          <div class="section-top"><div><p class="eyebrow">THE ROUTE</p><h2 id="flowHeading">Who is talking to whom</h2></div><span class="section-note">One service across both Sparks</span></div>
+          <div class="section-top"><div><p class="eyebrow">THE ROUTE</p><h2 id="flowHeading">Who is talking to whom</h2></div></div>
           <div class="flow">
             <div class="flow-node"><span class="node-number">01</span><strong>You</strong><small>brief + approval</small></div>
             <span class="flow-arrow">→</span>
             <div class="flow-node codex"><span class="node-number">02</span><strong>Codex CLI</strong><small>independent review</small></div>
             <span class="flow-arrow">↔</span>
-            <div class="flow-node mac"><span class="node-number">03</span><strong>Mac coordinator</strong><small>rules + job log</small></div>
+            <div class="flow-node mac"><span class="node-number">03</span><strong>Local coordinator</strong><small>rules + job log</small></div>
             <span class="flow-arrow">↔</span>
             <div class="flow-node deepseek"><span class="node-number">04</span><strong>DeepSeek</strong><small>plan + local work</small></div>
           </div>
-          <p class="flow-caption">The coordinator carries each message. For coding jobs, it also checks proposed edits and runs the approved Mac checks.</p>
+          <p class="flow-caption">The coordinator carries each message. For coding jobs, it also checks proposed edits and runs the approved project checks.</p>
         </section>
 
         <div class="content-grid">
@@ -53,7 +53,7 @@
 
             <section class="timeline-section" aria-labelledby="timelineHeading">
               <div class="section-top"><div><p class="eyebrow">SAVED EVENTS</p><h2 id="timelineHeading">Live timeline</h2></div><span id="eventCount" class="section-note">—</span></div>
-              <div class="legend"><span><i class="dot codex-dot"></i>Codex</span><span><i class="dot deepseek-dot"></i>DeepSeek</span><span><i class="dot check-dot"></i>Mac checks</span><span><i class="dot system-dot"></i>Coordinator</span></div>
+              <div class="legend"><span><i class="dot codex-dot"></i>Codex</span><span><i class="dot deepseek-dot"></i>DeepSeek</span><span><i class="dot check-dot"></i>Project checks</span><span><i class="dot system-dot"></i>Coordinator</span></div>
               <div id="timeline" class="timeline" aria-live="polite"></div>
             </section>
           </div>

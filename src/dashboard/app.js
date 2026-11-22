@@ -130,8 +130,8 @@ function renderTimeline(job, events) {
     const card = node('article', 'event-card ' + event.kind);
     const head = node('div', 'event-head');
     const role = {
-      codex: 'Codex CLI', deepseek: 'DeepSeek', check: 'Mac check',
-      workspace: 'Mac worktree', warning: 'Attention', system: 'Coordinator',
+      codex: 'Codex CLI', deepseek: 'DeepSeek', check: 'Project check',
+      workspace: 'Git worktree', warning: 'Attention', system: 'Coordinator',
     }[event.kind] ?? 'Coordinator';
     head.append(node('strong', '', role + ' · #' + event.sequence));
     const time = node('time', '', displayTime(event.at));
@@ -143,7 +143,7 @@ function renderTimeline(job, events) {
     if (images.length) {
       const strip = node('div', 'screenshots');
       for (const file of images) {
-        const name = file.split('/').at(-1);
+        const name = file.split(/[\\/]/).at(-1);
         const link = node('a', 'screenshot');
         link.href = '/api/artifacts/' + encodeURIComponent(job.id) + '/' + encodeURIComponent(name);
         link.target = '_blank';
