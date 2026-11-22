@@ -283,6 +283,13 @@ test('Windows Beta app-only consult uses host review and cannot grant project or
   const goalId = draft.id;
   await mutate('goal_activate', {goalId, hash:'0'.repeat(64)}, {error:true});
   const goal = await mutate('goal_activate', {goalId, hash:draft.hash});
+  const fixture = await createWorkflowRepository(stage);
+  const coding = workflowManifest(stage,fixture,cases[1]);
+  const revision = await mutate('goal_revision_prepare',{goalId,expectedHash:draft.hash,
+    manifest:{...manifest, executionPolicy:draft.manifest.executionPolicy, project:coding.project}});
+  const blocked = await mutate('goal_revision_activate',{revisionId:revision.id,hash:revision.hash},{error:true});
+  assert.match(blocked.error,/Windows protected coding is in development/);
+  assert.equal((await call('goal_get',{goalId})).hash,draft.hash);
   const spec = {submissionId:'explain', objective:manifest.objective, acceptance:manifest.acceptance, actor:'codex'};
   for (const kind of ['coding','research','learning']) {
     const refused = await mutate('task_submit', {goalId, task:{...spec, kind}}, {error:true});
