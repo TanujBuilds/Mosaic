@@ -12,6 +12,7 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <optional>
 #include <memory>
 #include <sddl.h>
 #include <stdexcept>
@@ -457,9 +458,13 @@ static int run(int argc, wchar_t **argv, bool isolatedJavaScript = false) {
   require(stage.is_absolute() && receipt.is_absolute() &&
               receipt.filename() == L"completion.json",
           "invalid supervisor paths");
-  RegistryReadCapability registryRead;
-  Profile profile(argv[1], &registryRead.value);
-  protectStage(stage, profile.sid);
+  std::optional<RegistryReadCapability> registryRead;
+  std::optional<Profile> profile;
+  if (!isolatedJavaScript) {
+    registryRead.emplace();
+    profile.emplace(argv[1], &registryRead->value);
+    protectStage(stage, profile->sid);
+  }
   const fs::path executable = stage / L"runtime" / L"node.exe",
                  cwd = stage / L"work";
   wstring args = quote(executable.wstring());
@@ -484,9 +489,11 @@ static int run(int argc, wchar_t **argv, bool isolatedJavaScript = false) {
                                   &limits, sizeof(limits)) != 0,
           "configure Job Object limits");
   SECURITY_CAPABILITIES security{};
-  security.AppContainerSid = profile.sid;
-  security.Capabilities = &registryRead.value;
-  security.CapabilityCount = 1;
+  if (profile) {
+    security.AppContainerSid = profile->sid;
+    security.Capabilities = &registryRead->value;
+    security.CapabilityCount = 1;
+  }
   DWORD optOut = PROCESS_CREATION_ALL_APPLICATION_PACKAGES_OPT_OUT;
   Pipe output, error;
   SECURITY_ATTRIBUTES sa{sizeof(sa), nullptr, TRUE};
@@ -495,11 +502,13 @@ static int run(int argc, wchar_t **argv, bool isolatedJavaScript = false) {
                            OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr));
   require(input.h != INVALID_HANDLE_VALUE, "open null check input");
   HANDLE childHandles[] = {input.h, output.write.h, error.write.h};
-  Attributes attrs(4);
-  attrs.set(PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES, &security,
-            sizeof(security));
-  attrs.set(PROC_THREAD_ATTRIBUTE_ALL_APPLICATION_PACKAGES_POLICY, &optOut,
-            sizeof(optOut));
+  Attributes attrs(profile ? 4 : 2);
+  if (profile) {
+    attrs.set(PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES, &security,
+              sizeof(security));
+    attrs.set(PROC_THREAD_ATTRIBUTE_ALL_APPLICATION_PACKAGES_POLICY, &optOut,
+              sizeof(optOut));
+  }
   attrs.set(PROC_THREAD_ATTRIBUTE_JOB_LIST, &job.h, sizeof(job.h));
   attrs.set(PROC_THREAD_ATTRIBUTE_HANDLE_LIST, childHandles,
             sizeof(childHandles));
@@ -521,7 +530,15 @@ static int run(int argc, wchar_t **argv, bool isolatedJavaScript = false) {
   output.write.reset();
   error.write.reset();
   input.reset();
-  verifyProcess(leader.h, job.h, profile.sid, registryRead.value.Sid);
+  if (profile) {
+    verifyProcess(leader.h, job.h, profile->sid, registryRead->value.Sid);
+  } else {
+    // Only the bundled host program runs as a native process. The guest
+    // check runs inside the host's no-I/O WebAssembly instance.
+    BOOL assigned = FALSE;
+    require(IsProcessInJob(leader.h, job.h, &assigned) && assigned,
+            "JavaScript host Job membership");
+  }
   const string ids =
       ",\"requestId\":\"" + request + "\",\"bindingHash\":\"" + binding +
       "\",\"helperPid\":" + std::to_string(GetCurrentProcessId()) +

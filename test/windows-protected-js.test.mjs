@@ -90,10 +90,13 @@ const supervisor = qualified && process.env.MOSAIC_TEST_JS_SUPERVISOR;
 const hostProgram = String.raw`
   import {spawn} from 'node:child_process';
   import {createInterface} from 'node:readline';
-  const [supervisor, mode, ...args] = process.argv.slice(1);
+  import {openSync, closeSync} from 'node:fs';
+  const [supervisor, mode, diagnostics, ...args] = process.argv.slice(1);
+  const log = openSync(diagnostics, 'wx');
   const child = spawn(supervisor, ['--isolated-js', ...args], {
-    windowsHide:true, stdio:['pipe','pipe','inherit'],
+    windowsHide:true, stdio:['pipe','pipe',log],
   });
+  closeSync(log);
   child.stdin.on('error', () => {});
   const lines = createInterface({input:child.stdout});
   lines.on('line', line => {
@@ -122,11 +125,11 @@ async function nativeTrial(t, {guest, crash, timeoutMs = 4000}) {
   await writeFile(path.join(inputs, 'check.json'), payload);
   const requestId = randomUUID(), bindingHash = createHash('sha256').update(payload).digest('hex');
   const controller = spawn(process.execPath, ['--input-type=module', '-e', hostProgram,
-    supervisor, crash ?? 'none', requestId, bindingHash, completion, String(timeoutMs + 2000), stage],
+    supervisor, crash ?? 'none', path.join(root,'supervisor-errors.txt'), requestId, bindingHash, completion, String(timeoutMs + 2000), stage],
   {stdio:['ignore','pipe','pipe'], windowsHide:true});
   const closed = once(controller,'close');
   const lines = createInterface({input:controller.stdout});
-  let prepared, stderr = '', stdout = '';
+  let prepared, stderr = '', stdout = '', guestErrors = '';
   controller.stderr.on('data', bytes => { stderr += bytes; });
   for await (const line of lines) {
     const event = JSON.parse(line);
@@ -136,6 +139,8 @@ async function nativeTrial(t, {guest, crash, timeoutMs = 4000}) {
     } else if (event.type === 'output' && event.stream === 'stdout') {
       stdout += Buffer.from(event.hex, 'hex').toString('utf8');
       if (crash === 'running' && stdout === 'ready\n') assert.ok(controller.kill());
+    } else if (event.type === 'output') {
+      guestErrors += Buffer.from(event.hex, 'hex').toString('utf8');
     }
   }
   const [code] = await closed;
@@ -146,7 +151,10 @@ async function nativeTrial(t, {guest, crash, timeoutMs = 4000}) {
   while (!receipt) {
     try { receipt = JSON.parse(await readFile(completion,'utf8')); }
     catch (error) {
-      if (error.code !== 'ENOENT' || Date.now() >= deadline) throw error;
+      if (error.code !== 'ENOENT' || Date.now() >= deadline) {
+        const diagnostics = await readFile(path.join(root,'supervisor-errors.txt'), 'utf8').catch(() => '');
+        throw Error('Missing completion after ' + crash + ': ' + diagnostics + guestErrors, {cause:error});
+      }
       await delay(50);
     }
   }
@@ -156,14 +164,14 @@ async function nativeTrial(t, {guest, crash, timeoutMs = 4000}) {
   assert.equal(receipt.leaderPid, prepared.leaderPid);
   assert.equal(receipt.activeProcesses, 0);
   assert.equal(receipt.leaderExited, true);
-  return {receipt, stdout};
+  return {receipt, stdout, guestErrors};
 }
 
 test('native Windows Job returns exact zero-process receipts for good and failed checks', {
   skip:!supervisor, timeout:90000,
 }, async t => {
   const good = await nativeTrial(t,{guest:'export {};'});
-  assert.equal(good.stdout, 'ready\npassed\n');
+  assert.equal(good.stdout, 'ready\npassed\n', JSON.stringify(good));
   assert.equal(good.receipt.code,0);
   assert.equal(good.receipt.reason,'exit');
   const bad = await nativeTrial(t,{guest:"throw 'Check failed';"});

@@ -2,7 +2,7 @@ import {createHash} from 'node:crypto';
 import {readFile} from 'node:fs/promises';
 import {posix} from 'node:path';
 import {parentPort, workerData} from 'node:worker_threads';
-import {EvalFlags, QuickJS} from 'quickjs-wasi';
+import {EvalFlags, JSException, QuickJS} from 'quickjs-wasi';
 
 const sha256 = 'c0bd8f296e18cf074969f6401b9ecb72609a1323818ec2b9bf7a8f8d740d1363';
 const data = await readFile(new URL(import.meta.resolve('quickjs-wasi/quickjs.wasm')));
@@ -33,16 +33,21 @@ let status = 'failed';
 try {
   const evaluation = vm.evalCode(inventory.get(entry), entry, EvalFlags.TYPE_MODULE);
   try {
-    const result = await vm.resolvePromise(evaluation);
-    if ('value' in result) {
+    const completion = vm.resolvePromise(evaluation);
+    vm.executePendingJobs();
+    const result = await Promise.race([completion, new Promise(resolve => setImmediate(resolve, null))]);
+    if (result && 'value' in result) {
       result.value.dispose();
       status = unhandled ? 'failed' : 'passed';
     } else {
-      result.error.dispose();
+      result?.error.dispose();
     }
   } finally {
     evaluation.dispose();
   }
+} catch (error) {
+  if (!(error instanceof JSException)) throw error;
+  error.handle.dispose();
 } finally {
   vm.dispose();
 }
