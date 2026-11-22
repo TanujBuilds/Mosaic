@@ -27,6 +27,7 @@ const vendorSha = '5064e6e0572dca86257363ca04d48653eef20ef27f1bd04b504ed7199ed3f
 const system = path.join(process.env.SystemRoot, 'System32');
 const appData = process.env.LOCALAPPDATA;
 const env = {
+  OS: process.env.OS,
   SystemRoot: process.env.SystemRoot,
   WINDIR: process.env.SystemRoot,
   Path: system,
@@ -54,9 +55,9 @@ async function sha256(file) {
   return hash.digest('hex');
 }
 
-async function run(command, args, {expected = 0, timeout = 45_000} = {}) {
+async function run(command, args, {expected = 0, timeout = 45_000, inputEnv = env} = {}) {
   try {
-    const {stdout} = await exec(command, args, {env, cwd:home, windowsHide:true,
+    const {stdout} = await exec(command, args, {env:inputEnv, cwd:home, windowsHide:true,
       timeout, maxBuffer:512 * 1024});
     assert.equal(expected, 0, command + ' should exit ' + expected);
     return stdout.trim();
@@ -77,6 +78,7 @@ assert.equal(auth.loggedIn, false);
 assert.equal(auth.authMethod, 'none');
 assert.equal((await realpath(auth.configDirectory)).toLowerCase(), (await realpath(env.CLAUDE_CONFIG_DIR)).toLowerCase());
 record.vendor.signedIn = false;
+console.log('Pinned Claude Code reported a signed-out disposable profile.');
 
 const candidate = await json(path.join(bundle, 'candidate.json'));
 assert.equal(candidate.kind, 'mosaic-windows-beta-candidate');
@@ -95,7 +97,11 @@ assert.equal(await sha256(bootstrap), bootstrapSha);
 const powershell = path.join(system, 'WindowsPowerShell', 'v1.0', 'powershell.exe');
 await run(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
   '-File', bootstrap, '-Archive', archive, '-ArchiveSha256', archiveSha,
-  '-Version', candidate.version, '-NoGuide'], {timeout:120_000});
+  '-Version', candidate.version, '-NoGuide'], {timeout:120_000, inputEnv:{
+    OS:process.env.OS, SystemRoot:process.env.SystemRoot, WINDIR:process.env.SystemRoot,
+    Path:system, USERPROFILE:process.env.USERPROFILE, LOCALAPPDATA:appData,
+    APPDATA:process.env.APPDATA, TEMP:process.env.TEMP, TMP:process.env.TMP,
+  }});
 const version = path.join(root, 'versions', candidate.version);
 const receipt = await json(path.join(root, 'config', 'installation.json'));
 assert.equal(receipt.archiveSha256, archiveSha);
