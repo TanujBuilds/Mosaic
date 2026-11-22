@@ -153,6 +153,7 @@ jobs:
     timeout-minutes: 30
     outputs:
       artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      candidate_pin: ${{ steps.pin.outputs.candidate }}
     env:
       MOSAIC_PACKAGE_VERSION: '0.1.0-beta.229'
     steps:
@@ -188,6 +189,14 @@ jobs:
       - name: Validate install, interruption, recovery and tamper rejection
         shell: pwsh
         run: node .github/scripts/windows-package-smoke.mjs "$env:MOSAIC_PACKAGE_DIR" "$env:MOSAIC_PWSH"
+      - name: Record verified candidate inputs for installed app tests
+        id: pin
+        shell: pwsh
+        run: |
+          $pin = Get-Content -Raw -LiteralPath (Join-Path $env:MOSAIC_PACKAGE_DIR 'candidate.json') | ConvertFrom-Json
+          if ($pin.sourceCommit -cne $env:GITHUB_SHA) { throw 'Package commit differs from checkout' }
+          $fields = $pin | Select-Object sourceCommit, sourceTree, archiveSha256, packageManifestSha256, bootstrapSha256
+          "candidate=$($fields | ConvertTo-Json -Compress)" >> $env:GITHUB_OUTPUT
       - name: Upload verified local candidate bundle for staging
         id: upload
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -432,3 +441,25 @@ jobs:
           $raw | Write-Output
           'Windows 11 ARM64 host capability diagnostics. This run does not qualify protected execution or Windows 11 x64.' >> $env:GITHUB_STEP_SUMMARY
           "Host probe: $raw" >> $env:GITHUB_STEP_SUMMARY
+
+  claude-current-installed:
+    needs: package
+    if: github.ref == 'refs/heads/codex/windows-ci-qualification' || github.ref == 'refs/heads/codex/windows-installed-current'
+    permissions:
+      actions: read
+      contents: read
+    uses: ./.github/workflows/windows-claude-installed.yml
+    with:
+      artifact_id: ${{ needs.package.outputs.artifact_id }}
+      candidate_pin: ${{ needs.package.outputs.candidate_pin }}
+
+  codex-current-installed:
+    needs: package
+    if: github.ref == 'refs/heads/codex/windows-ci-qualification' || github.ref == 'refs/heads/codex/windows-installed-current'
+    permissions:
+      actions: read
+      contents: read
+    uses: ./.github/workflows/windows-codex-installed.yml
+    with:
+      artifact_id: ${{ needs.package.outputs.artifact_id }}
+      candidate_pin: ${{ needs.package.outputs.candidate_pin }}
