@@ -265,7 +265,9 @@ test('Windows Beta app-only consult uses host review and cannot grant project or
   // Re-open a pre-consult draft with the exact historical capability inventory.
   const {Coordinator} = await stage.load('harness/coordinator.mjs');
   const {normalizeGoal, digest} = await stage.load('harness/contracts.mjs');
-  const old = new Coordinator({root:path.join(stage.root,'old consult drafts'),beta:true,selectedHost:'claude-code'});
+  const {Goals} = await stage.load('harness/goals.mjs');
+  let now = Date.now();
+  const old = new Coordinator({root:path.join(stage.root,'old consult drafts'),beta:true,selectedHost:'claude-code',now:()=>now});
   try {
     const raw = {submissionId:'historical-consult',mode:'codex_only',objective:'Explain the total.',
       acceptance:['Include shipping.']};
@@ -284,6 +286,31 @@ test('Windows Beta app-only consult uses host review and cannot grant project or
     }
     assert.throws(()=>old.preparePortableGoal({...raw,objective:'Changed objective'},'changed'),/Submission conflict/);
     assert.throws(()=>old.activateGoal({goalId:saved.id,hash},'try-old-approval'),/Windows protected coding/);
+    for(const action of ['stop','expire']){
+      const draft=old.preparePortableGoal({...raw,submissionId:action},action+'-prepare');
+      old.activateGoal({goalId:draft.id,hash:draft.hash},action+'-activate');
+      const task=old.submitTask({goalId:draft.id,kind:'consult',actor:'codex',submissionId:action,
+        objective:raw.objective,acceptance:raw.acceptance},action+'-submit');
+      const active=old.startNativeText({taskId:task.id},action+'-start');
+      if(action==='stop'){
+        old.control({taskId:task.id,action:'pause'},'pause-text');
+        assert.throws(()=>old.finishNativeText({taskId:task.id,content:'late answer'},'late-paused'));
+        assert.equal(old.control({taskId:task.id,action:'resume'},'resume-text').status,'codex_ready');
+        const restarted=old.startNativeText({taskId:task.id},'restart-text');
+        assert.equal(restarted.deadline,active.deadline);
+        assert.notEqual(restarted.nativeTextFinish.idempotencyKey,active.nativeTextFinish.idempotencyKey);
+        assert.throws(()=>old.finishNativeText({taskId:task.id,content:'stale answer'},active.nativeTextFinish.idempotencyKey),/current native_text_start/);
+        old.control({goalId:draft.id,action:'stop'},'stop-text');
+      }else{
+        now=active.deadline;
+        old.expireQuiescent();
+        assert.equal(old.getTask(task.id).status,'partial');
+      }
+      assert.throws(()=>old.finishNativeText({taskId:task.id,content:'late answer'},action+'-late'));
+      const finished=new Goals(old).finalize({goalId:draft.id,partial:true,summary:action},action+'-receipt');
+      assert.equal(finished.status,'partial');
+      assert.equal(finished.receipt.tasks[0].deadline,active.deadline);
+    }
   } finally {old.close();}
   const {locations, privateDirectories} = await stage.load('beta/files.mjs');
   const home = path.join(stage.root, 'consult profile');
@@ -324,8 +351,9 @@ test('Windows Beta app-only consult uses host review and cannot grant project or
     assert.match(scoped.error, /Non-coding task cannot grant file write scope/);
     const task = await mutate('task_submit', {goalId, task:{...spec, kind:'consult'}});
     assert.deepEqual(task.spec.permissions, {readPaths:[],writePaths:[],checks:[]});
-    await mutate('native_text_start', {taskId:task.id});
-    await mutate('native_text_finish', {taskId:task.id, content:'1250 plus 250 is 1500.'});
+    const active = await mutate('native_text_start', {taskId:task.id});
+    await call('native_text_finish', {taskId:task.id, content:'1250 plus 250 is 1500.',
+      idempotencyKey:active.nativeTextFinish.idempotencyKey});
     const {binding} = (await call('review_inbox', {goalId})).items[0];
     const ticket = await mutate('review_reserve', binding);
     const result = await mutate('review_submit', {...binding, ticketId:ticket.ticketId,

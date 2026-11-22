@@ -34,7 +34,6 @@ export function windowsHostConsult(c, manifest) {
  return process.platform === 'win32' && c.beta && manifest.project === null &&
   manifest.mode.id === 'codex_only' && manifest.mode.actors.length === 1 &&
   manifest.mode.actors[0] === 'codex' && manifest.reviewPolicy?.source === 'host' &&
-  manifest.reviewPolicy.hostId === c.selectedHost &&
   !manifest.providerPolicy && !manifest.workerProfile && !manifest.researchPolicy &&
   manifest.mode.capabilities.length === 1 && manifest.mode.capabilities[0] === 'consult' &&
   manifest.capabilities.length === 1 && manifest.capabilities[0].id === 'consult';
