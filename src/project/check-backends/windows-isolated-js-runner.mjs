@@ -166,7 +166,7 @@ export class WindowsIsolatedJavaScriptCheckRunner {
         });
       } catch (error) {
         await owner.uncertain(error);
-        const unclear = isolation('Windows JavaScript supervisor did not prove exit');
+        const unclear = isolation('Windows JavaScript supervisor did not prove exit: ' + String(error.message).slice(-500));
         unclear.executionOutcome = 'unknown';
         throw unclear;
       }
