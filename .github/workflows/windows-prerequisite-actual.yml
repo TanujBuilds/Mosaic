@@ -63,5 +63,9 @@ jobs:
             )
             if (-not $process.WaitForExit(900000)) { $process.Kill(); throw 'Vendor installation test timed out' }
             Get-Content $stdout, $stderr
-            if ($process.ExitCode -ne 0 -or -not (Select-String -LiteralPath $stdout -Pattern 'PASS real per-user installer')) { throw 'Real installation did not pass' }
+            $exitCode = $process.ExitCode
+            $proof = '^PASS real per-user installer ' + $env:MOSAIC_TEST_TOOL + '$'
+            if (($null -ne $exitCode -and $exitCode -ne 0) -or -not (Select-String -LiteralPath $stdout -Pattern $proof)) {
+              throw "Real installation did not pass (observed process exit code: $exitCode)"
+            }
           } finally { Remove-LocalUser -Name $user }

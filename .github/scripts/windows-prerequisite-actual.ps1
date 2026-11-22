@@ -50,3 +50,4 @@ execFileSync(executable, ['--version'], {stdio:'inherit',timeout:15000});
     if ($LASTEXITCODE -ne 0) { throw 'Vendor CLI install result failed' }
 }
 Write-Output "PASS real per-user installer $Tool"
+exit 0
