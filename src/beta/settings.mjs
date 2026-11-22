@@ -1,3 +1,4 @@
+import {windowsFileSync} from './windows-files.mjs';
 import path from 'node:path';
 import {rm} from 'node:fs/promises';
 import {openSync,closeSync,fstatSync,lstatSync,readSync,realpathSync,constants} from 'node:fs';
@@ -39,13 +40,18 @@ export function normalizeSettings(raw){
  if(defaults.review.source==='host'){object(defaults.review,['source','hostId'],'default host review');if(defaults.review.hostId!==host.id)throw Error('Default review host differs from selected host');normalizeReviewPolicy({version:1,...defaults.review,fallback:'wait'});}
  else {object(defaults.review,['source','reviewer'],'default API review');object(defaults.review.reviewer,['id','revision'],'default reviewer reference');const p=providers.find(p=>p.id===defaults.review.reviewer.id&&p.revision===defaults.review.reviewer.revision);if(!p)throw Error('Configured reviewer unavailable');normalizeReviewPolicy({version:1,source:'api',reviewer:profileIdentity(p),fallback:'wait'});}
  object(raw.execution,['backend','backendRevision','runtimeFingerprint'],'configured execution',['backend','backendRevision']);const executionPolicy=normalizeExecutionPolicy({version:1,...raw.execution});const nativeCheckRuntime=normalizeNativeCheckRuntime(raw.nativeCheckRuntime);
- if(executionPolicy.backend==='darwin-seatbelt'&&executionPolicy.backendRevision===2&&(!nativeCheckRuntime||nativeCheckRuntime.artifactManifestSha256!==executionPolicy.runtimeFingerprint))throw Error('Native execution requires its exact private artifact identity');
+ if(((executionPolicy.backend==='darwin-seatbelt'&&executionPolicy.backendRevision===2)||executionPolicy.backend==='windows-appcontainer')&&(!nativeCheckRuntime||nativeCheckRuntime.artifactManifestSha256!==executionPolicy.runtimeFingerprint))throw Error('Native execution requires its exact private artifact identity');
  if(executionPolicy.backend==='codex-sandbox'&&!raw.codexPath)throw Error('Codex sandbox executable required');
  return {schema:2,host,providers,defaults,execution:{...raw.execution},...(nativeCheckRuntime?{nativeCheckRuntime}:{}),...(raw.codexPath!==undefined?{codexPath:absolute(raw.codexPath)}:{}),serviceMaxConcurrentTasks:raw.serviceMaxConcurrentTasks,capacityGroups};
 }
 export function configuredPolicies(raw){const settings=normalizeSettings(raw);if(settings.schema!==2)return {};const workers=settings.providers.filter(p=>p.roles.includes('worker'));const providerPolicy=workers.length?normalizeProviderPolicy({version:1,workers:workers.map(profileIdentity),plannerWorkerId:settings.defaults.plannerWorkerId,defaultWorkerId:settings.defaults.workerId,maxConcurrentTasks:settings.serviceMaxConcurrentTasks,capacityGroups:settings.capacityGroups},settings.providers):undefined;const ref=settings.defaults.review.reviewer;const reviewPolicy=normalizeReviewPolicy({version:1,...(settings.defaults.review.source==='host'?settings.defaults.review:{source:'api',reviewer:profileIdentity(settings.providers.find(p=>p.id===ref.id&&p.revision===ref.revision))}),fallback:'wait'});return {...(providerPolicy?{providerPolicy}:{}),reviewPolicy,...(settings.defaults.routing?{routingPolicy:normalizeRoutingPolicy(settings.defaults.routing,providerPolicy)}:{})};}
-async function ownedJson(file,{max=131072}={}){const info=await entry(file);if(info&&(info.uid!==process.getuid()||info.mode&0o077))throw Error('Unsafe private settings or credential ownership');return jsonFile(file,{privateFile:true,max});}
+async function ownedJson(file,{max=131072}={}){const info=await entry(file);if(process.platform!=='win32'&&info&&(info.uid!==process.getuid()||info.mode&0o077))throw Error('Unsafe private settings or credential ownership');return jsonFile(file,{privateFile:true,max});}
 function privateJsonSync(paths,file,{max=131072}={}){
+ if(process.platform==='win32'){
+  for(const dir of [paths.root,paths.configDir])if(windowsFileSync('private-directory',dir,{optional:true})===null)return null;
+  const bytes=windowsFileSync('read-private',file,{max,optional:true});
+  return bytes===null?null:JSON.parse(bytes.toString('utf8'));
+ }
  let fd;
  try{
   if(!Number.isSafeInteger(max)||max<0||max>=bufferConstants.MAX_LENGTH||!Number.isInteger(constants.O_NOFOLLOW)||!constants.O_NOFOLLOW||!Number.isInteger(constants.O_NONBLOCK)||!constants.O_NONBLOCK)throw Error();

@@ -67,7 +67,7 @@ export async function collectPortableSetup(ask,output,{execution,nativeCheckRunt
   value:String(i+1),
   label:getHost(id).displayName+(detected.has(id)?id==='codex'?' (found, recommended)':' (found)':'')
  }));
- const defaultHost=existingSettings?.host.id??HOST_IDS.find(id=>detected.has(id))??'codex';
+ const defaultHost=existingSettings?.host.id??(process.platform==='win32'&&detected.has('claude-code')?'claude-code':HOST_IDS.find(id=>detected.has(id)))??'codex';
  const workers=[
   {value:'4',label:'Use coding app only'},
   {value:'1',label:'Model on this Mac'},

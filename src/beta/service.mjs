@@ -13,6 +13,7 @@ import path from 'node:path';
 import {serve} from '../harness/cli.mjs';
 import {atomic,entry,fileBytes,hash,jsonFile,label,privateDirectories,readMaintenanceDatabase,withLock} from './files.mjs';
 import {client} from './client.mjs';
+import {registration,serviceDefinition,serviceRecord,startWindowsService,unregisterWindowsService} from './windows-service.mjs';
 
 const exec=promisify(execFile);
 const launchctl=(...args)=>exec('/bin/launchctl',args,{timeout:5000,maxBuffer:65536});
@@ -21,6 +22,7 @@ const serviceId=()=>domain()+'/'+label;
 const xml=value=>value.replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'","&apos;");
 
 export function launchAgent(paths){
+ if(process.platform==='win32')return serviceDefinition(paths);
  const args=[paths.launcher,'serve'].map(value=>'<string>'+xml(value)+'</string>').join('');
  return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -70,6 +72,7 @@ export async function assertMaintenanceIdle(paths,options={}){
 
 async function loaded(paths){
  if(paths.isolated)return false;
+ if(process.platform==='win32')return (await registration(paths)).registered;
  try{await launchctl('print',serviceId());return true;}catch{return false;}
 }
 
@@ -79,6 +82,7 @@ async function online(paths){
 
 export async function verifyLaunchAgent(paths,{allowUnrecorded=false}={}){
  if(paths.isolated)return false;
+ if(process.platform==='win32')return (await registration(paths)).owned;
  const old=await fileBytes(paths.plist,{max:32768});
  const receipt=old&&!allowUnrecorded?await jsonFile(paths.ownership,{privateFile:true,max:8192}):null;
  if(old&&(old.toString()!==launchAgent(paths)||!allowUnrecorded&&receipt?.launchAgentHash!==hash(old))||!old&&await loaded(paths))throw Error('Existing LaunchAgent is foreign or has changed. Preserve it and inspect '+paths.plist);
@@ -107,13 +111,16 @@ export async function stopForMaintenance(paths,{allowUnrecorded=false,recovering
   await assertMaintenanceIdle(paths,{offline:true});
   if(registered)await beforeRegisteredStop?.();
  }
- if(registered)await launchctl('bootout',serviceId());
+ if(registered){if(process.platform==='win32')await unregisterWindowsService(paths);else await launchctl('bootout',serviceId());}
  return registered;
 }
 
 export async function startLaunchAgent(paths,{allowUnrecorded=false}={}){
  if(paths.isolated)return false;
  const owned=await verifyLaunchAgent(paths,{allowUnrecorded});
+ if(process.platform==='win32'){
+  if(!await online(paths))await startWindowsService(paths);
+ }else{
  if(!owned){
   await mkdir(path.dirname(paths.plist),{recursive:true,mode:0o700});
   await atomic(paths.plist,launchAgent(paths));
@@ -123,7 +130,8 @@ export async function startLaunchAgent(paths,{allowUnrecorded=false}={}){
  }else if(!await online(paths)){
   try{await launchctl('kickstart',serviceId());}catch{throw Error('Could not start the registered Mosaic Beta LaunchAgent');}
  }
- for(let i=0;i<30;i++){
+ }
+ for(let i=0;i<(process.platform==='win32'?100:30);i++){
   if(await online(paths))return true;
   await delay(150);
  }
@@ -133,6 +141,11 @@ export async function startLaunchAgent(paths,{allowUnrecorded=false}={}){
 export async function rollbackLaunchAgent(paths,{existed,registered}){
  if(paths.isolated)return;
  if(existed&&registered)return startLaunchAgent(paths);
+ if(process.platform==='win32'){
+  await unregisterWindowsService(paths);
+  if(!existed)await rm(serviceRecord(paths),{force:true});
+  return;
+ }
  if(await loaded(paths))await launchctl('bootout',serviceId());
  if(!existed&&await verifyLaunchAgent(paths,{allowUnrecorded:true}))await rm(paths.plist);
  if(registered)await startLaunchAgent(paths);

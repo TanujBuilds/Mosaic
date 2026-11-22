@@ -161,7 +161,7 @@ test('without a configured worker, an explicit setup choice exits without prepar
   const io = terminal(['setup']);
   assert.equal(await runFirstTask(f.paths, ['--repo', repo.root], {...io, invoke: f.invoke}), 0);
   assert.match(io.read(), /mosaic setup/);
-  assert.match(io.read(), /Codex-only/);
+  assert.match(io.read(), /Cursor only/i);
   assert.doesNotMatch(io.read(), /Last bridge registry call/);
   assert.deepEqual(f.calls, []);
 });
