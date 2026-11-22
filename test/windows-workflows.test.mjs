@@ -321,6 +321,7 @@ test('Windows Beta app-only consult uses host review and cannot grant project or
   await configure(stage, paths, 'claude-code', provider, false);
   const stop = await startWorkflowService(t, stage, paths);
   const {client,call} = await connectScriptedMcp(t, stage, paths);
+  let goalId;
   try {
     await call('registry_list');
     const mutate = (name, input, options) => call(name, {...input, idempotencyKey: randomUUID()}, options);
@@ -331,7 +332,7 @@ test('Windows Beta app-only consult uses host review and cannot grant project or
     assert.deepEqual(await call('goal_prepare', prepare), draft);
     assert.equal(draft.manifest.project, null);
     assert.deepEqual(draft.manifest.capabilities.map(item => item.id), ['consult']);
-    const goalId = draft.id;
+    goalId = draft.id;
     await mutate('goal_activate', {goalId, hash:'0'.repeat(64)}, {error:true});
     const goal = await mutate('goal_activate', {goalId, hash:draft.hash});
     const fixture = await createWorkflowRepository(stage);
@@ -362,6 +363,9 @@ test('Windows Beta app-only consult uses host review and cannot grant project or
     assert.equal(result.status,'accepted');
     assert.equal(result.spent.model,0);
     assert.equal((await call('goal_get',{goalId})).deadline,goal.deadline);
+    const final = await mutate('goal_finalize',{goalId,summary:'Host-reviewed written consultation completed.'});
+    assert.equal(final.status,'completed');
+    assert.equal(final.receipt.tasks[0].resultHash.length,64);
     assertProviderTraffic(provider,false);
     const db = new DatabaseSync(path.join(paths.state,'harness.sqlite3'), {readOnly:true});
     try {
@@ -369,6 +373,13 @@ test('Windows Beta app-only consult uses host review and cannot grant project or
       assert.equal(db.prepare("SELECT count(*) AS n FROM records WHERE kind IN ('native_preflight','execution_owner')").get().n,0);
     } finally { db.close(); }
   } finally {
-    try { await client.close(); } finally { await stop(); }
+    try {
+      if(goalId && !['completed','partial'].includes((await call('goal_get',{goalId})).status)){
+        await call('work_control',{goalId,action:'stop',idempotencyKey:randomUUID()});
+        await call('goal_finalize',{goalId,summary:'Stopped qualification fixture.',partial:true,idempotencyKey:randomUUID()});
+      }
+    } finally {
+      try { await client.close(); } finally { await stop(); }
+    }
   }
 });
