@@ -96,6 +96,8 @@ try {
     [/Run optional inference connectivity test/u, 'n'],
     [/Save this local setup and reviewed manual host instructions/u, 'y'],
   ];
+  const api = client(paths, { timeoutMs:6000 });
+  let draft, failure;
   try {
     assert.equal(await setupPortable(paths, { settings,
       ask: async prompt => {
@@ -110,11 +112,10 @@ try {
     assert.deepEqual((await readSettings(paths)).providers, []);
     assert.equal((await registration(paths)).registered, true);
 
-    const api = client(paths, { timeoutMs:6000 });
     const idle = await mosaic(['status', '--once']);
     assert.match(idle.stdout, /Start a Mosaic Beta goal in Claude Code/);
     const objective = 'Private Operator Fixture Marker';
-    const draft = await api('goal_prepare', { idempotencyKey:'operator-fixture-draft', manifest:{
+    draft = await api('goal_prepare', { idempotencyKey:'operator-fixture-draft', manifest:{
       submissionId:'installed-operator-fixture', mode:'codex_only', environment:'fixture',
       objective, acceptance:['Keep the existing Windows hold and preserve this saved draft.'],
     }});
@@ -123,7 +124,7 @@ try {
     const status = await mosaic(['status', '--once']);
     assert.match(status.stdout, /Mosaic Beta/);
     assert.match(status.stdout, new RegExp(objective));
-    assert.match(status.stdout, /draft/i);
+    assert.match(status.stdout, /Prepared/);
     const queue = await mosaic(['queue', draft.id]);
     assert.match(queue.stdout, /Mosaic queue/);
     assert.match(queue.stdout, new RegExp(objective));
@@ -198,9 +199,26 @@ try {
     console.log(report);
     if (process.env.GITHUB_STEP_SUMMARY) await appendFile(process.env.GITHUB_STEP_SUMMARY,
       '### Installed Windows Beta operator walk-through\n\n```json\n' + report + '\n```\n');
+  } catch (error) {
+    failure = error;
+    throw error;
   } finally {
-    if ((await registration(paths)).registered) await stopForMaintenance(paths, { recovering:true });
-    assert.equal((await registration(paths)).registered, false);
+    try {
+      if (draft) {
+        const saved = await api('goal_get', {goalId:draft.id});
+        assert.equal(saved.hash, draft.hash);
+        assert.equal(saved.status, 'draft');
+        assert.deepEqual(saved.tasks, []);
+        const stopped = await api('work_control', {goalId:draft.id, action:'stop',
+          idempotencyKey:'operator-fixture-stop'});
+        assert.equal(stopped.status, 'stopped');
+      }
+      if ((await registration(paths)).registered) await stopForMaintenance(paths, { recovering:true });
+      assert.equal((await registration(paths)).registered, false);
+    } catch (cleanupError) {
+      if (failure) throw new AggregateError([failure, cleanupError], 'Operator walkthrough and owned cleanup failed');
+      throw cleanupError;
+    }
   }
 } finally {
   await rm(scratch, { recursive:true, force:true, maxRetries:4 });
