@@ -76,7 +76,7 @@ try {
   console.log('Stock PowerShell installed the exact candidate and stable Mosaic Beta launcher.');
 
   const { locations } = await installed('src/beta/files.mjs');
-  const { windowsFile } = await installed('src/beta/windows-files.mjs');
+  const { windowsFile, windowsWrite } = await installed('src/beta/windows-files.mjs');
   const { setupPortable } = await installed('src/beta/portable-setup.mjs');
   const { readSettings } = await installed('src/beta/settings.mjs');
   const { readBundledNativeCheckRuntime } = await installed('src/beta/package-contract.mjs');
@@ -159,7 +159,22 @@ try {
     const outputDir = path.join(scratch, 'Private diagnostic export');
     await windowsFile('mkdir', outputDir);
     const bundlePath = path.join(outputDir, 'support.json');
-    const command = ['support-bundle','--home',home];
+    const profileCheck = String.raw`
+$ErrorActionPreference = 'Stop'
+$identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+$principal = [Security.Principal.WindowsPrincipal]::new($identity)
+$profileDirectory = [IO.DirectoryInfo]::new([Environment]::GetFolderPath('UserProfile'))
+$owner = $profileDirectory.GetAccessControl([Security.AccessControl.AccessControlSections]::Owner).GetOwner([Security.Principal.SecurityIdentifier])
+$ownerClass = if ($owner.Equals($identity.User)) { 'user' }
+  elseif ($owner.Value -eq 'S-1-5-18') { 'system' }
+  elseif ($owner.Value -eq 'S-1-5-32-544') { 'administrators' }
+  else { 'other' }
+@{ownerClass=$ownerClass; administratorToken=$principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)} | ConvertTo-Json -Compress
+`;
+    const profile = JSON.parse((await run(powershell, ['-NoProfile','-NonInteractive','-EncodedCommand',
+      Buffer.from(profileCheck, 'utf16le').toString('base64')])).stdout);
+    console.log('Installed account profile metadata: ' + JSON.stringify(profile));
+    const scopedSupport = home => ['support-bundle','--home',home];
     const [operator, viewer] = await Promise.all(['connection.json','viewer-connection.json']
       .map(file => parse(path.join(state, file))));
     for (const token of [operator.token, viewer.token]) {
@@ -175,13 +190,35 @@ try {
       assert.equal(bundle.snapshot.tasks.processed, 0);
       assert.equal(bundle.usage.nativeTokens, null);
       assert.ok(bundle.diagnostics.includes('NATIVE_USAGE_UNKNOWN'));
-      for (const privateValue of [objective, operator.token, viewer.token, home, operator.url]) {
+      for (const privateValue of [objective, operator.token, viewer.token, home, scratch, operator.url]) {
         assert.ok(!stdout.includes(JSON.stringify(privateValue).slice(1, -1)),
           'Support bundle leaked a private fixture value');
       }
     };
-    verifyBundle((await mosaic(command)).stdout);
+    const perUser = (await mosaic(scopedSupport(home))).stdout;
+    const observed = JSON.parse(perUser);
+    console.log('Installed support home diagnostic codes: ' + observed.diagnostics.join(', '));
+    let supportHome = home;
+    if (profile.ownerClass === 'user') {
+      verifyBundle(perUser);
+    } else {
+      assert.deepEqual(observed.collection, {status:'unavailable', viewerCalls:0});
+      assert.ok(observed.diagnostics.includes('LOCAL_HOME_UNAVAILABLE'));
+      // The live service and its actual user profile remain unchanged. Give
+      // the explicit test home only local metadata and its disposable viewer
+      // binding. The installed collector still reads the real live service.
+      supportHome = path.join(scratch, 'SID-owned support fixture');
+      const scoped = locations(supportHome, true);
+      await windowsFile('mkdir', scoped.configDir);
+      await windowsFile('mkdir', scoped.state);
+      for (const name of ['settings.json', 'installation.json', 'portable-binding.json']) {
+        await windowsWrite(path.join(scoped.configDir, name), await readFile(path.join(paths.configDir, name)));
+      }
+      await windowsWrite(path.join(scoped.state, 'viewer-connection.json'), JSON.stringify(viewer));
+      verifyBundle((await mosaic(scopedSupport(supportHome))).stdout);
+    }
     await assert.rejects(lstat(bundlePath), { code:'ENOENT' });
+    const command = scopedSupport(supportHome);
     const saved = await mosaic([...command, '--output', bundlePath]);
     verifyBundle(saved.stdout);
     const bytes = await windowsFile('read-private', bundlePath, { max:256 * 1024 });
@@ -194,7 +231,8 @@ try {
     console.log('Installed support preview and private export redacted fixture data, with exact no-clobber behavior.');
     const report = JSON.stringify({source:candidate.sourceCommit, archiveSha256:candidate.archiveSha256,
       manifestSha256:candidate.packageManifestSha256, launcherSha256:installation.launcherHash,
-      goalStatus:'draft', taskCount:0, providerCount:0, supportViewerCalls:2, supportSha256:await digest(bundlePath),
+      goalStatus:'draft', taskCount:0, providerCount:0, profile, perUserSupport:observed.collection,
+      explicitSidOwnedSupport:supportHome !== home, supportViewerCalls:2, supportSha256:await digest(bundlePath),
       commands:['status --once','queue','morning-report','doctor','doctor --providers','support-bundle']}, null, 2);
     console.log(report);
     if (process.env.GITHUB_STEP_SUMMARY) await appendFile(process.env.GITHUB_STEP_SUMMARY,
