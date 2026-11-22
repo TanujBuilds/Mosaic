@@ -116,8 +116,10 @@ assert.equal(parse('   '), '');
       const ticket=await mutate('review_reserve',item.binding);
       await mutate('review_submit',{ticketId:ticket.ticketId,...item.binding,verdict:{decision:'accept',feedback:'Fixture host assesses the exact checked parser candidate',findings:[]}});
     }
+    const action = beta && layout === 'candidate_v1' ? await read('owner_action_context', {goalId, taskId: source.id}) : null;
     const accepted = layout === 'candidate_v1'
-      ? await operation('task_integrate', {taskId: source.id, feedback: 'Fixture review accepts checked parser change'})
+      ? await operation('task_integrate', {taskId: source.id, feedback: 'Fixture review accepts checked parser change',
+        ...(action ? {expectedIntegrationBinding: action.candidate.binding} : {})})
       : finished;
     assert.equal(accepted.status, 'accepted');
     assert.match(accepted.integration.commit, /^[a-f0-9]{40}$/);

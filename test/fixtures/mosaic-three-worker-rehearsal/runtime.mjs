@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import path from 'node:path';
-import os from 'node:os';
 import {createHash} from 'node:crypto';
 import {mkdir, readFile, writeFile, realpath, lstat} from 'node:fs/promises';
 import {Coordinator} from '../../../src/harness/coordinator.mjs';
@@ -10,16 +9,12 @@ import {Dispatcher} from '../../../src/harness/tools.mjs';
 import {ProviderRegistry} from '../../../src/harness/providers/registry.mjs';
 import {nativeRuntime} from '../../../src/harness/execution.mjs';
 import {git} from '../../../src/project/process.mjs';
+import {assertNoGitRepositoryOverride} from '../../../scripts/lib/git-environment.mjs';
 
 export {git};
 export const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
-export async function noGitOverrides() {
-  const names = (await git(os.tmpdir(),'rev-parse','--local-env-vars')).split('\n');
-  const found = names.find(name=>Object.hasOwn(process.env,name));
-  if (found) throw Error('Clear Git repository override before running the rehearsal: '+found);
-}
 export async function freshRoot(root) {
-  await noGitOverrides();
+  await assertNoGitRepositoryOverride('rehearsal');
   const parent = path.dirname(root);
   if (await realpath(parent)!==parent || !(await lstat(parent)).isDirectory()) throw Error('Root parent must exist at a canonical path');
   await mkdir(root,{mode:0o700}); // Atomic refusal of existing or symlink roots.

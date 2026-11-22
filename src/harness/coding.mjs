@@ -244,7 +244,7 @@ export class CodingAdapter {
       repairEvidence:{journalRoot:journal.root,worktree:workspace.root,key:evidenceKey},
      },repair,'check',reason,owner);
     }
-    const evidence=await workspace.evidence();
+    const evidence=await workspace.evidence({includeTrackedPaths:true});
     let reviewCheckBinding;
     if(reviewSnapshot){await workspace.assertSnapshot(reviewSnapshot);if(behavioralModeHash(await readBehavioralFileModes(workspace,Object.keys(reviewSnapshot)))!==behavioralModeHash(reviewModes))throw Error('Candidate executable mode changed during checks');reviewCheckBinding={snapshotHash:digest(reviewSnapshot),executableModesHash:behavioralModeHash(reviewModes),checksHash:digest(results)};}
     const state=c.store.tx(()=>{

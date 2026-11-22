@@ -191,7 +191,8 @@ try{
    const result=await h.mutate('review_submit',reviewInput,'review-'+index);assert.equal(result.status,'ready_to_integrate');reviewReplays.push(()=>h.mutate('review_submit',reviewInput,'review-'+index));
   }
   phase='combined protected integration '+index;
-  const input={taskId:task.id,feedback:'Integrate exact offline reviewed candidate'},result=(await h.operation('task_integrate',input,'integrate-'+index)).result;
+  const action=await h.invoke('owner_action_context',{goalId:goal.id,taskId:task.id});
+  const input={taskId:task.id,feedback:'Integrate exact offline reviewed candidate',expectedIntegrationBinding:action.candidate.binding},result=(await h.operation('task_integrate',input,'integrate-'+index)).result;
   assert.equal(result.status,'accepted');assert.deepEqual(result.providerBinding,candidate.providerBinding);assert.equal(result.routeHash,candidate.routeHash);result.integration.checks.forEach(assertCheck);assert.equal(result.integration.behavioralEvidence.criteria[0].status,'passed');accepted.push({input,result});
   assert.equal((await h.invoke('outcomes_report',{goalId:goal.id})).counts.usefulAccepted,index+1);
  }

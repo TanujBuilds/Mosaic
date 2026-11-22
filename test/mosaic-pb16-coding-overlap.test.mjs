@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {execFileSync} from 'node:child_process';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
@@ -38,7 +39,7 @@ test('execution base waits for the same local repository owner and rechecks paus
 });
 
 test('a local preparation wait does not serialize a different destination repository',{timeout:10000},async t=>{
- const f=await integrationFixture(t),first=integrationGoal(f,'first'),otherRepo=path.join(f.root,'other-repo');await git(f.root,'clone','-q',f.repo,otherRepo);
+ const f=await integrationFixture(t),first=integrationGoal(f,'first'),otherRepo=path.join(f.root,'other-repo');execFileSync('/usr/bin/git',['clone','--quiet','--local','--',f.repo,otherRepo],{env:{PATH:'/usr/bin:/bin',GIT_CONFIG_NOSYSTEM:'1',GIT_CONFIG_GLOBAL:'/dev/null'}});
  const second=integrationGoal(f,'other',{project:{repo:otherRepo}}),held=await f.i.lockedGoal(first.id);
  try{assert.equal(await bounded(f.i.executionBase(second.id)),f.base);}finally{await held.release();}
 });

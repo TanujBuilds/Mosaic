@@ -13,6 +13,7 @@ import {isEntry} from '../src/harness/entry.mjs';
 import {Dispatcher} from '../src/harness/tools.mjs';
 import {Worker} from '../src/harness/worker.mjs';
 import {command, git} from '../src/project/process.mjs';
+import {assertNoGitRepositoryOverride} from './lib/git-environment.mjs';
 
 const usage = [
   'list --root STATE_DIR',
@@ -39,9 +40,7 @@ function resultJson(result) {
 
 async function demo(output) {
   // Git can target a different repository even when its working directory is the fixture.
-  const gitVariables = (await git(os.tmpdir(), 'rev-parse', '--local-env-vars')).split('\n');
-  const override = gitVariables.find(name => Object.hasOwn(process.env, name));
-  if (override) throw Error('Clear Git repository override before running the demo: ' + override);
+  await assertNoGitRepositoryOverride('demo');
   await mkdir(output, {mode: 0o700}).catch(error => {
     if (error.code === 'EEXIST') throw Error('Demo output directory already exists');
     throw error;

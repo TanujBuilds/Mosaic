@@ -1,27 +1,30 @@
 import {mkdir, writeFile} from 'node:fs/promises';
 import path from 'node:path';
 import {Coordinator} from '../coordinator.mjs';
+import {Goals} from '../goals.mjs';
 import {Integration} from '../integration.mjs';
 import {Worker} from '../worker.mjs';
 import {command, git} from '../../project/process.mjs';
 
 // Only the explicit CLI demo calls this. The supplied root must be disposable.
-export async function createOutcomeDemo(root) {
+export async function createOutcomeDemo(root, {firstTask = false} = {}) {
   const repo = path.join(root, 'repo');
   const stateRoot = path.join(root, 'state');
   await mkdir(path.join(repo, 'src'), {recursive: true});
   await mkdir(path.join(repo, 'checks'));
   await writeFile(path.join(repo, 'src/value.mjs'), 'export const value = 0;\n');
   await writeFile(path.join(repo, 'checks/verify.mjs'),
-    "import {value} from '../src/value.mjs'; if (value !== 42) process.exit(1);\n");
+    "import {value} from " + "'../src/value.mjs'; if (value !== 42) process.exit(1);\n");
   await git(repo, 'init', '-q');
+  await git(repo, 'config', '--local', 'user.name', 'Fixture');
+  await git(repo, 'config', '--local', 'user.email', 'fixture@example.invalid');
   await git(repo, 'add', '.');
-  await git(repo, '-c', 'user.email=fixture@example.invalid', '-c', 'user.name=Fixture', 'commit', '-qm', 'Fixture baseline');
+  await git(repo, 'commit', '-qm', 'Fixture baseline');
   const c = new Coordinator({root: stateRoot});
   try {
     const goal = c.prepareGoal({
       submissionId: 'demo-goal',
-      objective: 'Demonstrate outcome measurement with disposable coding evidence',
+      objective: firstTask ? 'Change a sample project value from 0 to 42' : 'Demonstrate outcome measurement with disposable coding evidence',
       acceptance: ['Run the protected check'],
       mode: 'collaborative',
       environment: 'fixture',
@@ -63,16 +66,22 @@ export async function createOutcomeDemo(root) {
     }};
     const worker = new Worker({c, provider, checksFactory, config: {environment: 'fixture'}});
     await worker.drain();
-    c.review({taskId: candidate.id, decision: 'revise', feedback: 'Confirm the value against the protected check'}, 'demo-revise');
-    await worker.drain();
+    if (!firstTask) {
+      c.review({taskId: candidate.id, decision: 'revise', feedback: 'Confirm the value against the protected check'}, 'demo-revise');
+      await worker.drain();
+    }
     await new Integration({c, checksFactory}).accept(
       {taskId: candidate.id, feedback: 'Fixture operator accepted the candidate and protected checks'}, 'demo-integrate',
     );
 
-    const blocked = submit('blocked', 'Demonstrate a blocked task after execution starts');
-    if (c.claimNext('demo-owner')?.id !== blocked.id) throw Error('Demo did not claim the blocked fixture task');
-    c.failTaskStep(blocked.id, 'demo-owner', 'Fixture prerequisite unavailable');
-    submit('queued', 'Demonstrate a task that has never started');
+    if (firstTask) {
+      new Goals(c).finalize({goalId: goal.id, summary: 'The sample change passed its protected check and was integrated.'}, 'demo-finalize');
+    } else {
+      const blocked = submit('blocked', 'Demonstrate a blocked task after execution starts');
+      if (c.claimNext('demo-owner')?.id !== blocked.id) throw Error('Demo did not claim the blocked fixture task');
+      c.failTaskStep(blocked.id, 'demo-owner', 'Fixture prerequisite unavailable');
+      submit('queued', 'Demonstrate a task that has never started');
+    }
 
     return {stateRoot, goalId: goal.id};
   } finally {

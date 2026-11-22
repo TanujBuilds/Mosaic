@@ -1,12 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {Readable,Writable} from 'node:stream';
-import {mkdtemp,mkdir,readFile,rm,writeFile,stat} from 'node:fs/promises';
+import {mkdtemp,mkdir,readFile,readdir,rm,writeFile,stat} from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import http from 'node:http';
 import {locations,privateDirectories,saveJson} from '../src/beta/files.mjs';
-import {setup,readSettings,setupComplete} from '../src/beta/setup.mjs';
+import {doctor,setup,readSettings,setupComplete} from '../src/beta/setup.mjs';
 import {setupPortable} from '../src/beta/portable-setup.mjs';
 import {configuredPolicies} from '../src/beta/settings.mjs';
 
@@ -96,4 +96,39 @@ test('advanced two-worker private identifier is rejected without echo before pre
 
 test('simple dummy bearer is stored privately and absent from public preview and fixed probe body',async t=>{
  const paths=await fixture(t),{url,requests}=await loopback(t),key='dummy-hidden-setup01-8537';let output='';const prompts=[];const answers=['3','1',url,'fixture-model','y',key,'n','n','y','y'];const ask=async(prompt,options={})=>{prompts.push({prompt,secret:options.secret===true});output+=prompt;assert.ok(answers.length,'unexpected extra setup question');return answers.shift();};assert.equal(await setupPortable(paths,{ask,output:{write:text=>{output+=text;}},...runtime,verifyExecution:()=>{}}),true);const saved=await readSettings(paths);assert.equal(saved.providers[0].credentialRef,'worker-1-key');assert.equal(prompts.filter(p=>p.secret).length,1);assert.deepEqual(JSON.parse(await readFile(paths.credentials)),{schema:1,entries:{'worker-1-key':key}});assert.equal((await stat(paths.credentials)).mode&0o777,0o600);assert.ok(!JSON.stringify(saved).includes(key));assert.ok(!output.includes(key));assert.equal(requests.length,1);assert.equal(requests[0].authorization,'Bearer '+key);assert.ok(!requests[0].body.includes(key));assert.equal(answers.length,0);
+});
+
+test('missing Apple Git tools appear before host selection and allow setup to finish',async t=>{
+ const paths=await fixture(t),io=streams(simpleAnswers()),gitReady=async()=>false;
+ assert.equal(await setup(paths,{...io,portable:true,...runtime,verifyExecution:()=>{},gitReady}),true);
+ const warning=io.text().indexOf('xcode-select --install');
+ assert.ok(warning>=0 && warning<io.text().indexOf('Choose host'));
+ assert.match(io.text(),/mosaic doctor/);
+ assert.equal((await readSettings(paths)).defaults.workerId,'worker-1');
+ const report=streams([]);
+ await doctor(paths,report.output,{gitReady});
+ assert.match(report.text(),/CHECK  Git for coding tasks.*xcode-select --install/);
+});
+
+test('Apple Git readiness inspects executable tools without running the Git shim',async t=>{
+ const {macGitReady}=await import('../src/beta/git-readiness.mjs');
+ const paths=await fixture(t),bin=path.join(paths.home,'usr/bin');
+ const run=async(command,args)=>{
+  assert.equal(command,'/usr/bin/xcode-select');
+  assert.deepEqual(args,['--print-path']);
+  return {stdout:paths.home+'\n'};
+ };
+ assert.equal(await macGitReady({platform:'darwin',run}),false);
+ await mkdir(bin,{recursive:true});
+ await writeFile(path.join(bin,'git'),'#!/bin/sh\nexit 19\n',{mode:0o755});
+ assert.equal(await macGitReady({platform:'darwin',run}),true);
+ assert.equal(await macGitReady({platform:'linux',run:assert.fail}),null);
+});
+
+test('a demo with missing Git prints recovery before it creates sample files',async t=>{
+ const {runFirstTask}=await import('../src/beta/first-task.mjs');
+ const paths=await fixture(t),demoParent=path.join(paths.home,'samples');
+ await mkdir(demoParent);
+ await assert.rejects(runFirstTask(paths,['--demo'],{demoParent,gitReady:async()=>false}),/xcode-select --install.*mosaic doctor/);
+ assert.deepEqual(await readdir(demoParent),[]);
 });

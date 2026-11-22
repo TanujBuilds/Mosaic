@@ -213,7 +213,9 @@ for (const beta of [false, true]) test(`provider-pinned coding composes intake, 
     assert.equal(reviewed.reviews, 1);
     assert.deepEqual(await f.mutate('review_submit', boundReview, `review-${endpoint.id}`), reviewed);
     assert.equal((await f.read('outcomes_report', {goalId: goal.id})).counts.usefulAccepted, 0, 'Host review alone is not integrated acceptance');
-    const integrateInput = {taskId: id, feedback: 'Integrate the fixture-host-reviewed candidate'};
+    const action = beta ? await f.read('owner_action_context', {goalId: goal.id, taskId: id}) : null;
+    const integrateInput = {taskId: id, feedback: 'Integrate the fixture-host-reviewed candidate',
+      ...(action ? {expectedIntegrationBinding: action.candidate.binding} : {})};
     const result = await f.operation('task_integrate', integrateInput, `integrate-${endpoint.id}`);
     assert.equal(result.status, 'accepted');
     assert.deepEqual(result.providerBinding, initial.providerBinding);

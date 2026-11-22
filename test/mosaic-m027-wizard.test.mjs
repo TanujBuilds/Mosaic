@@ -28,12 +28,12 @@ test('guided explicit defaults and allowed overlap retain independent worker and
  assert.equal(s.defaults.workerId,'worker-3');assert.equal(s.defaults.plannerWorkerId,'worker-2');assert.equal(s.serviceMaxConcurrentTasks,4);assert.deepEqual(s.providers.map(p=>p.concurrency),[2,1,3]);assert.deepEqual(s.capacityGroups.map(g=>g.limit),[2,1,3]);assert.match(formatPortableSetupSummary(s),/4 service slots/);
 });
 test('canonical endpoint aliases always share physical capacity and a single default slot',async()=>{
- const io=guide({urls:['http://EXAMPLE.test:80/v1/','http://example.test/v1','https://other.test/v1']}),s=(await collectPortableSetup(io.ask,io.output,runtime)).settings;
+ const io=guide({urls:['https://EXAMPLE.test:443/v1/','https://example.test/v1','https://other.test/v1']}),s=(await collectPortableSetup(io.ask,io.output,runtime)).settings;
  assert.deepEqual(s.providers.map(p=>p.capacityGroup),['worker-1','worker-1','worker-3']);assert.deepEqual(s.capacityGroups,[{id:'worker-1',limit:1},{id:'worker-3',limit:1}]);assert.equal(s.providers[0].baseUrl,s.providers[1].baseUrl);
  assert.ok(!io.prompts.some(p=>/^Worker 2 shares/.test(p.prompt)),'An alias cannot be declared independent');
 });
 test('different URLs can explicitly share a known physical server with transitive alias membership',async()=>{
- const io=guide({urls:['http://first.test/v1','http://second.test/v1','http://SECOND.test:80/v1/'],shared:{2:'1'}}),s=(await collectPortableSetup(io.ask,io.output,runtime)).settings;
+ const io=guide({urls:['https://first.test/v1','https://second.test/v1','https://SECOND.test:443/v1/'],shared:{2:'1'}}),s=(await collectPortableSetup(io.ask,io.output,runtime)).settings;
  assert.deepEqual(s.providers.map(p=>p.capacityGroup),['worker-1','worker-1','worker-1']);assert.deepEqual(s.capacityGroups,[{id:'worker-1',limit:1}]);assert.equal(configuredPolicies(s).providerPolicy.capacityGroups.length,1);
 });
 for(const [resolve,want] of [['1','worker-1'],['2','worker-2']])test(`duplicate specialty requires explicit resolution (${resolve})`,async()=>{
@@ -52,7 +52,7 @@ test('each worker retains its own hidden key without exposing any entered identi
 });
 for(const options of [{slots:'5'},{defaultWorker:'4'},{planner:'0'},{routes:['7']},{count:1},{count:4},{keys:['',null,null]},{count:2,routes:['2','2'],resolve:'3'}])test(`invalid guided choice rejects without preview (${JSON.stringify(options)})`,async()=>{const io=guide(options);await assert.rejects(collectPortableSetup(io.ask,io.output,runtime));assert.doesNotMatch(io.text(),/Mosaic setup summary/);});
 for(const encode of [value=>value,value=>[...value].map(c=>'%'+c.charCodeAt(0).toString(16)).join(''),value=>[...value].map(c=>'%25'+c.charCodeAt(0).toString(16)).join('')])test('an earlier endpoint containing a later private key is rejected before any identity publication',async()=>{
- const key='dummy-url-later-private',url='https://first.test/v1/'+encode(key),io=guide({urls:[url,'http://second.test/v1','https://third.test/v1'],keys:[null,null,key]});
+ const key='dummy-url-later-private',url='https://first.test/v1/'+encode(key),io=guide({urls:[url,'https://second.test/v1','https://third.test/v1'],keys:[null,null,key]});
  await assert.rejects(collectPortableSetup(io.ask,io.output,runtime),/Credential values must occur only/);assert.ok(!io.text().includes(url));assert.ok(io.prompts.every(p=>!p.prompt.includes(url)));
 });
 const unicodeIdentity=value=>[...value].map(c=>'\\u'+c.charCodeAt(0).toString(16).padStart(4,'0')).join('');

@@ -134,7 +134,7 @@ async function build(opts){
   if(!opts.fixture&&(files.find(f=>f.path==='runtime/bin/node').sha256!==release.coordinatorSha256||files.find(f=>f.path==='runtime/NODE-LICENSE').sha256!==release.licenseSha256))throw Error('The Node executable and license changed while packaging');
   if(nativeProof&&!nativeProof.artifactFiles.every(expected=>files.some(f=>f.path==='runtime/check-artifact/'+expected.path&&f.sha256===expected.sha256&&f.bytes===expected.bytes&&f.mode===expected.mode)))throw Error('The check artifact inputs changed while packaging');
   const manifest={schema:1,layout:opts['check-artifact']?'terminal-beta-v2':'terminal-beta-v1',version:opts.version,dependenciesInstalled:true,nodeVersion:release.version,fixture:!!opts.fixture,
-   stateCompatibility:{settings:[1,2],database:[0,1]},...(nativeProof?{nativeCheckArtifact:{fingerprint:nativeProof.runtimeFingerprint,backend:{id:'darwin-seatbelt',revision:2}}}:{}),files,contentHash:digest(files)};
+   stateCompatibility:{settings:[1,2],database:[0,1],providerTransport:'https-or-http-loopback'},...(nativeProof?{nativeCheckArtifact:{fingerprint:nativeProof.runtimeFingerprint,backend:{id:'darwin-seatbelt',revision:2}}}:{}),files,contentHash:digest(files)};
   const manifestBytes=JSON.stringify(manifest,null,2)+'\n';
   await writeFile(path.join(payload,'package-manifest.json'),manifestBytes);
   await verifyPackage(payload);

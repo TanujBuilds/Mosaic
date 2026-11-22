@@ -17,6 +17,7 @@ import {Coordinator} from '../src/harness/coordinator.mjs';
 import {Goals} from '../src/harness/goals.mjs';
 import {OvernightPreflight} from '../src/harness/overnight-preflight.mjs';
 import {Integration} from '../src/harness/integration.mjs';
+import {integrationBinding} from '../src/harness/owner-inbox.mjs';
 import {git} from '../src/project/process.mjs';
 import {buildFixtureArtifact} from './fixtures/mosaic-pb15-v2-composition/artifact.mjs';
 const nativeAvailable=process.platform==='darwin'&&process.arch==='arm64'&&Boolean(process.env.MOSAIC_NATIVE_TEST_NODE);
@@ -24,6 +25,7 @@ test('actual native draft revision preflight preserves old proof, rejects stale/
  const root=await realpath(await mkdtemp(path.join(os.tmpdir(),'pb15-native-revision-')));let c;t.after(async()=>{c?.close();await rm(root,{recursive:true,force:true});});
  const artifact=await buildFixtureArtifact(root),repo=path.join(root,'repo');await mkdir(path.join(repo,'src'),{recursive:true});await writeFile(path.join(repo,'package.json'),'{"type":"module"}');await writeFile(path.join(repo,'src/value.mjs'),'export const value=1;\n');
  await git(repo,'init','-q');await git(repo,'add','.');await git(repo,'-c','user.name=Fixture','-c','user.email=fixture@example.invalid','commit','-qm','base');
+ await mkdir(path.join(repo,'.git/info'),{recursive:true});
  await writeFile(path.join(repo,'.git/info/exclude'),'node_modules/\n');await mkdir(path.join(repo,'node_modules'));const dependency=path.join(repo,'node_modules','fixture-tool');await writeFile(dependency,'unused dependency',{mode:0o644});
  c=new Coordinator({root:path.join(root,'state'),selectedHost:'cursor',nativeCheckRuntime:artifact.config});const config={nativeCheckRuntime:artifact.config};
  const raw={submissionId:'native-revision',objective:'Initial native approval',acceptance:['Bounded'],mode:'codex_only',environment:'fixture',executionPolicy:artifact.policy,project:{repo,baseCommit:await git(repo,'rev-parse','HEAD'),readPaths:['package.json','src/'],writePaths:['src/'],checks:[{id:'syntax',argv:[path.join(artifact.root,'node'),'--check','src/value.mjs']}]}};
@@ -50,4 +52,39 @@ test('actual native draft revision preflight preserves old proof, rejects stale/
  const ug=c.preparePortableGoal({...overnightRaw,submissionId:'unknown-overnight'},'unknown-overnight'),unknown=Object.assign(Error('Unknown native supervisor outcome'),{executionOutcome:'unknown'}),failed=new OvernightPreflight({c,config,checksFactory:()=>({backendIdentity:{id:'darwin-seatbelt',revision:2},verify:async()=>{throw unknown;}})});
  await assert.rejects(failed.run({goalId:ug.id,hash:ug.hash},'unknown-preflight'),error=>error===unknown);assert.equal(c.store.get('overnight_preflight',ug.id).executionOutcome,'unknown');
  assert.equal(c.store.db.prepare('SELECT count(*) AS n FROM requests').get().n,0);assert.ok(c.store.all('execution_owner').some(row=>row.revisionId===a.id&&row.goalHash===a.hash&&row.previousHash===g.hash&&row.status==='quiescent'));
+});
+
+test('actual native Codex-only candidate passes protected checks after host review and integrates once',
+ {skip:!nativeAvailable,timeout:90000},async t=>{
+ const root=await realpath(await mkdtemp(path.join(os.tmpdir(),'native-first-task-')));
+ const repo=path.join(root,'repo'),artifact=await buildFixtureArtifact(root),config={nativeCheckRuntime:artifact.config};
+ const c=new Coordinator({root:path.join(root,'state'),selectedHost:'cursor',...config});
+ t.after(async()=>{
+  const held=c.executionOwnership.holds();c.close();
+  if(held.length)t.diagnostic('Retained unresolved native execution in '+root);
+  else await rm(root,{recursive:true,force:true});
+ });
+ await mkdir(repo);await writeFile(path.join(repo,'value.mjs'),'export const value=1;\n');
+ await git(repo,'init','-q');await git(repo,'config','--local','user.name','Fixture');
+ await git(repo,'config','--local','user.email','fixture@example.invalid');await git(repo,'add','.');await git(repo,'commit','-qm','base');
+ const goal=c.preparePortableGoal({submissionId:'first-task',objective:'Update the example',acceptance:['Check the updated file'],
+  mode:'codex_only',environment:'fixture',executionPolicy:artifact.policy,reviewPolicy:{version:1,source:'host',hostId:'cursor',fallback:'wait'},
+  project:{repo,baseCommit:await git(repo,'rev-parse','HEAD'),readPaths:['value.mjs'],writePaths:['value.mjs'],
+   checks:[{id:'syntax',argv:[path.join(artifact.root,'node'),'--check','value.mjs']}]}},'prepare');
+ await c.preflightExecution({goalId:goal.id,hash:goal.hash},{config});c.activateGoal({goalId:goal.id,hash:goal.hash},'activate');
+ const task=c.submitTask({goalId:goal.id,submissionId:'edit',kind:'coding',actor:'codex',objective:'Set the value',acceptance:['Updated value']},'task');
+ const integration=new Integration({c,config}),started=await integration.startNative({taskId:task.id,layout:'candidate_v1'},'start');
+ await writeFile(path.join(started.native.worktree,'value.mjs'),'export const value=42;\n');
+ const finished=await integration.finishNative({taskId:task.id,summary:'Set the value to 42'},'finish');
+ assert.equal(finished.native.writerActive,false);
+ const {binding}=(await c.reviewService.inbox({goalId:goal.id})).items[0],ticket=await c.reviewService.reserve(binding,'reserve');
+ const ready=await c.reviewService.submit({...binding,ticketId:ticket.ticketId,verdict:{decision:'accept',feedback:'Checked the one-line change',findings:[]}},'review');
+ const input={taskId:task.id,feedback:'Integrate the reviewed change',expectedIntegrationBinding:integrationBinding(goal,ready)};
+ assert.ok(input.expectedIntegrationBinding);
+ const accepted=await integration.accept(input,'integrate');
+ assert.equal(accepted.status,'accepted');assert.equal(accepted.integration.candidateCommit,finished.native.commit);
+ assert.deepEqual(accepted.integration.checks.map(({id,passed})=>({id,passed})),[{id:'syntax',passed:true}]);
+ assert.equal(await git(repo,'show',accepted.integration.commit+':value.mjs'),'export const value=42;');
+ assert.equal((await integration.accept(input,'integrate')).integration.commit,accepted.integration.commit);
+ assert.equal(c.executionOwnership.holds().length,0);
 });

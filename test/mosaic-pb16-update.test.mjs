@@ -7,8 +7,9 @@ import {DatabaseSync} from 'node:sqlite';
 import {spawnSync,spawn} from 'node:child_process';
 import {once} from 'node:events';
 import {client} from '../src/beta/client.mjs';
+import {assertMaintenanceIdle} from '../src/beta/service.mjs';
 import {digest} from '../src/harness/contracts.mjs';
-import {locations,hash,withLock} from '../src/beta/files.mjs';
+import {locations,hash,saveJson,withLock} from '../src/beta/files.mjs';
 import * as installer from '../src/beta/install.mjs';
 import {Coordinator} from '../src/harness/coordinator.mjs';
 import {ProviderRegistry} from '../src/harness/providers/registry.mjs';
@@ -32,16 +33,59 @@ async function fixture(t){
  });
  return {root,paths};
 }
-async function payload(root,version,{settings=[1,2],database=[0,1],supervisor="reviewed C source",implementation={},artifactRoot,artifactFingerprint}={}){
+async function payload(root,version,{settings=[1,2],database=[0,1],providerTransport,supervisor="reviewed C source",implementation={},artifactRoot,artifactFingerprint}={}){
  const directory=path.join(root,version);await mkdir(directory);const sources={'runtime/src/project/check-backends/native-supervisor.c':supervisor,'runtime/bin/node':'#!/bin/sh\nexit 0\n','runtime/src/beta/cli.mjs':'// entry\n','runtime/package-lock.json':JSON.stringify({packages:{'node_modules/@modelcontextprotocol/sdk':{version:'1.32.2'}}}),'runtime/node_modules/@modelcontextprotocol/sdk/package.json':JSON.stringify({version:'1.32.2'})};const files=[];
  for(const source of new Set([...nativeSources,...Object.keys(implementation)]))sources[path.posix.normalize('runtime/src/project/check-backends/'+source)]=implementation[source]??(source==='native-supervisor.c'?supervisor:'reviewed '+source);
  if(artifactRoot)for(const name of ['node','mosaic-check-supervisor','NODE-LICENSE','artifact-manifest.json'])sources['runtime/check-artifact/'+name]=await readFile(path.join(artifactRoot,name));
  for(const [name,bytes] of Object.entries(sources)){const target=path.join(directory,name);await mkdir(path.dirname(target),{recursive:true});const mode=['runtime/bin/node','runtime/check-artifact/node','runtime/check-artifact/mosaic-check-supervisor'].includes(name)?'100755':name==='runtime/check-artifact/artifact-manifest.json'?'100600':'100644';await writeFile(target,bytes,{mode:parseInt(mode.slice(3),8)});files.push({path:name,sha256:hash(bytes),bytes:Buffer.byteLength(bytes),mode});}
- const manifest={schema:1,layout:artifactFingerprint?'terminal-beta-v2':'terminal-beta-v1',version,dependenciesInstalled:true,...(artifactFingerprint?{nativeCheckArtifact:{fingerprint:artifactFingerprint,backend:{id:'darwin-seatbelt',revision:2}}}:{}),stateCompatibility:{settings,database},files,contentHash:digest(files)};await writeFile(path.join(directory,'package-manifest.json'),JSON.stringify(manifest));return directory;
+ const manifest={schema:1,layout:artifactFingerprint?'terminal-beta-v2':'terminal-beta-v1',version,dependenciesInstalled:true,...(artifactFingerprint?{nativeCheckArtifact:{fingerprint:artifactFingerprint,backend:{id:'darwin-seatbelt',revision:2}}}:{}),stateCompatibility:{settings,database,...(providerTransport===undefined?{}:{providerTransport})},files,contentHash:digest(files)};await writeFile(path.join(directory,'package-manifest.json'),JSON.stringify(manifest));return directory;
 }
 test('update and compatible rollback preserve private state and every older version',async t=>{
  const f=await fixture(t),a=await payload(f.root,'0.1.0-beta.161'),b=await payload(f.root,'0.1.0-beta.162');await installer.install(f.paths,a,{noPath:true});await writeFile(f.paths.config,JSON.stringify({schema:2,host:{id:'cursor'}}),{mode:0o600});const evidence=path.join(f.paths.state,'kept-evidence.json');await writeFile(evidence,'kept');const before=await readFile(f.paths.config);
  await installer.install(f.paths,b,{noPath:true});assert.equal(typeof installer.rollbackVersion,'function');await installer.rollbackVersion(f.paths,'0.1.0-beta.161');assert.deepEqual(await readFile(f.paths.config),before);assert.equal(await readFile(evidence,'utf8'),'kept');assert.ok(await lstat(path.join(f.paths.versions,'0.1.0-beta.162')));
+});
+for(const [name,configFor,allowedUrl] of [
+ ['legacy worker',baseUrl=>({schema:1,worker:{profile:{baseUrl}}}),'http://127.0.0.1:8000/v1'],
+ ['API reviewer',baseUrl=>({schema:2,providers:[{roles:['worker'],baseUrl:'http://[::1]:8000/v1'},{roles:['reviewer'],baseUrl}]}),'https://reviewer.example.invalid/v1'],
+])test(`a remote HTTP ${name} blocks the update before registered service or launcher changes`,async t=>{
+ const {root,paths}=await fixture(t),oldVersion='0.1.0-beta.161',newVersion='0.1.0-beta.162';
+ const oldPackage=await payload(root,oldVersion),newPackage=await payload(root,newVersion,{providerTransport:'https-or-http-loopback'});
+ await installer.install(paths,oldPackage,{noPath:true});
+ await writeFile(paths.config,JSON.stringify(configFor('http://private-workstation.example.invalid/v1')),{mode:0o600});
+ const protectedFiles=[paths.launcher,paths.installation,paths.config];
+ const before=await Promise.all(protectedFiles.map(file=>readFile(file)));
+ const lifecycleCalls=[];
+ const lifecycle={
+  async verifyLaunchAgent(){lifecycleCalls.push('verify');return true;},
+  async stopForMaintenance(){lifecycleCalls.push('stop');return true;},
+  async startLaunchAgent(){lifecycleCalls.push('start');return true;},
+ };
+ await assert.rejects(installer.install(paths,newPackage,{noPath:true,lifecycle}),error=>{
+  assert.match(error.message,/HTTPS is required.*previous installed version/i);
+  assert.doesNotMatch(error.message,/private-workstation/);
+  return true;
+ });
+ assert.deepEqual(lifecycleCalls,[]);
+ assert.deepEqual(await Promise.all(protectedFiles.map(file=>readFile(file))),before);
+ await assert.rejects(lstat(path.join(paths.configDir,'install-transaction.json')),{code:'ENOENT'});
+ await assert.rejects(lstat(path.join(paths.versions,newVersion)),{code:'ENOENT'});
+
+ const compatibleConfig=JSON.stringify(configFor(allowedUrl));
+ await writeFile(paths.config,compatibleConfig,{mode:0o600});
+ await installer.install(paths,newPackage,{noPath:true,lifecycle});
+ assert.deepEqual(lifecycleCalls,['verify','stop','start']);
+ assert.equal(JSON.parse(await readFile(paths.installation)).version,newVersion);
+ assert.equal(await readFile(paths.config,'utf8'),compatibleConfig);
+});
+test('rollback uses the old target transport policy and preserves saved settings',async t=>{
+ const {root,paths}=await fixture(t),oldVersion='0.1.0-beta.161',newVersion='0.1.0-beta.162';
+ await installer.install(paths,await payload(root,oldVersion),{noPath:true});
+ await installer.install(paths,await payload(root,newVersion,{providerTransport:'https-or-http-loopback'}),{noPath:true});
+ const settings=JSON.stringify({schema:2,providers:[{roles:['worker'],baseUrl:'http://worker.example.invalid/v1'}]});
+ await writeFile(paths.config,settings,{mode:0o600});
+ await installer.rollbackVersion(paths,oldVersion);
+ assert.equal(JSON.parse(await readFile(paths.installation)).version,oldVersion);
+ assert.equal(await readFile(paths.config,'utf8'),settings);
 });
 test('rollback refuses incompatible live settings/database rather than restore old state',async t=>{
  const f=await fixture(t),a=await payload(f.root,'0.1.0-beta.161',{settings:[1],database:[0]}),b=await payload(f.root,'0.1.0-beta.162');await installer.install(f.paths,a,{noPath:true});await installer.install(f.paths,b,{noPath:true});await writeFile(f.paths.config,JSON.stringify({schema:2}),{mode:0o600});const launcher=await readFile(f.paths.launcher);await assert.rejects(installer.rollbackVersion(f.paths,'0.1.0-beta.161'),/incompatible.*settings|settings.*schema/i);assert.deepEqual(await readFile(f.paths.launcher),launcher);
@@ -199,6 +243,93 @@ function restartLifecycle(paths,events,expectedVersion,{startFailure=false}={}){
  });
  return {lifecycle:{verifyLaunchAgent:async()=>true,stopForMaintenance:async()=>true,startLaunchAgent:()=>ready('forward'),rollbackLaunchAgent:()=>ready('rollback')},close(){if(coordinator){coordinator.releaseWorker(owner);coordinator.close();coordinator=null;}}};
 }
+for(const point of ['before service shutdown','after service shutdown'])test('recover the registered service after installer termination '+point,async t=>{
+ const {root,paths}=await fixture(t);
+ const previous='0.1.0-beta.161',next='0.1.0-beta.162';
+ await installer.install(paths,await payload(root,previous),{noPath:true});
+ const nextPackage=await payload(root,next),registration=path.join(root,'synthetic-registration');
+ await writeFile(registration,'running');
+ const before=await Promise.all([paths.launcher,paths.installation].map(file=>readFile(file)));
+ const script=`import {install} from ${JSON.stringify(new URL('../src/beta/install.mjs',import.meta.url).href)};
+  import {locations} from ${JSON.stringify(new URL('../src/beta/files.mjs',import.meta.url).href)};
+  import {writeFile} from 'node:fs/promises';
+  await install(locations(${JSON.stringify(paths.home)},true),${JSON.stringify(nextPackage)},{
+   noPath:true,lifecycle:{verifyLaunchAgent:async()=>true,async stopForMaintenance(paths,options={}){
+    await options.beforeRegisteredStop?.();
+    if(${JSON.stringify(point)}==='after service shutdown')await writeFile(${JSON.stringify(registration)},'stopped');
+    process.kill(process.pid,'SIGKILL');
+   }}
+  });`;
+ const child=spawnSync(process.execPath,['--input-type=module','-e',script],{encoding:'utf8',timeout:15000});
+ assert.equal(child.signal,'SIGKILL',child.stderr);
+ const alreadyStopped=point==='after service shutdown',priorState=alreadyStopped?'stopped':'running';
+ assert.equal(await readFile(registration,'utf8'),priorState);
+ const transaction=path.join(paths.configDir,'install-transaction.json'),retained=await readFile(transaction);
+ assert.equal(JSON.parse(retained).phase,'stopping');
+ await assert.rejects(installer.assertInstallationStartupReady(paths),/incomplete/);
+ const c=new Coordinator({root:paths.state});let goal;
+ try{
+  await assert.rejects(installer.recoverInstallation(paths,{lifecycle:{
+   async stopForMaintenance(_paths,{recovering}){
+    assert.equal(recovering,true);
+    if(alreadyStopped)c.acquireWorker('retained-lease');
+    else goal=c.prepareGoal({submissionId:'late',mode:'codex_only',environment:'fixture',objective:'Preserve admitted work',acceptance:['Keep draft']},'late');
+    // A service can accept a draft after recovery's first idle read. An
+    // unreachable service with a retained lease has no offline stop proof.
+    await assertMaintenanceIdle(paths,{offline:alreadyStopped});
+   },
+   async rollbackLaunchAgent(){assert.fail('Busy service must keep its recovery receipt');},
+  }}),alreadyStopped?/coordinator lease/:/prepared, active or unresolved/);
+  assert.deepEqual(await readFile(transaction),retained);
+  assert.equal(await readFile(registration,'utf8'),priorState);
+  if(goal)c.control({goalId:goal.id,action:'stop'},'settled');
+  else c.releaseWorker('retained-lease');
+ }finally{c.close();}
+ let quiesced=false;
+ const recovered=await installer.recoverInstallation(paths,{lifecycle:{
+  async stopForMaintenance(_paths,{recovering}){
+   assert.equal(recovering,true);
+   await assertMaintenanceIdle(paths,{offline:alreadyStopped});
+   await writeFile(registration,'stopped');quiesced=true;
+   return !alreadyStopped;
+  },
+  async rollbackLaunchAgent(paths,{existed,registered}){
+   assert.equal(quiesced,true);assert.equal(await readFile(registration,'utf8'),'stopped');
+   assert.equal(existed,true);assert.equal(registered,true);
+   await withLock(paths,()=>installer.assertInstallationStartupReady(paths));
+   await writeFile(registration,'running');
+  },
+ }});
+ assert.equal(recovered,true);
+ assert.equal(await readFile(registration,'utf8'),'running');
+ assert.deepEqual(await Promise.all([paths.launcher,paths.installation].map(file=>readFile(file))),before);
+ await assert.rejects(lstat(path.join(paths.versions,next)),{code:'ENOENT'});
+ assert.equal(await installer.recoverInstallation(paths),false);
+});
+test('interrupted shutdown verifies the exact old installation and settings before asking its service to stop',async t=>{
+ const {root,paths}=await fixture(t),previous='0.1.0-beta.161';
+ await installer.install(paths,await payload(root,previous),{noPath:true});
+ const next=await payload(root,'0.1.0-beta.162');
+ await assert.rejects(installer.install(paths,next,{noPath:true,lifecycle:{
+  verifyLaunchAgent:async()=>true,
+  async stopForMaintenance(_paths,{beforeRegisteredStop}){
+   await beforeRegisteredStop();throw Error('Interrupted before shutdown');
+  },
+ }}),/Interrupted before shutdown/);
+ const transaction=path.join(paths.configDir,'install-transaction.json'),retained=await readFile(transaction);
+ let stops=0;
+ const recover=()=>installer.recoverInstallation(paths,{lifecycle:{async stopForMaintenance(){stops++;}}});
+ await saveJson(paths.config,{schema:2,changed:true});
+ await assert.rejects(recover(),/settings changed/i);await rm(paths.config);
+ const receipt=await readFile(paths.installation);
+ await rm(paths.installation);await assert.rejects(recover(),/pointer or receipt changed/i);
+ await writeFile(paths.installation,receipt,{mode:0o600});
+ const installed=path.join(paths.versions,previous),replacement=path.join(root,'replacement');await mkdir(replacement);
+ const changed=await payload(replacement,previous,{supervisor:'other valid package inventory'});
+ await rename(installed,path.join(root,'original'));await rename(changed,installed);
+ await assert.rejects(recover(),/inventory differs/i);
+ assert.equal(stops,0);assert.deepEqual(await readFile(transaction),retained);
+});
 test('owned forward restart acquires startup mutex only after committed pointer writes',async t=>{
  const f=await fixture(t),a=await payload(f.root,'0.1.0-beta.161'),b=await payload(f.root,'0.1.0-beta.162');await installer.install(f.paths,a,{noPath:true});const events=[],service=restartLifecycle(f.paths,events,'0.1.0-beta.162');t.after(()=>service.close());
  await installer.install(f.paths,b,{noPath:true,lifecycle:service.lifecycle});assert.deepEqual(events,['startup-mutex','ready']);await assert.rejects(lstat(path.join(f.paths.configDir,'install-transaction.json')),{code:'ENOENT'});service.close();

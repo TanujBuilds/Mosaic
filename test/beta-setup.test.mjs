@@ -5,9 +5,13 @@ import {mkdir,mkdtemp,readFile,rm,symlink,writeFile} from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import {fileURLToPath} from 'node:url';
-import {locations,privateDirectories} from '../src/beta/files.mjs';
+import {stripVTControlCharacters} from 'node:util';
+import {locations,privateDirectories,saveJson} from '../src/beta/files.mjs';
 import {Coordinator} from '../src/harness/coordinator.mjs';
 import {Goals} from '../src/harness/goals.mjs';
+import {detectCodingApps} from '../src/beta/hosts/detection.mjs';
+import {hostConnectionIdentity,readHostConnection,recordHostConnection} from '../src/beta/hosts/connection-evidence.mjs';
+import {readSettings} from '../src/beta/settings.mjs';
 
 const cli=fileURLToPath(new URL('../src/beta/cli.mjs',import.meta.url));
 const setupModule=new URL('../src/beta/setup.mjs',import.meta.url).href;
@@ -204,4 +208,236 @@ test('a superseded revision permits exact setup but a stopped approval blocks wo
  const changed=run(paths);
  assert.equal(changed.status,0,changed.stderr);
  assert.equal((await bytes(paths.config)).worker,null);
+});
+
+function terminalSetup(steps,{width=72,terminal='xterm-256color',plain=false}={}){
+ const driver=fileURLToPath(new URL('./fixtures/mosaic-m021-terminal/drive.py',import.meta.url));
+ const subject=fileURLToPath(new URL('./fixtures/mosaic-m021-terminal/setup.mjs',import.meta.url));
+ const child=spawnSync('python3',[driver,process.execPath,subject,String(width),terminal,plain?'yes':'no',JSON.stringify(steps)],
+  {encoding:'utf8',timeout:10000,maxBuffer:1024*1024});
+ assert.equal(child.status,0,child.stderr||String(child.error));
+ const result=JSON.parse(child.stdout.split('MOSAIC_SETUP_RESULT ')[1].trim());
+ assert.equal(result.raw,false);
+ return {transcript:child.stdout,result};
+}
+
+test('host detection finds known executables and app bundles without running them',async t=>{
+ const home=await mkdtemp(path.join(os.tmpdir(),'Mosaic detected hosts '));
+ t.after(()=>rm(home,{recursive:true,force:true}));
+ const paths=locations(home,true),bin=path.join(home,'.local','bin');
+ assert.deepEqual(await detectCodingApps(paths),[]);
+ const chatgpt=path.join(home,'Applications','ChatGPT.app','Contents');
+ await mkdir(chatgpt,{recursive:true});
+ await writeFile(path.join(chatgpt,'Info.plist'),'no bundled Codex CLI');
+ assert.deepEqual(await detectCodingApps(paths),[]);
+ await mkdir(bin,{recursive:true});
+ await writeFile(path.join(bin,'codex'),'#!/bin/sh\nexit 9\n',{mode:0o755});
+ await writeFile(path.join(bin,'agy'),'#!/bin/sh\nexit 9\n',{mode:0o755});
+ await writeFile(path.join(bin,'claude'),'not executable',{mode:0o644});
+ const contents=path.join(home,'Applications','Cursor.app','Contents');
+ await mkdir(contents,{recursive:true});
+ await writeFile(path.join(contents,'Info.plist'),'fixture bundle');
+ assert.deepEqual(await detectCodingApps(paths),['codex','cursor','antigravity']);
+});
+
+test('registry call evidence belongs to the saved settings and is invalidated by a host change',async t=>{
+ const {paths}=await fixture(t);
+ await saveJson(paths.config,{schema:2,host:{id:'codex',options:{}},providers:[],
+  defaults:{workerId:null,plannerWorkerId:null,review:{source:'host',hostId:'codex'}},
+  execution:{backend:'darwin-seatbelt',backendRevision:2,runtimeFingerprint:'a'.repeat(64)},
+  nativeCheckRuntime:{schema:1,artifactManifestPath:'/fixture/runtime/check-artifact/artifact-manifest.json',artifactManifestSha256:'a'.repeat(64)},
+  serviceMaxConcurrentTasks:1,capacityGroups:[]});
+ const settings=await readSettings(paths),identity=hostConnectionIdentity(settings);
+ assert.equal(hostConnectionIdentity({schema:1,worker:{apiKey:'private'}}),null);
+ assert.equal(await readHostConnection(paths),null);
+ await recordHostConnection(paths,identity);
+ const receipt=await readHostConnection(paths);
+ assert.equal(receipt.kind,'registry_call');
+ assert.equal(receipt.hostId,'codex');
+ assert.ok(Number.isSafeInteger(receipt.at));
+ await saveJson(paths.config,{...settings,host:{id:'cursor',options:{}},
+  defaults:{...settings.defaults,review:{source:'host',hostId:'cursor'}}});
+ await recordHostConnection(paths,identity);
+ assert.equal(await readHostConnection(paths),null);
+});
+
+test('portable setup uses the blue Mosaic mark and arrow keys to go back, select a host and save', {skip:process.platform!=='darwin'},()=>{
+ const {transcript,result}=terminalSetup([
+  ['Pick your coding app','\x1b[B\x1b[B\r'],
+  ['Choose a worker','\x1b'],
+  ['Pick your coding app','\x1b[A\r'],
+  ['Choose a worker','\r'],
+  ['Finish setup','\x1b'],
+  ['Choose a worker','\r'],
+  ['Finish setup','\x1b[A\x1b[A\r']
+ ]);
+ assert.match(transcript,/\x1b\[1;94m▛▀▖     ▗▀▜/u);
+ const plain=stripVTControlCharacters(transcript);
+ assert.match(plain,/╭─{44}╮/u);
+ assert.match(plain,/1\/3  Pick your coding app/u);
+ assert.match(plain,/2\/3  Choose a worker/u);
+ assert.match(plain,/3\/3  Finish setup/u);
+ assert.match(plain,/│  › /u);
+ assert.match(transcript,/First-time setup/);
+ assert.doesNotMatch(transcript,/\x1b\[(?:[4-5][0-9]|10[0-7])m/u);
+ assert.match(transcript,/Start the trial coordinator/);
+ assert.match(transcript,/Coding app connection still needs verification/);
+ assert.equal(result.saved,true);
+ assert.equal(result.host,'claude-code');
+});
+
+for(const exit of ['q','\x03'])test(`narrow setup shows the Mosaic mark and cancels safely with ${exit==='q'?'q':'Ctrl+C'}`,{skip:process.platform!=='darwin'},()=>{
+ const {transcript,result}=terminalSetup([['Pick your coding app',exit]],{width:38});
+ assert.match(transcript,/▛▚  ▞▜[^\r\n]*Mosaic[^\r\n]*\r?\n {2}\x1b\[1;94m▌ ▚▞ ▐/u);
+ assert.equal(result.host,undefined);
+ assert.equal(result.credentialsWritten,false);
+ assert.match(result.error??transcript,/Setup (?:interrupted|exited|cancelled)/i);
+});
+
+test('an open setup menu redraws at the new width without a navigation key', {skip:process.platform!=='darwin'},()=>{
+ const {transcript,result}=terminalSetup([
+  ['q / Ctrl+C exit',76],
+  ['Up/Down move | Enter confirm | q / Ctrl+C exit',38],
+  ['q / Ctrl+C exit','q']
+ ],{width:38});
+ assert.match(transcript,/q \/ Ctrl\+C exit\r?\n\x1b\[1G\x1b\[7A/u);
+ assert.equal(result.host,undefined);
+ assert.equal(result.credentialsWritten,false);
+});
+
+test('a narrow worker menu gives option labels priority over the rail', {skip:process.platform!=='darwin'},()=>{
+ const {transcript,result}=terminalSetup([
+  ['Pick your coding app','\r'],
+  ['Choose a worker','q']
+ ],{width:24});
+ const plain=stripVTControlCharacters(transcript);
+ assert.match(plain,/^ {2}Remote model server\r?$/mu);
+ assert.match(plain,/^ {2}Two or three workers\r?$/mu);
+ assert.equal(result.credentialsWritten,false);
+});
+
+for(const policy of [{plain:true},{terminal:'dumb'}])test(`plain portable setup accepts numbered answers for ${policy.plain?'NO_COLOR':'TERM=dumb'}`,{skip:process.platform!=='darwin'},()=>{
+ const {transcript,result}=terminalSetup([
+  ['Choose host [1]: ','3\r'],
+  ['Choose worker setup [1]: ','4\r'],
+  ['Show technical settings details? [y/N] ','n\r'],
+  ['Run optional model discovery check? [y/N] ','n\r'],
+  ['Run optional inference connectivity test with that fixed setup-only message? [y/N] ','n\r'],
+  ['Apply this exact setup and managed host binding? [y/N] ','y\r']
+ ],policy);
+ assert.doesNotMatch(transcript,/\x1b\[1;94m|▛▚|╭|1\/3/u);
+ assert.equal(result.host,'cursor');
+ assert.equal(result.saved,true);
+});
+
+test('pasted bearer key stays hidden after navigating with arrow keys', {skip:process.platform!=='darwin'},()=>{
+ const key='mosaic-fixture-secret-should-stay-hidden';
+ const {transcript,result}=terminalSetup([
+  ['Pick your coding app','\r'],
+  ['Choose a worker','\x1b[B\r'],
+  ['API base URL: ','http://127.0.0.1:1/v1\r'],
+  ['Model ID: ','demo-model\r'],
+  ['Does this endpoint require an API bearer key? [y/N] ','y\r'+key+'\r'],
+  ['Finish setup','q']
+ ]);
+ assert.match(transcript,/Bearer key \(hidden\)/);
+ assert.ok(!transcript.includes(key));
+ assert.equal(result.host,undefined);
+ assert.equal(result.credentialsWritten,false);
+});
+
+test('OpenRouter saves from the review menu with its key hidden and no setup requests', {skip:process.platform!=='darwin'},()=>{
+ const key='mosaic-fixture-openrouter-key';
+ const {transcript,result}=terminalSetup([
+  ['Pick your coding app','\r'],
+  ['Choose a worker','3\r'],
+  ['Choose a hosted provider','4\r'],
+  ['Model ID (e.g. moonshotai/kimi-k3.1-pro): ','moonshotai/kimi-k3.1-pro\r'],
+  ['OpenRouter API key (hidden): ',key+'\r'],
+  ['Finish setup','y\r']
+ ]);
+ assert.match(transcript,/coding app, which may use its cloud service/);
+ assert.match(transcript,/Approved task context leaves this Mac/);
+ assert.match(transcript,/Connection checks are optional/);
+ assert.match(transcript,/Provider connection untested/);
+ assert.doesNotMatch(transcript,/GET https:|POST https:|Exact private setup preview/);
+ assert.match(transcript,/Worker\s+OpenRouter\s+Model\s+moonshotai\/kimi-k3\.1-pro\s+API URL\s+https:\/\/openrouter\.ai\/api\/v1/);
+ assert.ok(!transcript.includes(key));
+ assert.equal(result.saved,true);
+ assert.equal(result.credentialsWritten,true);
+});
+
+test('the review menu keeps technical details and separately approved provider checks available', {skip:process.platform!=='darwin'},()=>{
+ const endpoint='http://127.0.0.1:1/v1';
+ const {transcript,result}=terminalSetup([
+  ['Pick your coding app','\r'],
+  ['Choose a worker','1\r'],
+  ['API base URL: ',endpoint+'\r'],
+  ['Model ID: ','demo-model\r'],
+  ['Does this endpoint require an API bearer key? [y/N] ','n\r'],
+  ['Finish setup','d\r'],
+  ['Exact private setup preview',''],
+  ['Finish setup','t\r'],
+  ['Check the worker model list?','\r'],
+  ['Test the worker connection?','\r'],
+  ['zero setup POSTs',''],
+  ['Finish setup','y\r']
+ ]);
+ assert.match(transcript,/GET http:\/\/127\.0\.0\.1:1\/v1\/models/);
+ assert.match(transcript,/POST http:\/\/127\.0\.0\.1:1\/v1\/chat\/completions/);
+ assert.match(transcript,/Optional inference sends the configured key and a setup-only message/);
+ assert.match(transcript,/zero setup POSTs/);
+ assert.equal(result.saved,true);
+});
+
+test('mistaken key at the custom URL prompt is hidden and the URL can be retried', {skip:process.platform!=='darwin'},()=>{
+ const wrong='sk-or-v1-synthetic-mistaken-url-entry';
+ const {transcript,result}=terminalSetup([
+  ['Pick your coding app','\r'],
+  ['Choose a worker','3\r'],
+  ['Choose a hosted provider','5\r'],
+  ['API base URL: ',wrong+'\r'],
+  ['Enter the server URL here. The key prompt comes later.\r\nAPI base URL: ','https://api.example/v1\r'],
+  ['Model ID: ','example-model\r'],
+  ['Does this endpoint require an API bearer key? [y/N] ','n\r'],
+  ['Finish setup','q'],
+ ]);
+ assert.ok(!transcript.includes(wrong));
+ assert.equal(result.credentialsWritten,false);
+ assert.equal(result.host,undefined);
+});
+
+test('plain interactive hosted setup also hides and retries a mistaken URL', {skip:process.platform!=='darwin'},()=>{
+ const wrong='sk-or-v1-synthetic-plain-mistaken-url';
+ const {transcript,result}=terminalSetup([
+  ['Choose host [1]: ','1\r'],
+  ['Choose worker setup [1]: ','3\r'],
+  ['API base URL: ',wrong+'\r'],
+  ['The key prompt comes later.\r\nAPI base URL: ','https://api.example/v1\r'],
+  ['Model ID: ','example-model\r'],
+  ['Does this endpoint require an API bearer key? [y/N] ','n\r'],
+  ['Show technical settings details? [y/N] ','n\r'],
+  ['Run optional model discovery check? [y/N] ','n\r'],
+  ['Run optional inference connectivity test with that fixed setup-only message? [y/N] ','n\r'],
+  ['Apply this exact setup and managed host binding? [y/N] ','n\r'],
+ ],{plain:true});
+ assert.ok(!transcript.includes(wrong));
+ assert.equal(result.credentialsWritten,false);
+ assert.equal(result.host,undefined);
+});
+
+test('guided setup hides and retries a mistaken worker URL', {skip:process.platform!=='darwin'},()=>{
+ const wrong='sk-or-v1-synthetic-guided-mistaken-url';
+ const {transcript,result}=terminalSetup([
+  ['Pick your coding app','\r'],
+  ['Choose a worker','6\r'],
+  ['How many workers? 2 or 3 [3]: ','2\r'],
+  ['Choose for worker 1 [1]: ','3\r'],
+  ['Worker 1 API base URL: ',wrong+'\r'],
+  ['The key prompt comes later.\r\nWorker 1 API base URL: ','https://api.example/v1\r'],
+  ['Worker 1 Model ID: ','\x03'],
+ ]);
+ assert.ok(!transcript.includes(wrong));
+ assert.equal(result.credentialsWritten,false);
+ assert.equal(result.host,undefined);
 });

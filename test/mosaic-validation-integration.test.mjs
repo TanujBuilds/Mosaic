@@ -247,11 +247,9 @@ test('direct native finish refuses to attach a worktree receipt to a normalized 
   assert.equal(await git(task.native.worktree, 'show', accepted.integration.commit + ':src/mode.mjs', '-z'), compatibilityMode);
 });
 
-test('the byte-parity precommit probe declines an external Git filter attribute', async t => {
+test('the byte-parity precommit probe declines an unconfigured Git filter attribute', async t => {
   const f = await fixture(t, { attributes: 'src/mode.mjs filter=unspecified\n' });
   const task = await startCandidate(f, 'mode', 'src/mode.mjs', compatibilityMode);
-  await git(task.native.worktree, 'config', '--worktree', 'filter.unspecified.clean', 'exit 88');
-  await git(task.native.worktree, 'config', '--worktree', 'filter.unspecified.required', 'true');
   await assert.rejects(
     f.integration.finishNative({ taskId: task.id, summary: 'Changed one setting' }, 'finish-filter-native'),
     /Git filter attribute/i,

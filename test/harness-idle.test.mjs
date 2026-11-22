@@ -10,6 +10,8 @@ import {setTimeout as delay} from 'node:timers/promises';
 import {fileURLToPath} from 'node:url';
 import {DatabaseSync} from 'node:sqlite';
 import {Coordinator} from '../src/harness/coordinator.mjs';
+import {Worker} from '../src/harness/worker.mjs';
+import {Store} from '../src/harness/store.mjs';
 
 const cli=fileURLToPath(new URL('../src/harness/cli.mjs',import.meta.url));
 async function eventually(get,check,ms=3000){
@@ -27,6 +29,74 @@ test('history queries preserve insertion order without a SQLite temporary sort',
   const plan=c.store.db.prepare('EXPLAIN QUERY PLAN SELECT data FROM records WHERE kind=? ORDER BY rowid').all('task');
   assert.doesNotMatch(plan.map(row=>row.detail).join('\n'),/TEMP B-TREE/i);
  }finally{c.close();}
+});
+
+for(const serviceMaxConcurrentTasks of [1,2])test(`idle scheduler skips closed task history at service limit ${serviceMaxConcurrentTasks}`,async t=>{
+ const root=await mkdtemp(path.join(os.tmpdir(),'mosaic-scheduler-history-'));
+ const c=new Coordinator({root,serviceMaxConcurrentTasks});
+ const worker=new Worker({c,config:{environment:'fixture'}});
+ t.after(async()=>{await worker.close();c.close();await rm(root,{force:true,recursive:true});});
+ const now=c.now();
+ c.store.put('goal',{id:'history',status:'completed',deadline:now-1,manifest:{mode:{id:'collaborative'}}});
+ c.store.tx(()=>{for(let n=0;n<80;n++)c.store.put('task',{id:'old-'+n,goalId:'history',status:'accepted',
+  spec:{kind:'consult',actor:'deepseek',dependsOn:[]},result:{content:'Completed fixture '.repeat(300)}});});
+
+ c.store.waitForChange=async()=>{};
+ const readAll=c.store.all.bind(c.store);
+ const historyReads=[];
+ c.store.all=kind=>{if(kind==='task')historyReads.push(kind);return readAll(kind);};
+ const before=c.store.revision();
+ await worker.executeTick();
+ assert.equal(worker.nextIdleCheck(now),Infinity);
+ assert.equal(c.store.revision(),before);
+ assert.deepEqual(historyReads,[]);
+});
+
+test('an active planner does a goal lookup when only closed tasks remain',async t=>{
+ const root=await mkdtemp(path.join(os.tmpdir(),'mosaic-planner-history-'));
+ const c=new Coordinator({root});
+ const worker=new Worker({c,config:{environment:'fixture'},provider:{complete:async()=>assert.fail('Planner must not repeat a completed goal')}});
+ t.after(async()=>{await worker.close();c.close();await rm(root,{force:true,recursive:true});});
+ const g=c.prepareLegacyGoal({submissionId:'planned',objective:'Preexisting planned work',acceptance:['Preserve the prior result'],mode:'deepseek_only',environment:'fixture'},'prepare');
+ c.activateGoal({goalId:g.id,hash:g.hash},'activate');
+ const task=c.submitTask({goalId:g.id,submissionId:'result',kind:'consult',objective:'Previously planned task',acceptance:['Saved']},'submit');
+ c.store.put('task',{...c.store.get('task',task.id),status:'accepted'});
+ const readAll=c.store.all.bind(c.store),historyReads=[];
+ c.store.all=kind=>{if(kind==='task')historyReads.push(kind);return readAll(kind);};
+ assert.equal(worker.planner.schedulable(c.store.get('goal',g.id)),false);
+ assert.equal(await worker.executeTick(),null);
+ assert.equal(c.store.maybe('planning',g.id),null);
+ assert.deepEqual(historyReads,[]);
+});
+
+test('unfinished task reads follow schema-1 restart, external writes and rollback',async t=>{
+ const root=await mkdtemp(path.join(os.tmpdir(),'mosaic-scheduler-reopen-'));
+ t.after(()=>rm(root,{force:true,recursive:true}));
+ const initial=new Store(root);
+ initial.put('task',{id:'z',status:'uncertain'});
+ initial.put('task',{id:'closed',goalId:'saved-goal',status:'accepted'});
+ initial.put('task',{id:'a',status:'stopped'});
+ initial.db.exec('DROP INDEX records_unfinished_tasks; DROP INDEX records_task_goal');
+ initial.close();
+
+ const store=new Store(root),other=new Store(root);
+ try{
+  const ids=()=>store.unfinishedTasks().map(row=>row.id);
+  assert.equal(store.db.prepare('PRAGMA user_version').get().user_version,1);
+  assert.deepEqual(ids(),['z','a']);
+  assert.equal(store.hasTasksForGoal('saved-goal'),true);
+  assert.equal(store.hasTasksForGoal('other-goal'),false);
+  other.put('task',{id:'z',status:'partial'});
+  other.put('task',{id:'closed',status:'suspended'});
+  assert.deepEqual(ids(),['closed','a']);
+  assert.throws(()=>store.tx(()=>{
+   store.put('task',{id:'a',status:'cancelled'});
+   assert.deepEqual(ids(),['closed']);
+   throw Error('rollback fixture');
+  }),/rollback fixture/);
+  assert.deepEqual(ids(),['closed','a']);
+  assert.equal(other.unfinishedTasks().length,2);
+ }finally{other.close();store.close();}
 });
 
 test('idle service leaves expired reports and history alone, then wakes on work and deadlines', {timeout:15000},async t=>{

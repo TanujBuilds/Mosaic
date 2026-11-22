@@ -1,4 +1,4 @@
-import {canClaim,capacitySnapshot,inferenceWait} from '../scheduling/capacity.mjs';
+import {canClaim,capacitySnapshot,holdsPlanningSlot,holdsTaskSlot,inferenceWait,serviceCapacity} from '../scheduling/capacity.mjs';
 import {digest,normalizeTask,isStartedLegacyTask} from '../contracts.mjs';
 import {selectRoute} from './router.mjs';
 import {codingModelReplayEligible} from '../coding.mjs';
@@ -101,9 +101,12 @@ export function holdPinnedResource(worker,task){
 export async function claimAvailable(worker){
  if(worker.shutdown?.signal.aborted)return {waiting:true,reasonCode:'service_stopping'};
  const c=worker.c,claimed=c.claimNext(worker.owner);if(claimed)return claimed;
- const snapshot=capacitySnapshot(c),parallel=snapshot.serviceLimit>1;
- if(!parallel&&(snapshot.planning.some(p=>!c.store.get('goal',p.goalId).manifest.providerPolicy)||snapshot.activeTasks.some(t=>!c.store.get('goal',t.goalId).manifest.providerPolicy)))return null;
- const priorities=c.effectivePriorities(),tasks=c.store.all('task').filter(t=>['queued','suspended'].includes(t.status)&&t.spec.actor==='deepseek'&&t.executionActor!=='codex'&&c.eligible(t)).sort((a,b)=>priorities.get(b.id)-priorities.get(a.id)||a.sequence-b.sequence);
+ const unfinished=c.store.unfinishedTasks(),parallel=serviceCapacity(c)>1;
+ if(!parallel&&(c.store.all('planning').some(p=>holdsPlanningSlot(p)&&!c.store.get('goal',p.goalId).manifest.providerPolicy)||unfinished.some(t=>holdsTaskSlot(t)&&!c.store.get('goal',t.goalId).manifest.providerPolicy)))return null;
+ const tasks=unfinished.filter(t=>['queued','suspended'].includes(t.status)&&t.spec.actor==='deepseek'&&t.executionActor!=='codex'&&c.eligible(t));
+ if(!tasks.length)return null;
+ const priorities=c.effectivePriorities(unfinished);
+ tasks.sort((a,b)=>priorities.get(b.id)-priorities.get(a.id)||a.sequence-b.sequence);
  let waited=false,probes=0;const observations=new Map(),offlineEndpoints=new Set();
  for(const task of tasks){
   const goal=c.store.get('goal',task.goalId);

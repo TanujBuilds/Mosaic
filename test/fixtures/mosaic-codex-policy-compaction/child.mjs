@@ -45,6 +45,7 @@ export async function fixture({ count = 710, names, readPaths, journalDir, proof
   await git(root, 'init', '--quiet');
   await git(root, 'add', '--force', '--', ...tracked);
   // Keep dependency/output exclusions in local Git metadata, not the inventory.
+  await mkdir(path.join(root, '.git/info'), { recursive: true });
   await writeFile(path.join(root, '.git/info/exclude'), 'node_modules/\n.overnight-output/\ndist/\nignored-after-snapshot.txt\n');
   await writeFile(path.join(root, 'untracked-private.txt'), 'synthetic untracked canary\n', { mode: 0o600 });
   const workspace = new Workspace({ permissions: { readPaths: approved } }, journal);

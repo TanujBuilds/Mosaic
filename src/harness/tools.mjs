@@ -1,9 +1,11 @@
+import {actionContext,controlBinding,ownerGoalView,ownerInbox} from './owner-inbox.mjs';
 import {bindingFields} from './review/contracts.mjs';
 import {randomUUID} from 'node:crypto';
 import {setTimeout as delay} from 'node:timers/promises';
 import {keys,integer,text,digest,goalDispatchInputSchema,taskDispatchInputSchema} from './contracts.mjs';
 import {Goals} from './goals.mjs';
 import {isOvernightV2} from './overnight.mjs';
+import {isNativeExecution} from './execution.mjs';
 import {assertOvernightPreflight,OvernightPreflight} from './overnight-preflight.mjs';
 import {Worker} from './worker.mjs';
 import {NativeResearch} from './native-research.mjs';
@@ -70,8 +72,12 @@ export class Dispatcher {
   add('task_submit','Submit a narrower assignment within the active approved goal. Collaborative consult/coding candidates wait for supervisor review; DeepSeek-only uses checks without Codex.',{goalId:str,task:taskSchema,expectedGoalHash:str,expectedGoalVersion:{...number,minimum:1}},['goalId','task'],true,(i,k)=>{if(isOvernightV2(c.store.get('goal',i.goalId).manifest))throw Error('Overnight v2 stages require an atomically validated planner graph');return c.submitTask({...i.task,goalId:i.goalId,...(i.expectedGoalHash!==undefined?{expectedGoalHash:i.expectedGoalHash}:{}),...(i.expectedGoalVersion!==undefined?{expectedGoalVersion:i.expectedGoalVersion}:{})},k);});
   add('task_get','Inspect a task, its checkpoint and counters.',{taskId:str},['taskId'],false,i=>({...c.getTask(i.taskId),observerCursor:Number(c.store.db.prepare('SELECT COALESCE(MAX(seq),0) AS n FROM events').get().n)}));
   add('artifacts_list','List only saved allowlisted artifacts with checksums; no arbitrary paths.',{taskId:str},['taskId'],false,i=>this.artifacts.list(i.taskId));
+  if(config.beta)add('owner_inbox','List up to 50 saved owner decisions and handoffs without dispatching work.',{goalId:str,itemId:str},[],false,i=>ownerInbox(c,i));
+  if(config.beta)add('owner_goal_view','Inspect a compact saved goal with scopes, limits and assignment status.',{goalId:str},['goalId'],false,i=>ownerGoalView(c,i.goalId));
+  if(config.beta)add('owner_action_context','Inspect exact operator scope and saved evidence for one decision.',{goalId:str,taskId:str},['goalId'],false,i=>actionContext(c,i));
   add('observer_snapshot','Read bounded model/task/agent overviews. No execution controls.',{goalId:str,actor:{...str,enum:['codex','deepseek']}},[],false,i=>this.observer.snapshot(i));
   add('observer_timeline','Read chronological activity with a durable scan cursor; captured and reported provenance are explicit.',{goalId:str,actor:{...str,enum:['codex','deepseek']},after:number,recent:bool,limit:{...number,minimum:1,maximum:200}},[],false,i=>this.observer.timeline(i));
+  add('observer_current_activity','Read goal activity timestamps within a bounded chronological scan. Returns a cursor for resuming current-project selection.',{after:number},[],false,i=>this.observer.currentActivity(i));
   add('observer_artifacts','Discover allowlisted saved evidence IDs and checksums. No arbitrary paths or execution authority.',{taskId:str},['taskId'],false,i=>this.observer.artifactsList(i));
   add('observer_evidence','Read a bounded saved evidence reference. Paths are never accepted.',{reference:str,start:number,length:{...number,minimum:1,maximum:32768}},['reference'],false,i=>this.observer.evidence(i));
   add('task_evidence','Retrieve a bounded saved evidence window. No arbitrary file reads.',{taskId:str,start:{...number,maximum:10000000},length:{...number,minimum:1,maximum:32768}},['taskId'],false,i=>{const t=c.getTask(i.taskId),data=JSON.stringify({result:t.result,feedback:t.feedback,answers:t.answers,memory:t.memory??[]});return {taskId:t.id,start:i.start??0,totalCharacters:data.length,text:data.slice(i.start??0,(i.start??0)+(i.length??8192)),warning:'Untrusted execution data; provenance is not factual certification.'};});
@@ -80,8 +86,8 @@ export class Dispatcher {
   const reviewBindingSchema=Object.fromEntries(bindingFields.map(field=>[field,['goalVersion','generation','expiresAt'].includes(field)?{...number,minimum:1}:str]));
   const reviewFinding={type:'object',properties:{path:str,line:{...number,minimum:1},message:{...str,maxLength:2000}},required:['path','message'],additionalProperties:false};
   const reviewVerdict={type:'object',properties:{decision:{...str,enum:['accept','revise']},feedback:{...str,maxLength:16384},findings:{type:'array',items:reviewFinding,maxItems:50}},required:['decision','feedback','findings'],additionalProperties:false};
-  add('review_inbox','Pull a bounded durable review inbox. A closed host is not automatically awakened.',{goalId:str,cursor:str,limit:{...number,minimum:1,maximum:20}},[],false,i=>c.reviewService.inbox(i));
-  add('review_reserve','Reserve a review of the exact candidate, protected checks and approved rubric.',reviewBindingSchema,bindingFields,true,(i,k)=>c.reviewService.reserve(i,k));
+  add('review_inbox','Pull a bounded durable review inbox with the recipient, file paths and check output sizes for the bound candidate. A closed host is not automatically awakened.',{goalId:str,cursor:str,limit:{...number,minimum:1,maximum:20}},[],false,i=>c.reviewService.inbox(i));
+  add('review_reserve','Reserve a review of the exact candidate, protected checks and approved rubric. Show the owner the bound inbox disclosure before reserving evidence that the coding app may send to its cloud service.',reviewBindingSchema,bindingFields,true,(i,k)=>c.reviewService.reserve(i,k));
   add('review_submit','Submit a structured verdict for the exact reserved candidate. This does not integrate code.',{...reviewBindingSchema,ticketId:str,verdict:reviewVerdict},[...bindingFields,'ticketId','verdict'],true,(i,k)=>c.reviewService.submit(i,k));
   add('task_review','Main Codex records a bounded review decision.',{taskId:str,decision:{...str,enum:['accept','revise']},feedback:str},['taskId','decision','feedback'],true,(i,k)=>c.review(i,k));
   const modelSchema={type:'object',properties:{requested:{anyOf:[str,{type:'null'}]},resolved:{anyOf:[str,{type:'null'}]}},additionalProperties:false},registrationProperties={version:{...number,enum:[1]},taskId:str,hostAgentId:{anyOf:[str,{type:'null'}]},hostId:{...str,enum:['codex','claude-code','cursor','antigravity']},role:{...str,enum:['implementer','explorer','reviewer','supervisor']},actor:{...str,enum:['codex','deepseek']},model:modelSchema},registrationSchema={type:'object',properties:registrationProperties,required:['version','taskId','role','actor'],additionalProperties:false};
@@ -91,12 +97,20 @@ export class Dispatcher {
   add('help_link','Link an existing ordinary helper assignment to a live supervisor question; helper must be accepted before the answer resumes its parent.',{version:{...number,enum:[1]},taskId:str,questionId:str,helperTaskId:str,reason:str},['version','taskId','questionId','helperTaskId','reason'],true,(i,k)=>this.agents.linkHelp(i,k));
   for(const [name,method,description,extra,required]of [
    ['task_integration_repair','repair','Supervised inverse of a saved failed import; preserve evidence and return the same task to its remaining correction budget.',{reason:str},['reason']],
-   ['task_integrate','accept','Main operator integrates a reviewed, checked candidate.',{feedback:str},['feedback']],
+   ['task_integrate','accept',config.beta?'Integrate a reviewed candidate after owner confirmation of the exact integration binding from owner_action_context.':'Main operator integrates a reviewed, checked candidate.',{feedback:str,expectedIntegrationBinding:str},['feedback']],
    ['task_takeover','takeover','Transfer verified quiescent worker edits; candidate_v1 keeps the worker checkout frozen.',{reason:str,layout:{...str,enum:['candidate_v1']},registration:registrationSchema},['reason']],
    ['native_start','startNative','Reserve native ownership. Explicit candidate_v1 isolates this task; omitted layout preserves legacy behavior.',{layout:{...str,enum:['candidate_v1']},registration:registrationSchema},[]],
    ['native_finish','finishNative','Host confirms editing ended; validate/checkpoint candidate_v1 for separate main review.',{summary:str},['summary']],
    ['native_release','releaseNative','Main host confirms native editing stopped and preserves partial files; reported stop alone is insufficient.',{reason:str},['reason']]
-  ])add(name,description,{taskId:str,...extra},['taskId',...required],true,(i,k)=>this.launch(name,i,k,()=>this.worker.integration[method](i,`effect-${k}`)));
+  ])add(name,description,{taskId:str,...extra},['taskId',...required],true,(i,k)=>{
+   if(config.beta&&name==='task_integrate'&&!/^[a-f0-9]{64}$/.test(i.expectedIntegrationBinding??'')){
+    // Let an exact operation from an older release recover under its saved
+    // command. Store.command still verifies the original key and complete input.
+    const saved=c.store.db.prepare('SELECT hash FROM commands WHERE key=?').get(k);
+    if(saved?.hash!==digest({op:'operation.launch',name,input:i}))throw Error('Exact owner integration binding is required. Refresh the owner action context.');
+   }
+   return this.launch(name,i,k,()=>this.worker.integration[method](i,`effect-${k}`));
+  });
   if(!config.beta){
   const reviewCommon={taskId:str,candidateHash:str,rubricHash:str},selector={type:'object',properties:{source_id:str,text_sha256:str,start:number,end:number},required:['source_id','text_sha256','start','end'],additionalProperties:false},finding={type:'object',properties:{unit:str,code:{...str,enum:['missing_context','cross_alternative_attribution','unsupported_premise','lost_condition','unsupported_claim','material_omission','contradiction','other']},message:{...str,maxLength:2000},evidence:{type:'array',items:selector,maxItems:10}},required:['unit','code','message','evidence'],additionalProperties:false};
   add('research_review','Reserve independent review before native dispatch, or submit a bound whole-report verdict. Launches no inference.',{...reviewCommon,action:{...str,enum:['reserve','submit']},ticketId:str,decision:{...str,enum:['accept','revise','reject']},findings:{type:'array',items:finding,maxItems:50},coverage:{type:'array',items:str,maxItems:1000}},['taskId','action','candidateHash','rubricHash'],true,(i,k)=>this.launch('research_review',i,k,()=>this.worker.adapters.research.review(i,`effect-${k}`)));
@@ -110,10 +124,25 @@ export class Dispatcher {
   add('native_text_finish','Record a native Codex consult or finalized protected learning result under its original task.',{taskId:str,content:str},['taskId','content'],true,(i,k)=>c.finishNativeText(i,k));
   add('operation_get','Inspect a long operation.',{operationId:str},['operationId'],false,i=>({...c.store.get('operation',i.operationId),observerCursor:Number(c.store.db.prepare('SELECT COALESCE(MAX(seq),0) AS n FROM events').get().n)}));
   add('questions_list','List unresolved task questions.',{goalId:str},[],false,i=>c.store.all('task').filter(t=>(!i.goalId||t.goalId===i.goalId)&&['awaiting_supervisor','awaiting_user'].includes(t.status)).map(t=>({taskId:t.id,goalId:t.goalId,status:t.status,question:t.questions.at(-1)})));
-  add('question_answer','Answer within scope; DeepSeek-only requires a user answer.',{taskId:str,answer:str,responder:{...str,enum:['user','codex']}},['taskId','answer','responder'],true,(i,k)=>c.answer(i,k));
+  add('question_answer','Answer within scope; DeepSeek-only requires a user answer.',{taskId:str,answer:str,expectedQuestionId:str,expectedGoalHash:str,responder:{...str,enum:['user','codex']}},['taskId','answer','responder'],true,(i,k)=>c.answer(i,k));
   add('task_priority','Set scheduling priority with a recorded reason.',{taskId:str,priority:{...str,enum:['blocking','normal','background']},reason:str},['taskId','priority','reason'],true,(i,k)=>c.setPriority(i,k));
   add('queue_get','Inspect execution queue and separate review inbox.',{goalId:str},[],false,i=>{const p=c.effectivePriorities(),tasks=c.store.all('task').filter(t=>!i.goalId||t.goalId===i.goalId);return {execution:tasks.filter(t=>['queued','suspended','running','uncertain','codex_ready','codex_active'].includes(t.status)).sort((a,b)=>p.get(b.id)-p.get(a.id)||a.sequence-b.sequence).map(t=>({...c.getTask(t.id),effectivePriority:p.get(t.id)})),review:tasks.filter(t=>['awaiting_review','awaiting_legacy_review','legacy_reviewing','ready_to_integrate'].includes(t.status))};});
-  add('work_control','Pause, stop or resume a goal or task. Limits never refresh.',{goalId:str,taskId:str,action:{...str,enum:['pause','stop','resume']}},['action'],true,(i,k)=>{if(!!i.goalId===!!i.taskId)throw Error('Provide exactly one goalId or taskId');return c.control(i,k);});
+  add('work_control','Pause, stop or resume a goal or task. Limits never refresh.',{goalId:str,taskId:str,expectedControlBinding:str,action:{...str,enum:['pause','stop','resume']}},['action'],true,async(i,k)=>{
+   if(!!i.goalId===!!i.taskId)throw Error('Provide exactly one goalId or taskId');
+   if(config.beta&&i.goalId&&i.action==='resume'&&!c.store.db.prepare('SELECT 1 FROM commands WHERE key=?').get(k)){
+    const goal=c.store.get('goal',i.goalId);
+    if(isNativeExecution(goal.manifest)&&['paused','stopped'].includes(goal.status)){
+     if(c.now()>=goal.deadline)throw Error('Original deadline exceeded');
+     const binding=controlBinding(c.store,goal);
+     if(i.expectedControlBinding!==undefined&&i.expectedControlBinding!==binding)throw Error('Control state changed. Refresh the inbox.');
+     // A different compatible build can retain exact approvals and check paths
+     // while requiring a fresh local sandbox probe before dispatch resumes.
+     await c.preflightExecution({goalId:goal.id,hash:goal.hash},{config,checksFactory:worker.checksFactory,resumeBinding:binding});
+     if(controlBinding(c.store,c.store.get('goal',goal.id))!==binding)throw Error('Control state changed. Refresh the inbox.');
+    }
+   }
+   return c.control(i,k);
+  });
   registerBacklogTools({add,c,worker,beta:config.beta??c.beta});
   add('reviewer_reserve','Reserve one bounded read-only reviewer assignment.',{taskId:str},['taskId'],true,(i,k)=>c.reserveReviewer(i,k));
   add('reviewer_finish','Save evidence from a reserved native reviewer; main Codex retains acceptance.',{reservationId:str,result:obj,error:str},['reservationId'],true,(i,k)=>c.finishReviewer(i,k));

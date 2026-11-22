@@ -23,11 +23,16 @@ async function fixture(t){
   await mkdir(root,{recursive:true,mode:0o700});
   const c=new Coordinator({root,beta:name==='Mosaic Beta',...(name==='Mosaic Beta'?{selectedHost:'codex'}:{}),workerProfile:name==='Mosaic Beta'?{baseUrl:'http://127.0.0.1:1/v1',model:'fixture',displayName:'Fixture',revision:'fixture',streaming:false}:undefined});
   const dispatcher=new Dispatcher({c});
-  if(name==='Mosaic')delete dispatcher.definitions.get('observer_timeline').inputSchema.properties.recent;
+  if(name==='Mosaic'){
+   delete dispatcher.definitions.get('observer_timeline').inputSchema.properties.recent;
+   dispatcher.definitions.delete('observer_current_activity');
+  }
+  const reads=[],invoke=dispatcher.invoke.bind(dispatcher);
+  dispatcher.invoke=(name,...args)=>{reads.push(name);return invoke(name,...args);};
   const api=await startApi({dispatcher,token:'a'.repeat(64),viewerToken:'b'.repeat(64),headless:true});
   // Only viewer credentials exist: discovery must never need operator access.
   await writeFile(path.join(root,'viewer-connection.json'),JSON.stringify({url:api.url,token:'b'.repeat(64),role:'viewer'}),{mode:0o600});
-  services.push({c,api,root});
+  services.push({c,api,root,reads,dispatcher});
  }
  const run=(...args)=>exec(process.execPath,['src/beta/cli.mjs','--home',home,'status','--once',...args],{timeout:10000});
  const goal=(c,label)=>{const g=c.prepareGoal({submissionId:label.replaceAll(" ","-"),objective:label,acceptance:['Evidence'],environment:'fixture'},'prepare');c.activateGoal({goalId:g.id,hash:g.hash},'activate');return g;};
@@ -120,6 +125,23 @@ test('current shortcut ignores expired active labels and deadline housekeeping a
  assert.match(result.notice,/No work currently running/);
  assert.equal(f.core.c.store.get('goal',old.id).status,'active');
  assert.equal((await invoke('observer_snapshot')).source,'beta');
+});
+
+test('Current uses compact viewer activity where advertised and falls back after a downgrade',async t=>{
+ const f=await fixture(t),now=Date.now();
+ f.core.c.now=()=>now-1000;f.beta.c.now=()=>now;
+ const core=f.goal(f.core.c,'Older core activity'),beta=f.goal(f.beta.c,'Newer beta activity');
+ const observer=observerClient(locations(f.home,true));
+ assert.equal((await observer.current()).goalId,beta.id);
+ assert.deepEqual(f.beta.reads,['observer_snapshot','observer_current_activity']);
+ assert.deepEqual(f.core.reads,['observer_snapshot','observer_timeline']);
+ f.beta.dispatcher.definitions.delete('observer_current_activity');
+ f.beta.reads.length=0;f.core.reads.length=0;
+ f.core.c.now=()=>now+2000;
+ f.core.c.emit('task.result',core.id,null,{summary:'More recent saved work'});
+ assert.equal((await observer.current()).goalId,core.id);
+ assert.deepEqual(f.beta.reads,['observer_snapshot','observer_timeline']);
+ assert.deepEqual(f.core.reads,['observer_snapshot','observer_timeline']);
 });
 
 test('current shortcut picks the freshest genuinely running worker and honors explicit source',async t=>{

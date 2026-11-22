@@ -2,17 +2,18 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import os from 'node:os';
 import path from 'node:path';
-import {mkdtemp,mkdir,writeFile,rm,realpath} from 'node:fs/promises';
+import {chmod,mkdtemp,mkdir,readFile,writeFile,rm,realpath} from 'node:fs/promises';
 import {Coordinator} from '../src/harness/coordinator.mjs';
 import {Dispatcher} from '../src/harness/tools.mjs';
 import {Integration} from '../src/harness/integration.mjs';
 import {normalizeReviewPolicy,normalizeVerdict} from '../src/harness/review/contracts.mjs';
 import {normalizeGoal,digest} from '../src/harness/contracts.mjs';
 import {git} from '../src/project/process.mjs';
+import {Workspace} from '../src/project/workspace.mjs';
 
 async function fixture(t,{beta=false,mode='codex_only',selectedHost='cursor',reviewPolicy}={}){
  const root=await realpath(await mkdtemp(path.join(os.tmpdir(),'pb12-review-'))),repo=path.join(root,'repo');
- await mkdir(repo);await writeFile(path.join(repo,'file.txt'),'base\n');await writeFile(path.join(repo,'check.mjs'),'');await writeFile(path.join(repo,'.env'),'SECRET_CANARY_DO_NOT_EXPOSE');await writeFile(path.join(repo,'excluded.txt'),'EXCLUDED_CANARY_DO_NOT_EXPOSE');
+ await mkdir(repo);await writeFile(path.join(repo,'file.txt'),'base\n');await writeFile(path.join(repo,'check.mjs'),'// UNCHANGED_REVIEW_CANARY\n');await writeFile(path.join(repo,'.env'),'SECRET_CANARY_DO_NOT_EXPOSE');await writeFile(path.join(repo,'excluded.txt'),'EXCLUDED_CANARY_DO_NOT_EXPOSE');
  await git(repo,'init','-q');await git(repo,'add','.');await git(repo,'-c','user.name=Fixture','-c','user.email=f@example.invalid','commit','-qm','base');
  const c=new Coordinator({root:path.join(root,'state'),beta,selectedHost});
  const project={repo,baseCommit:await git(repo,'rev-parse','HEAD'),readPaths:['file.txt','check.mjs'],writePaths:['file.txt'],checks:[{id:'unit',argv:[process.execPath,'check.mjs'],timeoutMs:1000}]};
@@ -20,29 +21,108 @@ async function fixture(t,{beta=false,mode='codex_only',selectedHost='cursor',rev
  let checksPass=true;
  const integration=new Integration({c,checksFactory:()=>({verify:async()=>({fixture:true}),run:async specs=>specs.map(x=>({id:x.id,passed:checksPass,code:checksPass?0:1,stdout:'fixture check',stderr:''}))})});
  t.after(async()=>{c.close();await rm(root,{recursive:true,force:true});});
- return {c,raw,project,integration,setChecks:pass=>{checksPass=pass;},async candidate(){
+ return {c,raw,project,integration,setChecks:pass=>{checksPass=pass;},async candidate({content='candidate\n',executable=false}={}){
   const goal=c.prepareGoal(raw,'prepare');c.activateGoal({goalId:goal.id,hash:goal.hash},'activate');
   const task=c.submitTask({goalId:goal.id,submissionId:'task',kind:'coding',actor:'codex',objective:'Change file',acceptance:['checked']},'task');
   const started=await integration.startNative({taskId:task.id,layout:'candidate_v1'},'start');
-  await writeFile(path.join(started.native.worktree,'file.txt'),'candidate\n');
+  const file=path.join(started.native.worktree,'file.txt');
+  await writeFile(file,content);
+  if(executable)await chmod(file,0o755);
   const finished=await integration.finishNative({taskId:task.id,summary:'Changed fixture'},'finish');
   return {goal,task:finished};
  }};
 }
 
+async function acceptPrivateReview(f,goal){
+ const {binding}=(await f.c.reviewService.inbox({goalId:goal.id})).items[0];
+ const ticket=await f.c.reviewService.reserve(binding,'reserve');
+ await f.c.reviewService.submit({...binding,ticketId:ticket.ticketId,verdict:{decision:'accept',feedback:'Fixture host checked the supplied evidence',findings:[]}},'submit');
+}
+
+test('private bound review compares the target checkpoint with the checked snapshot',async t=>{
+ const f=await fixture(t,{beta:true}),{goal,task}=await f.candidate();
+ assert.equal(goal.manifest.project.behavioralChecks,undefined);
+ await acceptPrivateReview(f,goal);
+ const original=Workspace.prototype.checkpoint;
+ t.mock.method(Workspace.prototype,'checkpoint',async function(stage){
+  const checked=await original.call(this,stage);
+  return stage.id.startsWith('task-')?{...checked,commit:f.project.baseCommit}:checked;
+ });
+ await assert.rejects(f.integration.accept({taskId:task.id,feedback:'Import'},'integrate'),/Commit bytes differ from the checked snapshot/);
+ assert.equal(f.c.getTask(task.id).status,'ready_to_integrate');
+ assert.equal(f.c.getGoal(goal.id).integration.journalId,undefined);
+});
+
+test('bound import reads exact checkpoint bytes and executable mode',async t=>{
+ const f=await fixture(t,{beta:true}),content='\ufeffexact café\n\n  \n',{goal,task}=await f.candidate({content,executable:true});
+ await acceptPrivateReview(f,goal);
+ t.mock.method(f.integration,'changes',async()=>{throw Error('Accepted import requested editable worktree content');});
+ const accepted=await f.integration.accept({taskId:task.id,feedback:'Import'},'integrate');
+ assert.equal(accepted.status,'accepted');
+ assert.equal(await readFile(path.join(accepted.integration.worktree,'file.txt'),'utf8'),content);
+ assert.equal((await git(accepted.integration.worktree,'ls-tree',accepted.integration.commit,'--','file.txt')).split(' ')[0],'100755');
+});
+
+test('review reservation rejects source text that differs from its captured snapshot',async t=>{
+ const f=await fixture(t,{beta:true}),{goal,task}=await f.candidate();
+ const {binding}=(await f.c.reviewService.inbox({goalId:goal.id})).items[0];
+ const original=Workspace.prototype.readFiles,file=path.join(task.native.worktree,'file.txt');
+ t.mock.method(Workspace.prototype,'readFiles',async function(files){
+  const saved=await readFile(file);
+  await writeFile(file,'second fixture revision\n');
+  try{return await original.call(this,files);}finally{await writeFile(file,saved);}
+ });
+ await assert.rejects(f.c.reviewService.reserve(binding,'reserve'),/Review file content differs from the checked snapshot/);
+ assert.equal(f.c.getTask(task.id).reviews,0);
+});
+
 for(const beta of [false,true])test(`host review exact candidate, replay and integration (${beta?'beta':'core'})`,async t=>{
  const f=await fixture(t,{beta}),{c}=f,{goal,task}=await f.candidate();
  const inbox=await c.reviewService.inbox({goalId:goal.id,limit:1});assert.equal(inbox.items.length,1);
  const {binding}=inbox.items[0],ticket=await c.reviewService.reserve({taskId:task.id,...binding},'reserve');
+ assert.deepEqual(inbox.items[0].disclosure,{
+  recipient:{source:'host',hostId:'cursor',mayUseCloudService:true},
+  files:['check.mjs','file.txt'],
+  checks:[{id:'unit',stdoutCharacters:13,stderrCharacters:0}],
+  includesTaskSummary:false,
+ });
+ assert.deepEqual(ticket.disclosure,inbox.items[0].disclosure);
+ assert.deepEqual(ticket.evidence.files.map(file=>file.path),ticket.disclosure.files);
+ assert.match(ticket.evidence.files[0].content,/UNCHANGED_REVIEW_CANARY/);
+ assert.equal(ticket.evidence.files[1].content,'candidate\n');
+ assert.equal(ticket.evidence.checks[0].stdout,'fixture check');
+ assert.ok(!JSON.stringify(inbox).includes('UNCHANGED_REVIEW_CANARY'));
+
  assert.ok(!JSON.stringify(ticket).includes('SECRET_CANARY_DO_NOT_EXPOSE'));assert.ok(!JSON.stringify(ticket).includes('EXCLUDED_CANARY_DO_NOT_EXPOSE'));
  assert.equal(ticket.reviewer.model,null);assert.equal(ticket.reviewer.provenance,'unknown');
  const input={ticketId:ticket.ticketId,...binding,verdict:{decision:'accept',feedback:'Checked fixture meets goal',findings:[]}};
  const accepted=await c.reviewService.submit(input,'submit');assert.equal(accepted.status,'ready_to_integrate');
+ assert.deepEqual(await c.reviewService.reserve(binding,'reserve'),ticket);
+ await assert.rejects(c.reviewService.reserve(binding,'reserve-after-acceptance'),/awaiting.*review/i);
+ assert.equal(c.reviewService.budget(goal).spent,1);
  assert.deepEqual(await c.reviewService.submit(input,'submit-again'),accepted);
  await assert.rejects(()=>c.reviewService.submit({...input,verdict:{...input.verdict,feedback:'Conflict'}},'conflict'),/conflict/i);
  const integrated=await f.integration.accept({taskId:task.id,feedback:'Import'},'integrate');assert.equal(integrated.status,'accepted');
  assert.equal((await f.integration.accept({taskId:task.id,feedback:'Import'},'integrate-again')).integration.commit,integrated.integration.commit);
  assert.equal(c.getTask(task.id).reviews,1);
+});
+
+test('a historical outstanding ticket cannot replace the saved acceptance of a coding candidate',async t=>{
+ const f=await fixture(t,{beta:true}),{c}=f,{goal,task}=await f.candidate();
+ const {binding}=(await c.reviewService.inbox({goalId:goal.id})).items[0];
+ const ticket=await c.reviewService.reserve(binding,'reserve');
+ const reservation=c.store.get('review_ticket',ticket.ticketId);
+ const verdict={decision:'accept',feedback:'The checked candidate meets the fixture goal',findings:[]};
+ await c.reviewService.submit({...binding,ticketId:ticket.ticketId,verdict},'submit');
+ // Earlier builds could leave a second reservation after saving acceptance.
+ const extra={...reservation,id:'historical-review',requestId:'historical-request'};
+ const ready=c.getTask(task.id);
+ ready.reviews++;
+ c.store.put('review_ticket',extra);c.store.put('task',ready);
+ await assert.rejects(c.reviewService.submit({...binding,ticketId:extra.id,verdict},'late-submit'),/awaiting.*review/i);
+ assert.deepEqual(c.getTask(task.id).reviewAcceptance,ready.reviewAcceptance);
+ assert.deepEqual(c.store.get('review_ticket',extra.id),extra);
+ assert.equal(c.reviewService.budget(goal).spent,2);
 });
 
 test('legacy acceptance tools and integration cannot bypass new common review',async t=>{

@@ -1,14 +1,14 @@
 import {normalizeSettings,validateSettingsCredentials} from './settings.mjs';
 import {workerEndpoint} from '../harness/worker-profile.mjs';
-import {hostedWorkerChoices,hostedWorkerPresets,readBearerKey} from './hosted-worker-presets.mjs';
+import {askWorkerEndpoint,hostedWorkerChoices,hostedWorkerPresets,readBearerKey} from './hosted-worker-presets.mjs';
 
 const categories=['general','backend','frontend','tests','docs','design'];
 const yes=value=>/^y(es)?$/i.test(value);
 function integer(raw,min,max,label){const n=Number(raw);if(!/^\d+$/.test(String(raw))||!Number.isSafeInteger(n)||n<min||n>max)throw Error('Invalid '+label);return n;}
 
 /** Also check rendered scalar values: JSON serialization can escape an already escaped key twice. */
-export async function validateMultiWorkerCredentials(settings,proposedCredentials){
- const credentials=await validateSettingsCredentials(null,settings,proposedCredentials),secrets=Object.values(credentials.entries).flatMap(value=>[value,JSON.stringify(value).slice(1,-1)]);
+export async function validateMultiWorkerCredentials(settings,proposedCredentials,options){
+ const credentials=await validateSettingsCredentials(null,settings,proposedCredentials,options),secrets=Object.values(credentials.entries).flatMap(value=>[value,JSON.stringify(value).slice(1,-1)]);
  const visit=value=>{
   if(typeof value==='string'){
    for(let decoded=value;;){
@@ -25,7 +25,7 @@ export async function validateMultiWorkerCredentials(settings,proposedCredential
 }
 
 /** Collect only static numbered choices: a later key may occur in any earlier identity. */
-export async function collectMultiWorkerSetup(ask,output,{hostId,execution,nativeCheckRuntime,createProfile}){
+export async function collectMultiWorkerSetup(ask,output,{hostId,execution,nativeCheckRuntime,createProfile,retryEndpoint=false}){
  output.write('Configure two or three existing compatible workers. Each may run on this Mac, another computer, or a hosted API. Copy its API base URL and exact model ID from its configuration. localhost means this Mac. No server discovery, model installation or inference happens here.\nSpecialties are chosen routes, not proof a model is best at that work. Unassigned categories use the default worker.\n');
  const count=integer(await ask('How many workers? 2 or 3 [3]: ')||'3',2,3,'worker count'),providers=[],entries={},routes=new Map();
  for(let i=1;i<=count;i++){
@@ -38,7 +38,7 @@ ${hostedWorkerChoices(4)}
 Choose for worker ${i} [1]: `)||'1',1,3+hostedWorkerPresets.length,'worker location');
   if(location===2)output.write('Use an address reachable from this Mac. localhost refers to this Mac, not the other computer.\n');
   const preset=hostedWorkerPresets[location-4];
-  const baseUrl=preset?.baseUrl??await ask(`Worker ${i} API base URL: `);
+  const baseUrl=preset?.baseUrl??await askWorkerEndpoint(ask,output,`Worker ${i} API base URL: `,{retry:retryEndpoint});
   const model=await ask(`Worker ${i} Model ID: `);
   const needsKey=preset!==undefined||yes(await ask(`Worker ${i} does this endpoint require an API bearer key? [y/N] `));
   const id='worker-'+i,credentialRef=needsKey?id+'-key':null;

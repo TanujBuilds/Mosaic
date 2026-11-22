@@ -8,6 +8,10 @@ Mosaic's own source remains under its existing [MIT license](LICENSE), copyright
 
 Archives built with Node 24.22.3 carry the supplemental runtime notices and their index under `payload/runtime/notices/`. Both Node runtimes retain the complete upstream top-level `LICENSE`. The remainder of this document records the dated beta184/185 audit and its evidence.
 
+## Production lock as of Beta .220
+
+Compared with the lock audited below, the 95 production installation locations are the same. Hono is now **4.13.19** and `@hono/node-server` is **2.1.11**. The Beta .220 payload carries both MIT licenses at the same locations shown below. Hono still carries the credited `Simplify` declaration, and the supplemental notices preserve that credit and the available type-fest terms. See the [current lockfile](package-lock.json) for exact dependency integrity pins and the [supplemental notice index](distribution/notices/INDEX.md) for attribution provenance.
+
 ## Where the complete notices are
 
 Paths beginning with `payload/` below describe the extracted candidate archive; they are not files in a source-only checkout.
@@ -22,7 +26,7 @@ Paths beginning with `payload/` below describe the extracted candidate archive; 
 
 Both Node notice copies are the complete 157,609-byte upstream top-level `LICENSE`, SHA-256 `5888dbb9a1d2b18f2c3e6c5f6af1b39de658372b402a0577b002777f14c62ace`. They include Node's MIT notice, copyright Node.js contributors/Joyent, and the upstream third-party sections. Preserve the entire files, including disclaimers and any referenced terms. Additional source-level notice applicability remains an open finding below.
 
-## Production npm packages
+## Production npm packages in Beta .184 and .185
 
 The only direct production dependency is `@modelcontextprotocol/sdk` 1.32.2 (MIT; copyright (c) 2024 Anthropic, PBC). Its dependency tree is separately enumerated: 95 installation locations, 92 distinct name/version pairs. All 95 locations and their included root notices are present in both accepted archives. Repeated `content-type` 2.1.0 rows identify distinct nested copies under body-parser, express, negotiator and type-is.
 

@@ -167,7 +167,9 @@ for(const resource of [null,'group',[],{}, {capacityGroup:'other',groupLimit:4},
 for(const status of ['reserved','failed'])test('parallel Worker supervisor holds malformed '+status+' API ticket without dispatch or repeat spend',{timeout:10000},async t=>{
  const server=await reviewEndpoint(t),f=fixture(t,{baseUrl:server.baseUrl}),g=f.goal('corrupt-supervisor',4,4,{reviewPolicy:{version:1,source:'api',reviewer:profileIdentity(f.a),fallback:'wait'}}),a=f.task(g,'corrupt-review');
  f.c.claimNext('owner');f.c.completeTask(a.id,{content:'Candidate answer'},'owner',{reviewRequired:true});
- const binding=(await f.c.reviewService.inbox({goalId:g.id})).items[0].binding,reservation=await f.c.reviewService.reserve(binding,'corrupt-ticket'),ticket=f.c.store.get('review_ticket',reservation.ticketId);
+ const binding=(await f.c.reviewService.inbox({goalId:g.id})).items[0].binding;
+ const ticket={id:'saved-api-ticket',requestId:'saved-api-request',taskId:a.id,goalId:g.id,binding,status:'reserved',reviewer:{source:'api'}};
+ const saved=f.c.store.get('task',a.id);saved.reviews=1;f.c.store.put('task',saved);f.c.store.put('review_ticket',ticket);
  f.c.store.db.prepare('INSERT INTO requests VALUES(?,?,?,?,?,?)').run(ticket.requestId,a.id,'api-review-corrupt','apiReview',status,'{malformed');
  const before=f.c.store.db.prepare('SELECT * FROM requests WHERE id=?').get(ticket.requestId),worker=new Worker({c:f.c,owner:'supervisor',config:{environment:'fixture'}});
  f.c.store.waitForChange=async()=>{};

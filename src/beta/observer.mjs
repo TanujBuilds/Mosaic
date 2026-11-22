@@ -15,6 +15,7 @@ function clock(at){
 }
 const labels={waiting:'Waiting',running:'Running',codex_active:'Running',queued:'Queued',codex_ready:'Ready in Codex',awaiting_review:'Waiting for review',awaiting_legacy_review:'Waiting for review',legacy_reviewing:'Reviewing',awaiting_supervisor:'Waiting for Codex',awaiting_user:'Waiting for user',blocked:'Blocked',uncertain:'Unknown',accepted:'Accepted',ready_to_integrate:'Ready to integrate',completed:'Complete',stopped:'Stopped',partial:'Partial',failed:'Failed',cancelled:'Cancelled',draft:'Prepared',active:'Active',paused:'Paused'};
 const status=value=>labels[value]??clean(value).replaceAll('_',' ');
+const hostNames=new Map([['codex','Codex'],['claude-code','Claude Code'],['cursor','Cursor'],['antigravity','Antigravity']]);
 const reviewModes={collaborative:'operator',codex_only:'operator',overnight_review:'legacy',deepseek_only:'checks'};
 function goalFor(state){
  return state.snapshot?.goals.find(g=>g.id===state.goalId)??state.snapshot?.goals.find(g=>g.status==='active')??state.snapshot?.goals[0];
@@ -35,7 +36,7 @@ export function actorRows(state){
  const {snapshot}=state,tasks=snapshot.tasks.filter(task=>task.goalId===goal.id),rows=[];
  const agents=(snapshot.agents??[]).filter(agent=>agent.goalId===goal.id);
  const workerName=goal.workerProfile?.displayName??'API worker';
- const hostNames={'codex':'Codex','claude-code':'Claude Code',cursor:'Cursor',antigravity:'Antigravity'},hostName=hostNames[goal.hostId]??'Codex';
+ const hostName=hostNames.get(goal.hostId)??'Codex';
  const reviewPolicy=goal.reviewPolicy??reviewModes[goal.mode];
  for(const task of tasks){
   const native=task.actor==='codex',reports=agents.filter(agent=>agent.taskId===task.id&&agent.actor==='codex'&&agent.role!=='reviewer');
@@ -55,7 +56,7 @@ export function actorRows(state){
   if(goal.reviewSelection){
    const review=task.review;
    if(!review||review.status==='inactive')continue;
-   const name=review.source==='host'?hostNames[review.hostId]??'Host · identity unknown':review.source==='api'?'API review · '+review.providerId:'Reviewer · identity unknown';
+   const name=review.source==='host'?hostNames.get(review.hostId)??'Host · identity unknown':review.source==='api'?'API review · '+review.providerId:'Reviewer · identity unknown';
    const report=review.source==='host'&&review.status==='reserved'?agents.filter(a=>a.taskId===task.id&&a.role==='reviewer'&&a.hostId===review.hostId&&!a.stale&&a.lastReport?.at>=review.at).sort((a,b)=>b.lastReport.at-a.lastReport.at)[0]:null;
    const running=report?.lastReport.status==='running';
    const state=running?'running':report?.lastReport.status==='blocked'?'blocked':review.status==='reserved'&&review.source==='host'?'waiting':review.status;
@@ -126,6 +127,7 @@ function clip(value,size){
  return wrapped.length>1?(size===1?'':lines(value,size-1)[0].trimEnd())+'…':wrapped[0];
 }
 const pad=(value,size)=>{const text=clip(value,size);return text+' '.repeat(Math.max(0,size-cells(text)));};
+const keysFor=(width,...options)=>options.find(value=>cells(value)<=width)??options.at(-1);
 const accent=value=>'\x1b[36m'+value+'\x1b[0m';
 const statusColor=(value,state)=>`\x1b[${['blocked','failed'].includes(state)?31:['running','active','accepted','codex_active','completed'].includes(state)?32:33}m${value}\x1b[0m`;
 
@@ -171,7 +173,7 @@ function compactMain(state,goal,{width,height,color,selected,offset}){
   for(const event of state.events.slice(Math.max(0,end-room),end))
    frame.push(first(width>=42?`[${event.provenance}] ${eventText(event)}`:eventText(event)));
  }else if(!state.stale)frame.push(first('Idle · no goals'));
- const footer=first(width<16?'↑↓ a g q':'↑↓ Enter a g q');
+ const footer=first(keysFor(width,'↑↓ Enter a g n Needs You b Queue c Connections v Activity q','↑↓ ↵ a g n b c v q','n b c v q'));
  return [...frame.slice(0,height-1),footer].join('\n');
 }
 
@@ -234,7 +236,8 @@ function polishedMain(state,goal,{width,height,color,selected,offset}){
   }
   out.push(...(feed.length?feed:[quiet(clip(state.events.length?'No handoffs fit. Enlarge the terminal to see the feed.':'Waiting for the first handoff.',space))]).slice(0,room));
  }
- const keys=space>=70?'↑↓ select  Enter evidence  a current  g goals  [ older  ] newer  q quit':'↑↓ Enter  a current  g goals  [/] feed  q quit';
+ const keys=keysFor(space,'↑↓ Enter  a Current  g Goals  n Needs You  b Queue  c Connections  v Activity  q quit',
+  '↑↓ Enter a g n Needs You b Queue c Connections v Activity q quit','↑↓ Enter a g n b c v q quit');
  const body=out.slice(0,height-3);
  while(body.length<height-3)body.push('');
  return [...body,'',quiet('─'.repeat(space)),quiet(clip(keys,space))].map(line=>margin+line).join('\n');
@@ -277,11 +280,141 @@ function polishedPicker(state,{width,height,color,picker}){
  return [...body,...tail].map(line=>margin+line).join('\n');
 }
 
-export function renderTerminal(state,{width=80,height=36,color=false,selected=0,picker=null,detail=null,detailTitle='Saved evidence',detailOffset=0,offset=0,interactive=false}={}){
+const connectionActions={
+ e:{title:'Edit setup',command:'mosaic setup',details:'Review the configuration in setup and approve the changes there.'},
+ h:{title:'Connection help',command:'mosaic connect',details:'Follow the registration steps in your coding app and verify the registry_list result there.'}
+};
+
+function connectionLines(snapshot){
+ const connections=snapshot?.connections;
+ if(!connections)return [['Configuration unavailable','Run mosaic setup to review your connections.']];
+ const {host,worker}=connections,hostName=hostNames.get(host?.id);
+ const hostAt=host?.lastConnection?.kind==='registry_call'?host.lastConnection.at:null;
+ const workerAt=worker?.lastConnection?.kind==='worker_response'?worker.lastConnection.at:null;
+ return [
+  ['Coding app',hostName?hostName+' · configured':'No coding app selected',
+   ...(hostName?[Number.isFinite(hostAt)?'Bridge registry call · '+clock(hostAt):'Last connection · unverified']:[])],
+  ['Default API worker',worker?worker.displayName+' · configured':'No API worker configured',
+   ...(worker?[Number.isFinite(workerAt)?'Last response · '+clock(workerAt):'Last response · unverified']:[])]
+ ];
+}
+
+function lifecycle(task,nativeRow){
+ if(task.status==='codex_active')return nativeRow?.status??'Native activity unknown';
+ if(task.status==='running'&&task.phase==='checks')return 'Running checks';
+ if(task.status==='blocked'&&checksFailed(task))return 'Blocked · checks failed';
+ if(task.status==='awaiting_review'||task.status==='awaiting_legacy_review')return 'Needs review';
+ if(task.status==='accepted')return task.outcome?.integrated?'Completed · integrated':'Completed';
+ if(task.status==='suspended')return 'Waiting';
+ return status(task.status);
+}
+
+function secondaryScreen(state,goal,{view,width,height,color,interactive,activitySelected,offset}){
+ const wide=interactive&&width>=55&&height>=24,margin=wide?'  ':'',space=wide?Math.min(104,width-4):width;
+ const trim=value=>clip(value,space);
+ const heading=value=>color?accent(trim(value)):trim(value);
+ const isConnections=view==='connections',title=isConnections?'Connections':'Activity';
+ const out=[heading('Mosaic Beta'),heading(title)];
+ if(state.stale){
+  const stale=state.snapshot?'Disconnected · saved view is stale':'Disconnected · coordinator state unknown';
+  out.push(trim(space>=43?stale:state.snapshot?(space>=20?'Disconnected · stale':'Stale view'):'Disconnected'));
+ }
+ if(wide&&state.snapshot?.sourceLabel)out.push(trim('Watching '+state.snapshot.sourceLabel));
+ const keys=isConnections
+  ?keysFor(space,'r Diagnose/Repair  e Edit setup  h Help  Esc  q','r Repair e h Esc q','r e h q')
+  :keysFor(space,'↑↓ Assignments  [/] Handoffs  c Connections  Esc  q','↑↓ [/] c Esc q','↑↓ c q');
+ const bodyHeight=height-(interactive?1:0);
+ if(isConnections){
+  const groups=connectionLines(state.snapshot);
+  if(wide&&space>=72&&groups.length===2){
+   const left=Math.floor((space-3)/2),right=space-left-3;
+   for(let i=0;i<Math.max(groups[0].length,groups[1].length);i++)
+    out.push(pad(groups[0][i]??'',left)+'   '+clip(groups[1][i]??'',right));
+  }else{
+   for(const group of groups)for(const text of group)out.push(...lines(text,space));
+  }
+  if(state.snapshot?.source==='beta')out.push('',trim('r Diagnose or repair a connection'));
+  out.push('',...Object.entries(connectionActions).flatMap(([key,action])=>
+   lines((interactive?key+' ':'')+action.title+' · '+action.command,space)));
+ }else if(goal){
+  out.push(trim(status(goal.status)+' · '+goal.objective));
+  const tasks=state.snapshot.tasks.filter(task=>task.goalId===goal.id);
+  const nativeRows=tasks.some(task=>task.status==='codex_active')?new Map(actorRows(state).map(row=>[row.id,row])):null;
+  const room=Math.max(0,bodyHeight-out.length),taskRoom=Math.max(0,Math.floor((room-2)*0.67));
+  const selected=Math.max(0,Math.min(activitySelected,tasks.length-1));
+  const start=Math.max(0,Math.min(selected-Math.floor(taskRoom/2),tasks.length-taskRoom));
+  out.push(heading(taskRoom&&tasks.length>taskRoom?`Assignments ${start+1}–${start+taskRoom}/${tasks.length}`:'Assignments'));
+  for(const [index,task] of tasks.slice(start,start+taskRoom).entries()){
+   const marker=interactive?(index+start===selected?'› ':'  '):'';
+   const nativeRow=task.status==='codex_active'?nativeRows?.get(task.id):null;
+   const label=lifecycle(task,nativeRow),badge=clip(label,space-cells(marker));
+   const tone=color?statusColor(badge,nativeRow?.state??task.status):badge;
+   const available=space-cells(marker)-cells(badge)-3;
+   out.push(marker+tone+(available>0?' · '+clip(task.objective,available):''));
+  }
+  if(!tasks.length)out.push(trim('No saved assignments'));
+  if(wide)out.push('');
+  out.push(heading('Handoff feed'));
+  if(state.historyPending)out.push(trim('Loading saved handoffs…'));
+  const end=Math.max(0,state.events.length-offset),feedRoom=Math.max(0,bodyHeight-out.length);
+  if(!state.events.length&&!state.historyPending)out.push(trim('No saved handoffs'));
+  for(const event of state.events.slice(Math.max(0,end-feedRoom),end)){
+   const text=eventText(event);
+   out.push(trim(wide?`${clock(event.at)} [${event.provenance}] ${text}`:text));
+  }
+ }else{
+  out.push(trim(state.snapshot?'No saved goals':'Saved activity unavailable'));
+ }
+ const visible=out.slice(0,bodyHeight);
+ if(interactive){
+  while(wide&&visible.length<bodyHeight)visible.push('');
+  visible.push(trim(keys));
+ }
+ return visible.map(line=>margin+line).join('\n');
+}
+
+function ownerScreen(state,goal,{view,width,height,color,interactive,pick}){
+ const snapshot=state.snapshot,inbox=view==='inbox';
+ const owned=snapshot?.source==='beta'||snapshot?.needsYou!==undefined;
+ const entries=inbox?snapshot?.needsYou?.items??[]:snapshot?.tasks?.filter(task=>task.goalId===goal?.id)??[];
+ const title=inbox?'Needs You':'Queue';
+ const out=[color?accent(title):title];
+ if(state.stale)out.push('Disconnected · saved state may be stale');
+ if(!owned)out.push('Open the Mosaic Beta observer for owner actions.');
+ if(!inbox&&goal)out.push(`${status(goal.status)} · ${goal.taskCount}/${goal.maxTasks} assignments · deadline ${clock(goal.deadline)}`,
+  clean(goal.objective));
+ if(!entries.length)out.push(inbox?'No saved decisions in this view.':'No saved assignments in this view.');
+ if(inbox&&snapshot?.needsYou?.hasMore)out.push('Showing the latest 50 decisions.');
+ if(!inbox&&snapshot?.overflow?.tasks)out.push('Some saved assignments are outside this view.');
+ const footer=inbox?keysFor(width,'↑↓ Select  Enter Review  b Queue  Esc Back  q Quit','↑↓ ↵ b Esc q','↵ Esc'):
+  keysFor(width,'Enter Details  f Add  m Morning report  p Pause  s Stop  u Resume  Esc',
+   '↵ Details f Add m Report p Pause s Stop u Resume Esc','↵ f m p s u Esc');
+ const room=Math.max(0,height-out.length-1);
+ if(entries.length) {
+  const chosen=Math.max(0,Math.min(pick,entries.length-1));
+  const selected=entries[chosen];
+  const details=inbox&&room>=4?lines(selected.detail,width).slice(0,2):[];
+  const rows=Math.max(1,room-details.length-(details.length?1:0));
+  const start=Math.max(0,Math.min(chosen,entries.length-rows));
+  for(const [index,entry] of entries.slice(start,start+rows).entries()){
+   const prefix=interactive?(start+index===chosen?'› ':'  '):'';
+   out.push(prefix+(inbox?`${status(entry.kind)} · ${entry.title}`:`${status(entry.status)} · ${entry.priority??'normal'} · ${entry.objective}`));
+  }
+  if(details.length)out.push('',...details);
+ }
+ const body=out.slice(0,height-(interactive?1:0)).map(line=>clip(line,width));
+ if(interactive)body.push(clip(footer,width));
+ return body.join('\n');
+}
+
+export function renderTerminal(state,{width=80,height=36,color=false,selected=0,picker=null,detail=null,detailTitle='Saved evidence',detailOffset=0,offset=0,activitySelected=0,view=null,interactive=false,ownerSelected=0}={}){
  width=Math.max(8,Math.min(300,width));height=Math.max(5,Math.min(200,height));
  const header=(value)=>lines(value,width).map(line=>color?accent(line):line);
  const compact=interactive&&(width<55||height<24);
  const goal=goalFor(state);
+ if((view==='inbox'||view==='queue')&&!detail&&picker===null)
+  return ownerScreen(state,goal,{view,width,height,color,interactive,pick:ownerSelected});
+ if(view&&!detail&&picker===null)return secondaryScreen(state,goal,{view,width,height,color,interactive,activitySelected,offset});
  if(interactive&&picker!==null&&!detail)return polishedPicker(state,{width,height,color,picker});
  if(compact&&picker===null&&!detail)return compactMain(state,goal,{width,height,color,selected,offset});
  if(interactive&&picker===null&&!detail)return polishedMain(state,goal,{width,height,color,selected,offset});
@@ -328,7 +461,7 @@ export function renderTerminal(state,{width=80,height=36,color=false,selected=0,
    out.push(...lines(`${clock(event.at)} [${event.provenance}] ${eventText(event)}`,width));
   }
  }
- const footer=detail?'↑↓ or [/] scroll · a current · Esc back · q quit':picker!==null?'↑↓ choose · Enter select · a current · Esc back · q quit':interactive?'↑↓ rows · Enter evidence · a current · g goals · [ older · ] newer · q quit':'Approvals and decisions stay in Codex.';
+ const footer=detail?'↑↓ or [/] scroll · a current · Esc back · q quit':picker!==null?'↑↓ choose · Enter select · a current · Esc back · q quit':interactive?'↑↓ rows · Enter evidence · a current · g goals · [ older · ] newer · q quit':state.snapshot?.source==='beta'?'Use mosaic act to review saved owner decisions.':'Approvals and decisions stay in Codex.';
  const tail=lines(compact?'↑↓ a Esc q':footer,width);
  return [...out.slice(0,Math.max(0,height-tail.length-1)),'',...tail].join('\n');
 }
@@ -372,7 +505,7 @@ export class TerminalObserver {
     if(snapshot.overflow?.tasks){
      const selected=await this.invoke('observer_snapshot',{goalId:goal.id},signal);
      if(navigation!==this.navigation)return this.state;
-     if(this.state.goalId===goal.id)this.state.snapshot={...selected,goals:snapshot.goals,source:snapshot.source,sourceLabel:snapshot.sourceLabel,sourceHint:snapshot.sourceHint};
+     if(this.state.goalId===goal.id)this.state.snapshot={...selected,goals:snapshot.goals,needsYou:snapshot.needsYou,connections:snapshot.connections??selected.connections,source:snapshot.source,sourceLabel:snapshot.sourceLabel,sourceHint:snapshot.sourceHint};
     }
     for(let page=0;page<2;page++){
      const recent=this.cursor===null;
@@ -401,24 +534,90 @@ export async function runObserver({invoke,input=process.stdin,output=process.std
   return state;
  }
  const controller=new AbortController(),close=()=>controller.abort();
+ let refreshController;
  const originalRaw=!!input.isRaw,wasFlowing=input.readableFlowing===true;
- let selected=0,picker=null,detail=null,detailTitle='Saved evidence',detailOffset=0,offset=0;
+ let selected=0,picker=null,detail=null,detailTitle='Saved evidence',detailOffset=0,offset=0,activitySelected=0,view=null,ownerSelected=0,handoff=null,painted=null;
  const draw=()=>{
   if(controller.signal.aborted)return;
-  output.write('\x1b[H\x1b[2J'+renderTerminal(observer.state,{width:output.columns,height:output.rows,color:true,interactive:true,selected,picker,detail,detailTitle,detailOffset,offset}));
+  const {snapshot,stale}=observer.state;
+  painted={view,snapshot,stale,goal:goalFor(observer.state)};
+  output.write('\x1b[H\x1b[2J'+renderTerminal(observer.state,{width:output.columns,height:output.rows,color:true,interactive:true,selected,picker,detail,detailTitle,detailOffset,offset,activitySelected,view,ownerSelected}));
  };
  const keypress=async(_,key={})=>{
+  if(controller.signal.aborted)return;
   if(!key.ctrl&&!key.meta&&(_==='['||_===']'))key={...key,name:_==='['?'pageup':'pagedown'};
   if(key.name==='q'||key.ctrl&&key.name==='c'){close();return;}
   if(key.name==='a'){
-   picker=null;detail=null;selected=0;offset=0;detailOffset=0;
-   observer.requestCurrent();draw();return;
+   picker=null;detail=null;view=null;selected=0;offset=0;detailOffset=0;activitySelected=0;
+   observer.requestCurrent();refreshController?.abort();draw();return;
   }
-  if(key.name==='escape'){if(detail)detail=null;else picker=null;draw();return;}
+  if(key.name==='escape'){if(detail)detail=null;else if(picker!==null)picker=null;else view=null;draw();return;}
   if(detail){
    const delta={up:-1,down:1,pageup:-10,pagedown:10}[key.name];
    if(delta){detailOffset=Math.max(0,Math.min(4096,detailOffset+delta));draw();}
    return;
+  }
+  const views={c:'connections',v:'activity',n:'inbox',b:'queue'};
+  if(Object.hasOwn(views,key.name)){
+   view=views[key.name];picker=null;activitySelected=0;ownerSelected=0;offset=0;draw();return;
+  }
+  const current=observer.state.snapshot;
+  const betaReady=painted?.view===view&&!painted.stale&&!observer.state.stale
+   &&painted.snapshot?.source==='beta'&&current?.source==='beta';
+  const follow=(command,args,expectedBinding)=>{
+   if(betaReady){handoff={command,args,expectedBinding};close();}
+   else{detailTitle='Mosaic Beta unavailable';detail='Reconnect or switch to the Mosaic Beta observer before proceeding.';detailOffset=0;draw();}
+  };
+  if(view==='inbox'||view==='queue'){
+   const goal=painted?.goal,snapshot=painted?.snapshot;
+   const entries=view==='inbox'?snapshot?.needsYou?.items??[]:snapshot?.tasks.filter(task=>task.goalId===goal?.id)??[];
+   const index=Math.max(0,Math.min(ownerSelected,entries.length-1));
+   if(key.name==='up')ownerSelected=Math.max(0,index-1);
+   if(key.name==='down')ownerSelected=Math.min(Math.max(0,entries.length-1),index+1);
+   const row=entries[index];
+   if(view==='inbox'&&key.name==='return'&&row){
+    if(row.action){
+     const same=current?.needsYou?.items.some(item=>item.id===row.id&&item.binding===row.binding&&item.action===row.action);
+     if(!same){detailTitle='Decision changed';detail='Review the updated Needs You list.';detailOffset=0;draw();return;}
+     follow('act',[row.id],row.binding);return;
+    }
+    detailTitle='Saved decision';detailOffset=0;
+    detail=row.detail;
+    if(row.taskId&&betaReady){
+     const initial=detail;
+     try{
+      const evidence=await invoke('observer_evidence',{reference:'task-'+row.taskId,length:4096},controller.signal);
+      if(view==='inbox'&&detail===initial)detail+='\n\n'+evidence.text;
+     }catch{if(view==='inbox'&&detail===initial)detail+='\n\nSaved evidence is unavailable.';}
+    }
+   }
+   if(view==='queue'&&goal){
+    const control={p:'pause',s:'stop',u:'resume'}[key.name];
+    if(control){
+     const same=goal.controlBinding&&goalFor(observer.state)?.controlBinding===goal.controlBinding;
+     if(!same){detailTitle='Goal changed';detail='Review the updated queue before choosing a control.';detailOffset=0;draw();return;}
+     follow('act',[control,goal.id],goal.controlBinding);return;
+    }
+    if(key.name==='f'){follow('queue',[goal.id,'--add']);return;}
+    if(key.name==='return'||key.name==='m'){follow(key.name==='m'?'morning-report':'queue',[goal.id]);return;}
+   }
+   draw();return;
+  }
+  if(view==='connections'){
+   if(key.name==='r'){follow('repair',[]);return;}
+   if(Object.hasOwn(connectionActions,key.name)){
+    const action=connectionActions[key.name];detailTitle=action.title;detailOffset=0;
+    detail='Run '+action.command+'\n\n'+action.details;
+   }
+   draw();return;
+  }
+  if(view==='activity'){
+   const goalId=goalFor(observer.state)?.id,tasks=observer.state.snapshot?.tasks.filter(task=>task.goalId===goalId).length??0;
+   if(key.name==='up')activitySelected=Math.max(0,Math.min(tasks-1,activitySelected)-1);
+   if(key.name==='down')activitySelected=Math.min(Math.max(0,tasks-1),activitySelected+1);
+   if(key.name==='pageup')offset=Math.min(Math.max(0,observer.state.events.length-1),offset+6);
+   if(key.name==='pagedown')offset=Math.max(0,offset-6);
+   draw();return;
   }
   const goals=observer.state.snapshot?.goals??[],rows=actorRows(observer.state);
   if(picker!==null){
@@ -455,11 +654,14 @@ export async function runObserver({invoke,input=process.stdin,output=process.std
   input.setRawMode(true);input.resume();output.write('\x1b[?1049h\x1b[?25l');
   do{
    const source=observer.state.snapshot?.source;
-   await observer.poll(controller.signal);
-   if(source!==observer.state.snapshot?.source){selected=0;picker=null;detail=null;detailOffset=0;offset=0;}
+   // Current can interrupt either the read or the delay without starting a second poll.
+   refreshController=new AbortController();
+   const signal=AbortSignal.any([controller.signal,refreshController.signal]);
+   await observer.poll(signal);
+   if(source!==observer.state.snapshot?.source){selected=0;picker=null;detail=null;detailOffset=0;offset=0;activitySelected=0;}
    if(picker!==null)picker=Math.max(0,Math.min(picker,(observer.state.snapshot?.goals.length??0)-1));
    selected=Math.min(selected,Math.max(0,actorRows(observer.state).length-1));draw();
-   await delay(pollMs,undefined,{signal:controller.signal}).catch(()=>{});
+   if(!observer.currentRequested)await delay(pollMs,undefined,{signal}).catch(()=>{});
   }while(!controller.signal.aborted);
  }finally{
   input.removeListener('keypress',keypress);output.removeListener?.('resize',draw);
@@ -467,5 +669,5 @@ export async function runObserver({invoke,input=process.stdin,output=process.std
   input.setRawMode(originalRaw);if(!wasFlowing)input.pause();
   output.write('\x1b[0m\x1b[?25h\x1b[?1049l');
  }
- return observer.state;
+ return handoff ? {...observer.state,handoff} : observer.state;
 }

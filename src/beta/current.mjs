@@ -38,14 +38,25 @@ export function chooseCurrent(snapshot,activity=new Map(),now=Date.now()){
 
 export async function currentHistory(invoke,snapshot,history,signal){
  if(snapshot.cursor<history.cursor){history.cursor=0;history.activity.clear();}
+ const remember=({goalId,at})=>history.activity.set(goalId,Math.max(history.activity.get(goalId)??0,time(at)));
+ const tools=await invoke('tools_list',{},signal);
+ signal?.throwIfAborted();
+ if(tools.some(tool=>tool.name==='observer_current_activity')){
+  const result=await invoke('observer_current_activity',{after:history.cursor},signal);
+  signal?.throwIfAborted();
+  for(const item of result.activity)remember(item);
+  history.cursor=Math.max(history.cursor,result.cursor);
+  return !result.hasMore;
+ }
  let complete=false;
  // Bound old coordinators' chronological API. Repeated shortcuts continue
  // from the saved cursor, and incomplete history is disclosed to the viewer.
  for(let page=0;page<32;page++){
   const result=await invoke('observer_timeline',{after:history.cursor,limit:200},signal);
+  signal?.throwIfAborted();
   for(const event of result.events){
    if(!event.goalId||['task.expired','goal.expired'].includes(event.type))continue;
-   history.activity.set(event.goalId,Math.max(history.activity.get(event.goalId)??0,time(event.at)));
+   remember(event);
   }
   const advanced=result.cursor>history.cursor;history.cursor=Math.max(history.cursor,result.cursor);
   if(!result.hasMore){complete=true;break;}

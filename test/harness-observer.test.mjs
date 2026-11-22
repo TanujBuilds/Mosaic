@@ -9,12 +9,46 @@ import {Coordinator} from '../src/harness/coordinator.mjs';
 import {Dispatcher} from '../src/harness/tools.mjs';
 import {Artifacts} from '../src/harness/artifacts.mjs';
 import {Observer} from '../src/harness/observer.mjs';
+import {Store} from '../src/harness/store.mjs';
+import {DatabaseSync} from 'node:sqlite';
 import {startApi} from '../src/harness/api.mjs';
+import {normalizeLegacyWorkerProfile,profileIdentity} from '../src/harness/providers/contracts.mjs';
+import {ProviderRegistry} from '../src/harness/providers/registry.mjs';
 function fixture(t){const root=mkdtempSync(path.join(os.tmpdir(),'harness-observer-')),c=new Coordinator({root});t.after(()=>{c.close();rmSync(root,{recursive:true,force:true});});const g=c.prepareGoal({submissionId:'observer',objective:'Observe useful work',acceptance:['Evidence'],environment:'fixture'},'prepare');c.activateGoal({goalId:g.id,hash:g.hash},'activate');const ds=c.submitTask({goalId:g.id,submissionId:'ds',kind:'consult',objective:'DeepSeek task',acceptance:['Useful']},'ds'),native=c.submitTask({goalId:g.id,submissionId:'native',kind:'consult',actor:'codex',objective:'Codex task',acceptance:['Useful']},'native');return {root,c,g,ds,native,observer:new Observer({c,artifacts:new Artifacts(c)})};}
 async function apiFixture(t,options={}){const f=fixture(t),dispatcher=new Dispatcher({c:f.c}),token='o'.repeat(64),viewerToken='v'.repeat(64),api=await startApi({dispatcher,token,viewerToken,...options});t.after(()=>api.close());const call=(name,input={},credential=viewerToken,extra={})=>fetch(api.url+'/api/invoke',{method:'POST',headers:{authorization:'Bearer '+credential,'content-type':'application/json',...extra},body:JSON.stringify({name,input})});return {...f,dispatcher,token,viewerToken,api,call};}
 test('observer snapshots distinguish captured execution and reported native work without fabricated accounting',t=>{
  const f=fixture(t);f.c.claimNext('worker');f.c.emit('model.request.started',f.g.id,f.ds.id,{version:1,actor:'deepseek',provenance:'captured',requestId:'request-1'});f.c.store.put('agent',{id:'agent-1',goalId:f.g.id,taskId:f.native.id,actor:'codex',role:'implementer',model:{requested:null,resolved:null},modelSource:'inherited',registeredAt:0,lastReport:{summary:'Editing scoped file',status:'running',at:0}});
  const x=f.observer.snapshot({goalId:f.g.id});assert.equal(x.goals[0].mode,'collaborative');assert.equal(x.tasks.find(t=>t.id===f.ds.id).provenance,'captured');assert.equal(x.agents[0].provenance,'reported');assert.equal(x.agents[0].stale,true);assert.equal(x.agents[0].accounting.tokens,null);assert.equal(x.tasks.find(t=>t.id===f.native.id).model.resolved,null);assert.equal(x.operatorToken,undefined);assert.equal(x.goals[0].manifest,undefined);
+});
+for(const schema of ['legacy','portable'])test(`beta viewer projects ${schema} display identity and the last saved live response`,t=>{
+ const root=mkdtempSync(path.join(os.tmpdir(),'harness-observer-connections-'));
+ let now=1000;
+ const workerProfile={baseUrl:'https://private-worker.example/v1',model:'private-model',displayName:'Selected Worker',revision:'private-revision',streaming:false};
+ const profile=normalizeLegacyWorkerProfile({schema:1,worker:{profile:workerProfile}},{id:'private-worker-id',capacityGroup:'private-capacity',credentialRef:'private-key'});
+ const providerRegistry=ProviderRegistry({profiles:[profile]});
+ const workerOptions=schema==='legacy'?{workerProfile}:{providerRegistry,configuredPolicies:{providerPolicy:{
+  version:1,workers:[profileIdentity(profile)],plannerWorkerId:profile.id,defaultWorkerId:profile.id,capacityGroups:[{id:profile.capacityGroup,limit:1}]
+ }}};
+ const c=new Coordinator({root,now:()=>now,beta:true,selectedHost:'cursor',...workerOptions});
+ t.after(()=>{c.close();rmSync(root,{recursive:true,force:true});});
+ const observer=new Observer({c});
+ const configured={host:{id:'cursor',lastConnection:null},worker:{displayName:'Selected Worker',lastConnection:null}};
+ assert.deepEqual(observer.snapshot().connections,configured);
+ function saveResponse(environment,at){
+  const g=c.prepareGoal({submissionId:environment,objective:'Connect',acceptance:['Evidence'],mode:'deepseek_only',environment},'prepare-'+environment);
+  c.activateGoal({goalId:g.id,hash:g.hash},'activate-'+environment);
+  const task=c.submitTask({goalId:g.id,submissionId:'response',kind:'consult',objective:'Answer',acceptance:['Evidence']},'task-'+environment);
+  assert.equal(c.claimNext('owner').id,task.id);
+  const request=c.reserve(task.id,{key:'request',kind:'model'},'owner');
+  now=at;c.saveRequest(request.id,{content:'private-result',model:'private-model'},'owner');
+  c.completeTask(task.id,{summary:'Saved response'},'owner');
+  return g;
+ }
+ const live=saveResponse('live',2000);
+ saveResponse('fixture',3000);
+ const result=observer.snapshot({goalId:live.id}).connections;
+ assert.deepEqual(result,{...configured,worker:{displayName:'Selected Worker',lastConnection:{kind:'worker_response',at:2000}}});
+ assert.doesNotMatch(JSON.stringify(result),/private-/);
 });
 test('timeline uses global scan cursors through filters and excludes chunk/checkpoint noise',t=>{
  const f=fixture(t),after=f.c.store.events(0,1000).at(-1).seq;
@@ -39,6 +73,53 @@ test('viewer can discover only observer reads and is denied every mutation befor
  f.dispatcher.definitions.set('late_mutator',{name:'late_mutator',annotations:{readOnlyHint:false},inputSchema:{type:'object'},fn:()=>{throw Error('must not execute');},mutating:true});assert.equal((await f.call('late_mutator')).status,403);
  assert.equal((await f.call('goal_get')).status,403);assert.equal(f.c.store.events(0,1000).length,before);assert.equal((await f.call('observer_snapshot')).status,200);
  assert.equal((await f.call('goal_get',{},f.token)).status,200);
+});
+test('viewer current activity preserves bounded history cursors without returning event payloads',async t=>{
+ const f=await apiFixture(t),store=f.c.store;
+ const early='activity-early',later='activity-later';
+ store.tx(()=>{
+  // These rows consume the scan budget without consuming a visible event slot.
+  for(let i=0;i<1100;i++){
+   const type=['model.output','execution.checkpoint','task.checkpoint'][i%3];
+   store.event(type,{goalId:early,at:50000,data:{status:'running',summary:'Filtered payload'}});
+  }
+  for(let i=0;i<6600;i++){
+   const goalId=i%5===0?null:i%2?early:later;
+   const type=i%13===0?'goal.expired':i%17===0?'task.checkpoint':'task.result';
+   store.event(type,{goalId,at:i===6599?70000:type==='goal.expired'?60000:1000+i,
+    data:{summary:'Visible payload',...(i%17===0?{status:'saved'}:{})}});
+  }
+ });
+ function legacy(after){
+  let cursor=after,hasMore=false;const activity=new Map();
+  for(let i=0;i<32;i++){
+   const page=f.observer.timeline({after:cursor,limit:200});
+   cursor=page.cursor;hasMore=page.hasMore;
+   for(const e of page.events)if(e.goalId&&!['task.expired','goal.expired'].includes(e.type)){
+    activity.set(e.goalId,Math.max(activity.get(e.goalId)??0,e.at));
+   }
+   if(!hasMore)break;
+  }
+  return {cursor,hasMore,activity:[...activity].map(([goalId,at])=>({goalId,at}))};
+ }
+ const discover=await f.call('tools_list');
+ const tools=await discover.json();
+ assert.equal(tools.find(tool=>tool.name==='observer_current_activity')?.annotations.readOnlyHint,true);
+ const read=async after=>{
+  const response=await f.call('observer_current_activity',{after});
+  assert.equal(response.status,200);
+  return response.json();
+ };
+ const first=await read(0);
+ assert.deepEqual(first,legacy(0));
+ assert.equal(first.hasMore,true);
+ assert.ok(first.activity.find(e=>e.goalId===early).at<50000);
+ const second=await read(first.cursor);
+ assert.deepEqual(second,legacy(first.cursor));
+ assert.equal(second.hasMore,false);
+ assert.deepEqual(second.activity.find(e=>e.goalId===early),{goalId:early,at:70000});
+ assert.deepEqual(await read(second.cursor),{cursor:second.cursor,hasMore:false,activity:[]});
+ assert.equal((await f.call('observer_current_activity',{after:-1})).status,400);
 });
 test('viewer login role is derived from its key, cannot be promoted, and sessions retain CSRF checks',async t=>{
  const f=await apiFixture(t);const login=await fetch(f.api.url+'/login',{method:'POST',headers:{origin:f.api.url,'content-type':'application/x-www-form-urlencoded'},body:new URLSearchParams({token:f.viewerToken,role:'operator'}),redirect:'manual'});assert.equal(login.status,303);const cookie=login.headers.get('set-cookie').split(';')[0];const session=await fetch(f.api.url+'/api/session',{headers:{cookie}}).then(r=>r.json());assert.equal(session.role,'viewer');assert.ok(session.csrf);
@@ -67,6 +148,68 @@ test('evidence never skips a multibyte character with a small or misaligned wind
 });
 test('snapshot filters before limiting and prioritizes actionable work over history',t=>{
  const f=fixture(t);for(let i=0;i<501;i++)f.c.store.put('task',{...f.ds,id:'history-'+i,status:'accepted'});const filtered=f.observer.snapshot({actor:'codex'});assert.ok(filtered.tasks.some(t=>t.id===f.native.id));assert.ok(f.observer.snapshot({}).queue.some(t=>t.id===f.native.id));assert.equal(f.observer.snapshot({}).overflow.tasks,true);
+});
+test('opening a saved database adds an indexed last-event seek that includes model output',t=>{
+ const root=mkdtempSync(path.join(os.tmpdir(),'harness-observer-saved-'));
+ t.after(()=>rmSync(root,{recursive:true,force:true}));
+ const previous=new DatabaseSync(path.join(root,'harness.sqlite3'));
+ previous.exec(`CREATE TABLE events(seq INTEGER PRIMARY KEY AUTOINCREMENT,at INTEGER NOT NULL,
+  goal_id TEXT,task_id TEXT,type TEXT NOT NULL,data TEXT NOT NULL);
+  CREATE INDEX events_task_activity ON events(task_id) WHERE type!='model.output';
+  INSERT INTO events(at,task_id,type,data) VALUES
+   (990,'saved-task','task.result','{}'),(900,'saved-task','model.output','{}'),
+   (1000,'different-task','task.result','{}'),(1100,NULL,'goal.finalized','{}');
+  PRAGMA user_version=1;`);
+ previous.close();
+ const store=new Store(root);
+ try{
+  const query='SELECT at FROM events WHERE +task_id=? AND task_id IS NOT NULL ORDER BY seq DESC LIMIT 1';
+  const plan=store.db.prepare('EXPLAIN QUERY PLAN '+query).all('saved-task').map(row=>row.detail).join(' ');
+  assert.match(plan,/SEARCH events USING INDEX events_task_last .*<expr>=\?/);
+  assert.equal(store.db.prepare(query).get('saved-task').at,900);
+  const nonOutput="SELECT at FROM events WHERE task_id=? AND type!='model.output' ORDER BY seq DESC LIMIT 1";
+  const activityPlan=store.db.prepare('EXPLAIN QUERY PLAN '+nonOutput).all('saved-task').map(row=>row.detail).join(' ');
+  assert.match(activityPlan,/SEARCH events USING INDEX events_task_activity .*task_id=\?/);
+  assert.equal(store.db.prepare(nonOutput).get('saved-task').at,990);
+  assert.equal(store.db.prepare('PRAGMA user_version').get().user_version,1);
+ }finally{store.close();}
+});
+test('goal-scoped view preserves ordering, total count and exact last event times',t=>{
+ const f=fixture(t),store=f.c.store;
+ f.c.beta=true;
+ const outside={...store.get('goal',f.g.id),id:'other-observer-goal'};
+ store.put('goal',outside);
+ const native=store.get('task',f.native.id);
+ native.status='awaiting_user';native.questions=[{id:'pending-answer',text:'Answer this question'}];
+ store.put('task',native);
+ const second={...native,id:'other-observer-task',goalId:outside.id};
+ store.put('task',second);
+ const closed=store.get('task',f.ds.id);
+ closed.status='accepted';store.put('task',closed);
+ store.event('task.result',{goalId:f.g.id,taskId:native.id,at:9000,data:{summary:'Saved first'}});
+ // Updated time follows the latest sequence, even when the event is a model
+ // output chunk and its wall-clock timestamp is earlier.
+ store.event('model.output',{goalId:f.g.id,taskId:native.id,at:4000,data:{content:'Hidden output'}});
+ store.event('task.result',{goalId:outside.id,taskId:second.id,at:9999,data:{summary:'Another goal'}});
+ for(let i=0;i<502;i++)store.put('task',{...closed,id:'prior-task-'+i});
+ const all=f.observer.snapshot({goalId:f.g.id});
+ assert.equal(all.goals.length,1);
+ assert.equal(all.goals[0].taskCount,504);
+ assert.equal(all.overflow.tasks,true);
+ assert.equal(all.tasks.length,500);
+ assert.equal(all.tasks[0].id,native.id);
+ assert.equal(all.tasks[0].updatedAt,4000);
+ assert.equal(all.tasks[1].id,'prior-task-501');
+ assert.equal(all.tasks[1].updatedAt,null);
+ assert.ok(all.tasks.every(task=>task.goalId===f.g.id));
+ assert.deepEqual(all.needsYou.items.map(item=>[item.taskId,item.action]),[[native.id,'answer']]);
+ assert.equal(all.needsYou.hasMore,false);
+ const codex=f.observer.snapshot({goalId:f.g.id,actor:'codex'});
+ assert.equal(codex.goals[0].taskCount,504);
+ assert.equal(codex.overflow.tasks,false);
+ assert.deepEqual(codex.tasks.map(task=>task.id),[native.id]);
+ const worker=f.observer.snapshot({goalId:f.g.id,actor:'deepseek'});
+ assert.deepEqual(worker.needsYou.items,[]);
 });
 test('viewer discovers saved artifact IDs without operator registration',async t=>{
  const f=await apiFixture(t),directory=path.join(f.root,'research',f.ds.id);await mkdir(directory,{recursive:true});await writeFile(path.join(directory,'report.md'),'# Available report');const task=f.c.store.get('task',f.ds.id);task.result={checksumsVerified:true,directory};f.c.store.put('task',task);const response=await f.call('observer_artifacts',{taskId:task.id});assert.equal(response.status,200);const [item]=await response.json();assert.equal(item.file,undefined);assert.equal(item.reference.startsWith('artifact-'),true);assert.match((await f.observer.evidence({reference:item.reference})).text,/Available report/);

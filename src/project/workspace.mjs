@@ -1,7 +1,7 @@
 import { lstat, readFile, writeFile, mkdir, rename, unlink, cp, realpath, chmod } from 'node:fs/promises';
 import path from 'node:path';
 import { digest, relativePath, matches, protectedPath, secretPath, Pause, AttemptError } from './contracts.mjs';
-import { git, command } from './process.mjs';
+import { git } from './process.mjs';
 
 const generated = file => file.startsWith('.overnight-output/') || file.startsWith('dist/') || file.startsWith('node_modules/');
 async function exists(file) { try { await lstat(file); return true; } catch (e) { if (e.code === 'ENOENT') return false; throw e; } }
@@ -113,9 +113,14 @@ export class Workspace {
       seen.add(edit.path);
       if (generated(edit.path) || protectedPath(edit.path) ||
           !matches(edit.path, stage.writePaths) || !matches(edit.path, this.manifest.permissions.writePaths)) throw new Pause(`Write outside approved scope: ${edit.path}`, 'scope');
-      const ignored = await command(['git', 'check-ignore', '--quiet', '--', edit.path], { cwd: this.root });
-      if (ignored.code === 0) throw new Pause(`Ignored files cannot be reviewed or checkpointed: ${edit.path}`, 'scope');
-      if (ignored.code !== 1) throw new Pause('Could not verify Git visibility for edit', 'workspace');
+      let ignored = false;
+      try {
+        await git(this.root, 'check-ignore', '--quiet', '--', `./${edit.path}`);
+        ignored = true;
+      } catch (error) {
+        if (error.code !== 1) throw new Pause(`Could not verify Git visibility for edit: ${error.message}`, 'workspace');
+      }
+      if (ignored) throw new Pause(`Ignored files cannot be reviewed or checkpointed: ${edit.path}`, 'scope');
       if (!['write', 'delete'].includes(edit.action)) throw new AttemptError('Edit action must be write or delete');
       const before = await this.content(edit.path);
       if (edit.baseHash !== before.hash) throw new AttemptError(`Stale edit hash for ${edit.path}; request current file`);
@@ -155,13 +160,20 @@ export class Workspace {
     }
     await this.journal.append('edits.applied', { key: intent.key, snapshot: await this.snapshot() });
   }
-  async evidence() {
+  async evidence({ includeTrackedPaths = false } = {}) {
     const snapshot = await this.snapshot();
-    const diff = await git(this.root, 'diff', '--no-ext-diff', '--no-textconv', 'HEAD', '--', ...this.manifest.permissions.writePaths.map(scope => scope.replace(/\/$/, '')));
+    const { readPaths, writePaths } = this.manifest.permissions;
+    const writeScopes = writePaths.map(scope => scope.replace(/\/$/, ''));
+    const diff = await git(this.root, 'diff', '--no-ext-diff', '--no-textconv', 'HEAD', '--', ...writeScopes);
     const untracked = (await git(this.root, 'ls-files', '--others', '--exclude-standard', '-z')).split('\0').filter(Boolean);
-    const newFiles = await this.readFiles(untracked.filter(file => !generated(file) && matches(file, this.manifest.permissions.writePaths)));
+    const newFiles = await this.readFiles(untracked.filter(file => !generated(file) && matches(file, writePaths)));
     if (Buffer.byteLength(diff) > 512 * 1024) throw new Pause('Diff exceeds review context limit', 'context');
-    return { diff, newFiles, snapshot: Object.fromEntries(Object.entries(snapshot).filter(([file]) => !secretPath(file) && matches(file, this.manifest.permissions.readPaths))) };
+    const evidence = { diff, newFiles, snapshot: Object.fromEntries(Object.entries(snapshot).filter(([file]) => !secretPath(file) && matches(file, readPaths))) };
+    if (includeTrackedPaths) {
+      const tracked = await git(this.root, 'diff', '--no-renames', '--name-only', '-z', 'HEAD', '--', ...writeScopes);
+      evidence.trackedPaths = tracked.split('\0').filter(file => file && !generated(file) && !secretPath(file) && matches(file, writePaths));
+    }
+    return evidence;
   }
   async acceptedDiffs({readPaths} = {}) {
     const scopes = (readPaths ?? this.manifest.permissions.writePaths).map(scope => scope.replace(/\/$/, ''));

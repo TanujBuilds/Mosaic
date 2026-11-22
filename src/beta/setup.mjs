@@ -1,7 +1,8 @@
+import {macGitReady,gitRecovery} from './git-readiness.mjs';
 import {fileURLToPath} from 'node:url';
 import {readSettings as readPrivateSettings,readCredentials,configuredPolicies,previewSettingsMigration,applySettingsMigration,resumeSettingsMigration,validateSettingsCredentials} from './settings.mjs';
 import {setupPortable,portableSetupComplete,removePortableBindings} from './portable-setup.mjs';
-import {normalizeExecutionPolicy,normalizeNativeCheckRuntime,assertExecutionAvailable} from '../harness/execution.mjs';
+import {assertExecutionAvailable} from '../harness/execution.mjs';
 import {execFile} from 'node:child_process';
 import {access,mkdir,readdir,realpath,rm,rmdir} from 'node:fs/promises';
 import {constants} from 'node:fs';
@@ -11,7 +12,7 @@ import {Writable} from 'node:stream';
 import {promisify} from 'node:util';
 import path from 'node:path';
 import {LocalProvider} from '../harness/provider.mjs';
-import {workerEndpoint,workerProfile} from '../harness/worker-profile.mjs';
+import {RemoteProviderTransportError,workerEndpoint,workerProfile} from '../harness/worker-profile.mjs';
 import {STRUCTURED_WORKER_PROTOCOL} from '../harness/provider-capabilities.mjs';
 import {atomic,entry,fileBytes,hash,jsonFile,localDirectory,saveJson,shellQuote,withLock} from './files.mjs';
 import {client} from './client.mjs';
@@ -19,7 +20,9 @@ import {assertMaintenanceIdle,assertSettingsMaintenanceAllowed,assertBetaStartup
 import {canonical,digest} from '../harness/contracts.mjs';
 import {ProviderRegistry} from '../harness/providers/registry.mjs';
 import {discoverProvider,formatProviderDiagnostic} from './provider-diagnostics.mjs';
-import {getHost,normalizeHostSettings,formatHostReadiness} from './hosts/index.mjs';
+import {getHost,formatHostReadiness} from './hosts/index.mjs';
+import {readHostConnection} from './hosts/connection-evidence.mjs';
+import {supportsSetupMenus,terminalSetupInput,welcomeSetup} from './terminal-setup.mjs';
 
 const exec=promisify(execFile);
 const mcpName='mosaic-beta';
@@ -89,7 +92,7 @@ function expectedRegistration(server,paths){
 }
 
 function fingerprint(value){return hash(canonical(value));}
-function codexRegistrations(paths){
+export function codexRegistrations(paths){
  if(paths.isolated)return {
   get:()=>jsonFile(paths.isolatedMcp,{privateFile:true,max:8192}),
   add:()=>saveJson(paths.isolatedMcp,{name:mcpName,enabled:true,transport:{type:'stdio',command:paths.launcher,args:['mcp']}}),
@@ -132,32 +135,55 @@ export async function setupComplete(paths){
 export const readSettings=readPrivateSettings;
 export {previewSettingsMigration,applySettingsMigration,resumeSettingsMigration};
 
-async function askSession(input,output,work){
+export async function askSession(input,output,work,{firstRun=false,enableMenus=firstRun,interruptMessage='Setup interrupted. Run mosaic setup to resume.'}={}){
  const queue=[],interrupted=new AbortController();
  let waiter,closed=false,echo=false;
  const sink=new Writable({write(chunk,_,callback){if(echo)output.write(chunk);callback();}});
  if(output.isTTY){
   sink.isTTY=true;sink.columns=output.columns;sink.rows=output.rows;
  }
- const rl=createInterface({input,output:sink,terminal:!!input.isTTY&&!!output.isTTY,historySize:0});
+ const interrupt=()=>{interrupted.abort();queue.length=0;rl.close();};
+ const menus=enableMenus&&supportsSetupMenus(input,output)?terminalSetupInput(input,output,interrupted.signal,interrupt):null;
+ const rl=createInterface({input:menus?.lines??input,output:sink,terminal:!!input.isTTY&&!!output.isTTY,historySize:0});
  rl.on('line',line=>{
   // readline can process more pasted characters before an awaiting prompt resumes.
   echo=false;
   if(waiter){const next=waiter;waiter=null;next(line);}else queue.push(line);
  });
  const finish=()=>{closed=true;const next=waiter;waiter=null;next?.(null);};
- rl.on('SIGINT',()=>{interrupted.abort();queue.length=0;rl.close();});rl.on('close',finish);
- const ask=async(prompt,{secret=false}={})=>{
-  if(interrupted.signal.aborted)throw Error('Setup interrupted. Run mosaic setup to resume.');
+ rl.on('SIGINT',interrupt);rl.on('close',finish);
+ const ask=async(prompt,{secret=false,masked=false}={})=>{
+  const hide=secret||masked;
+  if(interrupted.signal.aborted)throw Error(interruptMessage);
   if(secret&&(!input.isTTY||!output.isTTY))throw Error('Bearer keys can only be entered in an interactive terminal with terminal output.');
   output.write(prompt);
   try{
-   const answer=queue.length?queue.shift():closed?null:await new Promise(resolve=>{waiter=resolve;echo=!secret;});
-   if(answer===null||interrupted.signal.aborted)throw Error('Setup interrupted. Run mosaic setup to resume.');
+   const answer=queue.length?queue.shift():closed?null:await new Promise(resolve=>{waiter=resolve;echo=!hide;});
+   if(answer===null||interrupted.signal.aborted)throw Error(interruptMessage);
    return answer.trim();
-  }finally{echo=false;if(secret)output.write('\n');}
+  }finally{echo=false;if(hide&&input.isTTY&&output.isTTY)output.write('\n');}
  };
- try{return await work(ask,interrupted.signal);}finally{rl.close();}
+ const choose=menus?async(...args)=>{
+  queue.length=0;
+  const answer=await menus.choose(...args);
+  if(interrupted.signal.aborted)throw Error(interruptMessage);
+  return answer;
+ }:undefined;
+ const signals=['SIGINT','SIGTERM','SIGHUP'];
+ try{
+  if(menus){
+   for(const name of signals)process.on(name,interrupt);
+   menus.start();
+  }
+  if(firstRun)welcomeSetup(output,!!menus);
+  return await work(ask,interrupted.signal,choose);
+ }finally{
+  rl.close();
+  if(menus){
+   menus.close();
+   for(const name of signals)process.off(name,interrupt);
+  }
+ }
 }
 
 const WORKER_PROBE_TIMEOUT_MS=10000;
@@ -292,7 +318,15 @@ export async function setup(paths,options={}){
  if(options.portable||options.settings||old?.schema===2||pending?.schema===2||manifest?.layout==='terminal-beta-v2'){
   let execution=options.execution??(old?.schema===2?old.execution:undefined),nativeCheckRuntime=options.nativeCheckRuntime??(old?.schema===2?old.nativeCheckRuntime:undefined);
   if(!execution&&!options.settings&&!pending){nativeCheckRuntime=await (await import('./package-contract.mjs')).readBundledNativeCheckRuntime(runtimeRoot);execution={backend:'darwin-seatbelt',backendRevision:2,runtimeFingerprint:nativeCheckRuntime.artifactManifestSha256};}
-  return askSession(input,output,(ask,signal)=>setupPortable(paths,{...options,ask,output,execution,nativeCheckRuntime,codexRegistrations:registrations,signal:options.signal?AbortSignal.any([options.signal,signal]):signal}));
+  const firstRun=!old&&!pending&&!options.settings;
+  return askSession(input,output,async(ask,signal,choose)=>{
+   if(firstRun&&await (options.gitReady??macGitReady)()===false)output.write('You can finish setup now. '+gitRecovery+'\n\n');
+   return setupPortable(paths,{
+    ...options,ask,choose,output,execution,nativeCheckRuntime,codexRegistrations:registrations,
+    retryEndpoint:!!input.isTTY&&!!output.isTTY,
+    signal:options.signal?AbortSignal.any([options.signal,signal]):signal
+   });
+  },{firstRun});
  }
  if(old?.host&&old.host.id!=='codex'){
   output.write(`The current host is ${old.host.id}. This interactive setup configures Codex only; existing settings and registrations are preserved. Use mosaic host-preview --host ${old.host.id} for that host's manual configuration path.\n`);
@@ -356,12 +390,23 @@ export async function doctor(paths,output=process.stdout,options={}){
  const checks=[];
  const check=(name,ok,detail)=>checks.push({name,ok,detail});
  let settings,credentials,setupReady=false,registrationSaved=false;
- try{settings=await readSettings(paths);if(settings?.schema===2){credentials=await readCredentials(paths);await validateSettingsCredentials(paths,settings,credentials);}}catch{settings=undefined;check('Settings',false,'Invalid private config or credentials. Run mosaic setup.');}
+ try{
+  settings=await readSettings(paths);
+  if(settings?.schema===2){credentials=await readCredentials(paths);await validateSettingsCredentials(paths,settings,credentials);}
+ }catch(error){
+  settings=undefined;
+  const detail=error instanceof RemoteProviderTransportError
+   ?error.message+' Update the saved URL on the previous installed version before upgrading.'
+   :'Invalid private config or credentials. Run mosaic setup.';
+  check('Settings',false,detail);
+ }
  try{
   if(settings&&!(setupReady=await setupComplete(paths)))check('Setup',false,'Setup needs attention. Run mosaic setup to restore or resume its bindings.');
  }catch{check('Setup',false,'Cannot read the private beta binding receipt. Inspect the beta settings directory.');}
  check('Installation',!!await entry(paths.launcher),'Expected launcher '+paths.launcher);
  if(!checks.some(item=>item.name==='Settings'))check('Settings',!!settings,settings?'Private setup saved.':'Run mosaic setup.');
+ const gitReady=await (options.gitReady??macGitReady)();
+ if(gitReady!==null)check('Git for coding tasks',gitReady,gitReady?'Git found in the selected Apple developer tools.':gitRecovery);
  const selectedHost=settings?.host?.id??'codex';
  if(selectedHost==='codex'&&settings?.schema!==2){
  const codex=await findCodex(paths,settings?.codexPath);
@@ -433,7 +478,8 @@ export async function doctor(paths,output=process.stdout,options={}){
  }
  const failed=checks.find(item=>!item.ok);
  const nextAction=failed?(failed.name==='Installation'?'Reinstall Mosaic Beta from a verified archive, then run mosaic doctor.':failed.name==='Setup'||failed.name==='Settings'||failed.name.startsWith('Codex')||failed.name==='Isolated MCP fixture'||failed.name==='Coordinator'?failed.detail:`Resolve the ${failed.name} issue above, then rerun mosaic doctor${options.providers===true?' --providers':''}.`):undefined;
- const readiness=formatHostReadiness(selectedHost,{configuration:settings?'saved':'not configured',instructions,registration,nextAction});
+ const connection=settings?await readHostConnection(paths).catch(()=>null):null;
+ const readiness=formatHostReadiness(selectedHost,{configuration:settings?'saved':'not configured',instructions,registration,connection,nextAction});
  const publish=()=>{for(const {name,ok,detail} of checks)output.write(`${ok?'OK':'CHECK'}  ${name} · ${detail}\n`);output.write(readiness);};
  if(settings?.schema===2)await withLock(paths,async()=>{await assertDoctorSnapshot();publish();});else publish();
  return checks.every(item=>item.ok);

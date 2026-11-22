@@ -1,4 +1,4 @@
-import {assertInferenceCapacity,CapacityWaitError,inferenceWait,capacitySnapshot} from './scheduling/capacity.mjs';
+import {assertInferenceCapacity,CapacityWaitError,holdsPlanningSlot,holdsTaskSlot,inferenceWait,serviceCapacity} from './scheduling/capacity.mjs';
 import path from 'node:path';
 import {Journal} from '../project/journal.mjs';
 import {randomUUID} from 'node:crypto';
@@ -47,7 +47,7 @@ export class LegacyReview {
  }
  async tick({taskId,legacyOnly=false}={}){
   if(taskId?this.inflight.has(taskId):this.inflight.size)return null;
-  const parallel=capacitySnapshot(this.c).serviceLimit>1;
+  const parallel=serviceCapacity(this.c)>1;
   this.c.expireQuiescent();
   const requests=[];
   for(const row of this.c.store.db.prepare("SELECT id,task_id,status,data FROM requests WHERE kind='apiReview'").all()){
@@ -60,7 +60,8 @@ export class LegacyReview {
    requests.push({...data,id:row.id,taskId:row.task_id,status:row.status});
   }
   const tickets=this.c.store.all('review_ticket');
-  for(const portable of this.c.store.all('task').filter(t=>!legacyOnly&&(!taskId||t.id===taskId)&&t.status==='awaiting_review'&&this.c.store.get('goal',t.goalId).manifest.reviewPolicy?.source==='api'&&this.c.eligible(t))){
+  const unfinished=this.c.store.unfinishedTasks();
+  for(const portable of unfinished.filter(t=>!legacyOnly&&(!taskId||t.id===taskId)&&t.status==='awaiting_review'&&this.c.store.get('goal',t.goalId).manifest.reviewPolicy?.source==='api'&&this.c.eligible(t))){
    const ticket=tickets.find(r=>r.taskId===portable.id&&r.status==='reserved');let run;
    if(!ticket){const goal=this.c.store.get('goal',portable.goalId),reviewer=goal.manifest.reviewPolicy.reviewer,wait=inferenceWait(this.c,goal,{providerId:reviewer.id,revision:reviewer.revision,profileHash:digest(reviewer)});if(wait){if(taskId)return wait;continue;}}
    if(ticket){
@@ -78,8 +79,8 @@ export class LegacyReview {
    this.inflight.set(portable.id,run);try{return await run;}finally{this.inflight.delete(portable.id);}
   }
   if(taskId)return null;
-  const occupancy=capacitySnapshot(this.c);if(occupancy.activeTasks.length||occupancy.planning.length)return {waiting:true,reasonCode:'legacy_global_slot'};
-  const task=this.c.store.all('task').find(t=>!this.c.store.get('goal',t.goalId).manifest.reviewPolicy&&['awaiting_legacy_review','legacy_reviewing'].includes(t.status)&&this.c.eligible(t));if(!task)return null;
+  if(unfinished.some(holdsTaskSlot)||this.c.store.all('planning').some(holdsPlanningSlot))return {waiting:true,reasonCode:'legacy_global_slot'};
+  const task=unfinished.find(t=>!this.c.store.get('goal',t.goalId).manifest.reviewPolicy&&['awaiting_legacy_review','legacy_reviewing'].includes(t.status)&&this.c.eligible(t));if(!task)return null;
   const run=this.run(task);this.inflight.set(task.id,run);try{return await run;}finally{this.inflight.delete(task.id);}
  }
  async referenceFiles(source,task){

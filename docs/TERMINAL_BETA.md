@@ -25,19 +25,26 @@ The subshell keeps the archive's packaged file permissions during extraction. If
 
 The installer checks package integrity and offers to append a managed PATH block to `~/.zshrc` when needed. Use `./install --no-path` to skip that prompt. Open a fresh terminal after accepting a PATH change. Setup previews the selected host, profiles, review source, routing, concurrency and exact native artifact identity. Private configuration lives under `~/Library/Application Support/Mosaic Beta/config`; bearer values use a separate owned `0600` credentials file. Existing schema-1 settings remain readable until explicit preview/cancel/apply migration. Migration does not rewrite saved goal identities or approvals.
 
-First setup asks for your coding app and an existing worker on this Mac, another computer, or a hosted API; you can also choose no worker yet. For a hosted worker, choose OpenAI Platform, Kimi Platform or Z.ai GLM, or supply the base URL of a custom OpenAI-compatible endpoint. Enter the exact Chat Completions model ID your account can access. The named services use their own Platform API keys and billing. Enter a key only at the hidden prompt.
+First interactive setup opens with a compact blue Mosaic mark with a plain-text title in narrow windows. The app menu checks usual application and executable locations and recommends Codex if found. Select any supported app. Use Up/Down and Enter to pick options. Menus redraw when you resize Terminal. Esc goes back from the worker and save menus. Press q in a menu or Ctrl+C during setup to exit. Before saving, you can restart with `~/.local/bin/mosaic setup`. With `NO_COLOR`, `TERM=dumb` or redirected input/output, setup offers numbered prompts.
+
+After registration, run `~/.local/bin/mosaic connect` to get the prompt for starting a Mosaic task in your coding app. If the selected app calls `registry_list` successfully, Mosaic can show the time the bridge last answered. That result checks the bridge at that moment. Setup uses the prompt you send in your coding app to begin, with mode choice and approval before work starts.
+
+First setup asks for your coding app and an existing worker on this Mac, another computer, or a hosted API; you can also choose no worker yet. For a hosted worker, choose OpenAI Platform, Kimi Platform, Z.ai GLM, or OpenRouter, or supply the base URL of a custom OpenAI-compatible endpoint. Enter the exact Chat Completions model ID your account can access. The named services use their own Platform API keys and billing. Enter a key only at the hidden prompt.
 
 | Preset | API base URL | Account to use |
 | --- | --- | --- |
 | OpenAI Platform | `https://api.openai.com/v1` | [OpenAI Platform API](https://developers.openai.com/api/reference/overview) |
 | Kimi Platform | `https://api.moonshot.ai/v1` | [Kimi Platform API](https://www.kimi.ai/help/kimi-api/api-overview) |
+| OpenRouter | `https://openrouter.ai/api/v1` | [OpenRouter API key](https://openrouter.ai/settings/keys) |
 | Z.ai GLM | `https://api.z.ai/api/paas/v4` | [Z.ai general API](https://docs.z.ai/api-reference/llm/chat-completion) |
 
-For a worker on this Mac, another computer or a custom endpoint, enter its API base URL, exact model ID and any required bearer key. Internal profile/planner/capacity identifiers are generated with one task slot. On another computer, localhost still means the computer running Mosaic. The readable summary offers optional technical details. Choose Guided setup for two or three workers: enter each URL, manual model ID and optional hidden key; use numbered choices for specialties, default worker and planner. Conflicting specialties require an explicit choice. These are chosen routes, not measured model quality. Total concurrency, worker slots and shared-service slots default to one; explicitly choose up to four if appropriate. Canonical endpoint aliases share capacity automatically. Group different URLs explicitly when they reach the same physical server; extra worker names do not create slots. The summary shows each worker’s roles, routes, target, key status and shared limits. Discovery and inference consent are separate for each numbered worker. Advanced retains full technical configuration, larger pools and separate API review. Existing schema-2 settings use that advanced configuration path; cancellation preserves them.
+For Kimi through OpenRouter, choose OpenRouter and enter the full model ID, such as `moonshotai/kimi-k3.1-pro`. Enter your OpenRouter key at the hidden key prompt. In an interactive terminal, Mosaic hides a custom or local URL while you type it and shows the validated endpoint in the setup summary. Internal profile/planner/capacity identifiers are generated with one task slot. On another computer, localhost still means the computer running Mosaic. The readable summary offers optional technical details. Choose Guided setup for two or three workers: enter each URL, manual model ID and optional hidden key; use numbered choices for specialties, default worker and planner. Conflicting specialties require an explicit choice. These are chosen routes, not measured model quality. Total concurrency, worker slots and shared-service slots default to one; explicitly choose up to four if appropriate. Canonical endpoint aliases share capacity automatically. Group different URLs explicitly when they reach the same physical server; extra worker names do not create slots. The summary shows each worker’s roles, routes, target, key status and shared limits. Discovery and inference consent are separate for each numbered worker. Advanced retains full technical configuration, larger pools and separate API review. Existing schema-2 settings use that advanced configuration path; cancellation preserves them.
 
-Mosaic does not install models, discover endpoints or change model servers. Approved context goes to the worker endpoint you supplied; remote/hosted endpoints send it off the Mac. The coding app reviews by default and may use its cloud service even when the worker is local. A separately configured API reviewer uses its own authentication and billing; a closed app has no automatic wakeup or paid fallback. Setup offers independent default-no model-discovery and inference choices after validating credentials. Discovery sends GET to the supplied worker base URL plus `/models`, with configured authentication. Unsupported listing or an unlisted manual model still permits saving that explicit configuration. Inference discloses its exact fixed setup-only message, target and possible provider cost; it sends no repository data, task evidence or review request. The limit is 16 output tokens and one total 10-second deadline per worker. Some reasoning models use the short budget for internal reasoning and return no visible response. You can skip the optional inference test and save the exact model as untested. Advertised-model profiles also require a fresh membership GET before POST within that same deadline, including when standalone discovery was declined. Skipping both checks or choosing no worker sends zero provider requests. Failed inference leaves saved settings unchanged. Success establishes that fixed transport request; coding quality, context capacity and the actual app connection remain unverified.
+Mosaic requires HTTPS for worker and API-reviewer URLs on other machines, including private-network addresses. HTTP is supported at loopback URLs on the Mac. If you use a model server that exposes plaintext HTTP on another computer, configure an HTTPS endpoint or maintain an encrypted forward whose listener is on this Mac's loopback interface. Set Mosaic's worker URL to that HTTPS or loopback address. Update previously saved remote HTTP profiles before upgrading from a version that accepts them. Existing approvals remain bound to their original provider. See [installation and recovery](PORTABLE_BETA_INSTALL.md#revisit-configuration-safely).
 
-After setup, Mosaic shows the connection steps for the selected coding app. Run `mosaic connect` to see them again, or `mosaic connect --host codex|claude-code|cursor|antigravity` to see the steps for another app. Register through the app’s controls and preserve any existing entry with the same name. The connection guide leaves your app settings untouched. Disposable-home tests use a private fixture registration adapter. Only unchanged installer-owned bindings can be removed; manual and unrelated host entries are preserved. Historical schema-1 Codex setup remains a separate compatibility path. See [host compatibility](HOST_COMPATIBILITY.md) and [installation and recovery](PORTABLE_BETA_INSTALL.md).
+Mosaic does not install models, discover endpoints or change model servers. Approved context goes to the worker endpoint you supplied; remote/hosted endpoints send it off the Mac. The planner gets only the objective, acceptance criteria, relative scope, check IDs and planning limits. The coding app reviews by default and may use its cloud service even when the worker is local. Coding review can include changed and unchanged files in the approved read scope, plus up to 4,096 characters each of stdout and stderr per check. The complete evidence packet is capped at 512 KiB and 128 files. For host review, the inbox lists the exact candidate file paths, check output sizes and recipient before you reserve the evidence. A separately configured API reviewer uses its own authentication and billing; a closed app has no automatic wakeup or paid fallback. Setup offers independent default-no model-discovery and inference choices after validating credentials. Discovery sends GET to the supplied worker base URL plus `/models`, with configured authentication. Unsupported listing or an unlisted manual model still permits saving that explicit configuration. Inference discloses its exact fixed setup-only message, target and possible provider cost; it sends no repository data, task evidence or review request. The limit is 16 output tokens and one total 10-second deadline per worker. Some reasoning models use the short budget for internal reasoning and return no visible response. You can skip the optional inference test and save the exact model as untested. Advertised-model profiles also require a fresh membership GET before POST within that same deadline, including when standalone discovery was declined. Skipping both checks or choosing no worker sends zero provider requests. Failed inference leaves saved settings unchanged. Success establishes that fixed transport request; coding quality, context capacity and the actual app connection remain unverified.
+
+In the interactive one-worker setup, **Finish setup** lets you save, view technical details, or choose optional connection checks. Save sends no provider requests. Mosaic then shows the command to get connection instructions for your coding app. Run `mosaic connect` for those instructions, or `mosaic connect --host codex|claude-code|cursor|antigravity` for another app. Register through the app’s controls and preserve any existing entry with the same name. The connection guide leaves your app settings untouched. Disposable-home tests use a private fixture registration adapter. Only unchanged installer-owned bindings can be removed; manual and unrelated host entries are preserved. Historical schema-1 Codex setup remains a separate compatibility path. See [host compatibility](HOST_COMPATIBILITY.md) and [installation and recovery](PORTABLE_BETA_INSTALL.md).
 
 ## Run
 
@@ -52,9 +59,72 @@ chat in the intended repository and use this prompt:
 
 > Use Mosaic Beta in this repository. Inspect the mosaic-beta registry, ask me to choose a workflow if needed, then prepare an exact goal and show me its scope and limits for approval before activation.
 
-The four available workflow policies are collaborative, API-worker-only (`deepseek_only` in the MCP protocol), host-only (`codex_only`) and overnight review. Confirm the approved manifest, Git base, literal file/check scope, provider pool, routing and budgets in the host. Host review waits durably when the app closes; an inactive chat is not guaranteed to wake. Use `mosaic` to observe activity in another terminal. Press ↑ or ↓ to select an assignment, Enter to see bounded saved evidence, g to choose a goal, and q or Ctrl-C to close the observer. Press **a** from any screen to jump to the current project. It prefers running work, then the most recently worked project, and says when nothing is running or native activity is unconfirmed. The result is labeled as the last check; press a again to refresh the selection. This shortcut only changes your view. Approvals stay in the host.
+The four available workflow policies are collaborative, API-worker-only (`deepseek_only` in the MCP protocol), host-only (`codex_only`) and overnight review. Confirm the approved manifest, Git base, literal file/check scope, provider pool, routing and budgets in the host. Host review waits durably when the app closes; an inactive chat is not guaranteed to wake. Use `mosaic` to observe activity in another terminal. Press ↑ or ↓ to select an assignment, Enter to see bounded saved evidence, g to choose a goal, and q or Ctrl-C to close the observer. Press **a** from any screen to jump to the current project. It prefers running work, then the most recently worked project, and says when nothing is running or native activity is unconfirmed. The result is labeled as the last check. Press **a** again to refresh the selection.
 
 Use **[** for older handoffs and **]** for newer handoffs. In goal selection and details, these keys page up and down. Page Up/Down (Fn + ↑/↓ on a Mac keyboard) still work.
+
+Press **c** for Connections and **v** for Activity. Connections shows the selected coding app and worker with the last recorded evidence when available. Press **r** there for connection diagnosis and focused repair. **e** and **h** show the setup and connection commands. In Activity, use the arrow keys to select an assignment. **Esc** returns to the previous view.
+
+
+### Your first task
+
+Run `mosaic first-task` from a committed Git checkout, or supply its root with
+`mosaic first-task --repo PATH`. Choose a small task, the workflow, file scope
+and protected checks. Mosaic prepares an exact draft and prints a prompt for
+the selected coding app. Review the saved draft and approve it before starting
+work. `mosaic first-task result --goal GOAL_ID` shows saved results and their
+next action. `mosaic first-task --demo` runs a scripted sample in a separate
+temporary Git workspace. It makes zero provider calls.
+
+If macOS prompts to install Apple's Command Line Tools, finish that installation
+before preparing the task. On the bundled check runtime, enter a Node check such
+as `node checks/verify.mjs`. The draft shows the exact bundled launcher and
+arguments that Mosaic will use.
+
+For a task reviewed by your coding app, use an interactive chat that can ask for
+tool approval. If the app asks whether you trust the project folder, review the
+path before continuing. Return to the chat while the task is still active and
+respond to its prompts to reserve and save the Mosaic review. In Codex, choose
+**Allow** to authorize just the displayed call. Mosaic requires the saved review
+before it can integrate the candidate.
+
+### Decisions and overnight work
+
+Press **n** for **Needs You**, then select an item and press Enter to review it.
+`mosaic act` opens the same list from a plain terminal. Review exact scope
+before approving, answer the saved question, or confirm integration after the
+assigned reviewer's saved acceptance. To inspect the same list in your coding
+app, ask it to call `owner_inbox` through `mosaic-beta` and show the saved
+decisions. Ask it to show the current `owner_action_context` for your selected
+item before confirming an action. Manual integration uses the exact candidate
+binding from that context. Refresh it if the reviewed candidate changes. A
+waiting review stays assigned to its configured reviewer.
+
+Press **b** for **Queue**. Enter opens full saved dependency and priority
+details, **f** guides you through adding assignments within an active approval,
+and **m** opens the morning report. Pause, stop, and resume require a separate
+confirmation. For the plain terminal, use `mosaic queue GOAL_ID`,
+`mosaic queue GOAL_ID --add`, `mosaic act pause|stop|resume GOAL_ID`, or
+`mosaic morning-report GOAL_ID`. Planner-owned overnight graphs keep their
+own stage list. The report shows saved checks, candidate and integrated commits,
+recorded model usage, elapsed time and outstanding decisions.
+
+If you maintain a batch as JSON, preview it with
+`mosaic queue GOAL_ID --preview BATCH.json`. The file contains an array of
+items with `key`, `task` and `dependsOnKeys` fields. Each task names its
+`kind`, `objective` and `acceptance`. Use `--submit` with the same file
+to review the exact batch and confirm submission. The selected goal keeps its
+existing deadline and task limits.
+
+`mosaic repair --host` shows current app registration steps.
+`mosaic repair --worker ID` previews a targeted worker edit for confirmation.
+Model diagnostics require separate consent. Use `mosaic repair --resume` for
+an interrupted repair you already approved.
+
+`mosaic preset save --goal GOAL_ID` asks before saving mode, worker and check
+suggestions for the project's Git worktrees. See or clear them with
+`mosaic preset show|clear --repo PATH`. A saved preset can suggest options
+in a fresh draft. The current approval governs active work.
 
 If the existing Mosaic coding core is installed in its standard user location, the terminal also discovers its read-only viewer connection. A chat using `frontier-harness` writes to that existing service; a chat using `mosaic-beta` writes to the separate beta service. The terminal labels the service it is watching, follows work when the current service is empty or another service becomes active, and retains the selected service when both have active work. Use `mosaic --source core` or `mosaic --source beta` to choose explicitly. No goals, approvals or settings are migrated between services. Older core versions load saved handoffs in bounded pages; the terminal shows a loading message while catching up. If the watched service disconnects, its last saved view stays visible as stale.
 

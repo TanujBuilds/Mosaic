@@ -1,11 +1,13 @@
+import {controlBinding,ownerInbox} from './owner-inbox.mjs';
 import {createHash} from 'node:crypto';
-import {keys,identifier,integer,digest} from './contracts.mjs';
+import {keys,identifier,integer,canonical,digest} from './contracts.mjs';
 import {normalizeObserverQuery,normalizeActivityEvent,OBSERVER_LIMITS} from './collaboration-contracts.mjs';
 import {storedWorkerAttribution} from './outcomes/attribution.mjs';
 import {normalizeReviewPolicy,assertReviewMode,reviewerIdentity} from './review/contracts.mjs';
 import {savedCandidateIdentity,reviewRubric} from './review/evidence.mjs';
+import {taskEventLookupId,taskGoalId} from './store.mjs';
 
-export const OBSERVER_TOOLS=new Set(['tools_list','observer_snapshot','observer_timeline','observer_evidence','observer_artifacts']);
+export const OBSERVER_TOOLS=new Set(['tools_list','observer_snapshot','observer_timeline','observer_current_activity','observer_evidence','observer_artifacts','owner_inbox']);
 const terminal=new Set(['accepted','failed','partial','cancelled']);
 const queueStates=new Set(['queued','codex_ready','suspended','running','uncertain','codex_active']);
 const attentionStates=new Set(['awaiting_supervisor','awaiting_user','awaiting_review','awaiting_legacy_review','blocked','uncertain']);
@@ -23,6 +25,7 @@ const label=type=>({
  })[type]??type.replaceAll('.',' ');
 const trim=value=>String(value).slice(0,2000);
 const snapshotCacheLimit=8;
+const timelineScanLimit=1000;
 const hostNames={codex:'Codex','claude-code':'Claude Code',cursor:'Cursor',antigravity:'Antigravity'};
 // Project only approved identities, never provider endpoints, credentials or
 // candidate source. The legacy reviewPolicy string remains a separate field.
@@ -111,6 +114,28 @@ function taskProfile(store,task) {
  const goal=store.get('goal',task.goalId);
  return (task.goalVersion===goal.version?goal:store.maybe('goal_history',`${goal.id}-${task.goalVersion}`))?.manifest.workerProfile;
 }
+function connections(c){
+ const policy=c.configuredPolicies?.providerPolicy;
+ const selected=policy?.workers.find(p=>p.id===policy.defaultWorkerId)??c.workerProfile;
+ const host=c.selectedHost?{id:c.selectedHost,lastConnection:null}:null;
+ if(!selected)return {host,worker:null};
+ // A saved response from the exact selected profile is historical evidence.
+ // Fixture responses and responses from a previous profile cannot prove it.
+ const binding=selected.id?"json_extract(r.data,'$.providerBinding.profileHash')":"json_extract(r.data,'$.workerProfile')";
+ const match=selected.id?digest(selected):canonical(selected);
+ const previous=c.store.db.prepare(`
+  SELECT MAX(json_extract(r.data,'$.savedAt')) AS at
+  FROM requests r
+  JOIN records t ON t.kind='task' AND t.id=r.task_id
+  JOIN records g ON g.kind='goal' AND g.id=json_extract(t.data,'$.goalId')
+  WHERE r.kind='model' AND r.status='completed'
+    AND json_extract(g.data,'$.manifest.environment')='live'
+    AND json_type(r.data,'$.savedAt')='integer'
+    AND json_type(r.data,'$.result.content')='text' AND ${binding}=?
+ `).get(match);
+ const lastConnection=Number.isSafeInteger(previous.at)?{kind:'worker_response',at:previous.at}:null;
+ return {host,worker:{displayName:selected.displayName,lastConnection}};
+}
 function outcome(t,common){
  const result=t.result??{},integration=t.integration,checks=integration?.checks??result.checks;
  const files=[...new Set([...(Array.isArray(result.changes)?result.changes:[]),...(Array.isArray(result.newFiles)?result.newFiles:[])].map(x=>x?.path).filter(x=>typeof x==='string'))].slice(0,50).map(x=>x.slice(0,200));
@@ -168,7 +193,7 @@ export class Observer {
    return {events,cursor,scanned:events.length,hasMore:false};
   }
   const events=[];let cursor=q.after,scanned=0;
-  for(const event of this.c.store.events(q.after,1000)){
+  for(const event of this.c.store.events(q.after,timelineScanLimit)){
    cursor=event.seq;scanned++;
    if(q.goalId&&event.goal_id!==q.goalId)continue;
    if(event.type==='model.output'||event.type==='execution.checkpoint'||event.type==='task.checkpoint'&&event.data.status==='running')continue;
@@ -177,6 +202,35 @@ export class Observer {
   }
   const hasMore=!!this.c.store.db.prepare('SELECT 1 FROM events WHERE seq>? LIMIT 1').get(cursor);
   return {events,cursor,scanned,hasMore};
+ }
+ currentActivity(raw={}){
+  keys(raw,['after'],'current activity query');
+  let cursor=integer(raw.after??0,'after',0,Number.MAX_SAFE_INTEGER);
+  const db=this.c.store.db,activity=new Map();
+  const scan=db.prepare(`SELECT seq,goal_id,at,type,
+   CASE
+    WHEN type IN ('model.output','execution.checkpoint') THEN 0
+    WHEN type='task.checkpoint' THEN json_extract(data,'$.status') IS NOT 'running'
+    ELSE 1
+   END AS visible
+   FROM events WHERE seq>? ORDER BY seq LIMIT ?`);
+  // Match the older terminal's 32 chronological pages. Suppressed rows
+  // consume scan slots, and visible housekeeping consumes visible slots.
+  for(let page=0;page<32;page++){
+   let scanned=0,visible=0;
+   for(const event of scan.iterate(cursor,timelineScanLimit)){
+    cursor=event.seq;scanned++;
+    if(!event.visible)continue;
+    if(event.goal_id&&event.type!=='task.expired'&&event.type!=='goal.expired'){
+     const id=identifier(event.goal_id,'goalId'),at=integer(event.at,'timestamp',0,Number.MAX_SAFE_INTEGER);
+     activity.set(id,Math.max(activity.get(id)??0,at));
+    }
+    if(++visible>=OBSERVER_LIMITS.pageMax)break;
+   }
+   if(scanned<timelineScanLimit&&visible<OBSERVER_LIMITS.pageMax)break;
+  }
+  const hasMore=!!db.prepare('SELECT 1 FROM events WHERE seq>? LIMIT 1').get(cursor);
+  return {cursor,hasMore,activity:[...activity].map(([goalId,at])=>({goalId,at}))};
  }
  usage(taskId){
   return tokenTotal(this.c.store.db.prepare("SELECT data FROM requests WHERE task_id=? AND kind='model' AND status='completed'").all(taskId).map(row=>JSON.parse(row.data).result?.usage?.total_tokens));
@@ -211,22 +265,28 @@ export class Observer {
  readSnapshot(q){
   if(q.goalId)this.c.store.get('goal',q.goalId);
   const db=this.c.store.db,readRecord=db.prepare('SELECT data FROM records WHERE rowid=?');
+  const goalFilter=q.goalId?` AND ${taskGoalId}=?`:'',goalArgs=q.goalId?[q.goalId]:[];
   // Sort row IDs, then fetch payloads in the requested order. Saved checks
   // and model output can make each payload larger than SQLite's sort buffer.
-  const tasks=Array.from(db.prepare("SELECT rowid FROM records WHERE kind='task' AND (? IS NULL OR json_extract(data,'$.goalId')=?) AND (? IS NULL OR COALESCE(json_extract(data,'$.executionActor'),json_extract(data,'$.spec.actor'))=?) ORDER BY json_extract(data,'$.status') NOT IN ('accepted','failed','partial','cancelled') DESC,rowid DESC LIMIT 501").iterate(q.goalId,q.goalId,q.actor,q.actor),row=>JSON.parse(readRecord.get(row.rowid).data));
+  const tasks=Array.from(db.prepare(`SELECT rowid FROM records WHERE kind='task'${goalFilter} AND (? IS NULL OR COALESCE(json_extract(data,'$.executionActor'),json_extract(data,'$.spec.actor'))=?) ORDER BY json_extract(data,'$.status') NOT IN ('accepted','failed','partial','cancelled') DESC,rowid DESC LIMIT 501`).iterate(...goalArgs,q.actor,q.actor),row=>JSON.parse(readRecord.get(row.rowid).data));
   const selected=tasks.slice(0,500);
   const agents=this.c.store.db.prepare("SELECT data FROM records WHERE kind='agent' AND (? IS NULL OR json_extract(data,'$.goalId')=?) ORDER BY rowid DESC LIMIT 500").all(q.goalId,q.goalId).map(r=>JSON.parse(r.data)).filter(a=>!q.actor||a.actor===q.actor).map(a=>({id:a.id,taskId:a.taskId,goalId:a.goalId,actor:a.actor,role:a.role,...(a.hostId?{hostId:a.hostId}:{}),hostAgentId:a.hostAgentId??null,model:a.model??{requested:null,resolved:null},modelSource:a.modelSource??'unknown',lastReport:a.lastReport??null,provenance:'reported',accounting:{tokens:null,source:'native host accounting unavailable'}}));
+  const lastActivity=db.prepare(`SELECT seq,at,type,data FROM events
+   WHERE task_id=? AND type!='model.output' AND (?!='deepseek' OR json_extract(data,'$.provenance')='captured')
+   ORDER BY seq DESC LIMIT 1`);
   const rows=selected.map(t=>{
-   const actor=t.executionActor??t.spec.actor,event=this.c.store.db.prepare("SELECT seq,at,type,data FROM events WHERE task_id=? AND type!='model.output' AND (?!='deepseek' OR json_extract(data,'$.provenance')='captured') ORDER BY seq DESC LIMIT 1").get(t.id,actor),last=event?{...event,data:JSON.parse(event.data)}:null,registered=agents.find(a=>a.taskId===t.id&&a.actor===actor);
+   const actor=t.executionActor??t.spec.actor,event=lastActivity.get(t.id,actor),last=event?{...event,data:JSON.parse(event.data)}:null,registered=agents.find(a=>a.taskId===t.id&&a.actor===actor);
    return {id:t.id,goalId:t.goalId,objective:trim(t.spec.objective),objectiveTruncated:t.spec.objective.length>2000,kind:t.spec.kind,actor,status:t.status,phase:last?.data.phase??t.checkpoint?.phase??null,priority:t.priority??t.spec.priority,provenance:actor==='codex'?'reported':'captured',lastActivityAt:actor==='codex'?registered?.lastReport?.at??null:last?.at??null,lastActivity:actor==='codex'?registered?.lastReport?.summary??null:last?label(last.type):null,model:actor==='codex'?registered?.model??{requested:null,resolved:null}:{requested:null,resolved:typeof (t.providerModel??t.result?.model)==='string'?trim(t.providerModel??t.result.model):null},spent:this.c.getTask(t.id).spent,usage:actor==='codex'?{reportedTokens:null,completedModelRequests:0,usageUnavailable:null}:this.usage(t.id),deadline:t.deadline,question:t.questions?.length?{...t.questions.at(-1),text:trim(t.questions.at(-1).text??'')}:null,candidate:t.native?{layout:t.native.layout??'legacy',writerActive:t.native.writerActive??null,baseCommit:t.native.baseCommit??null,commit:t.native.commit??null}:null,evidenceRef:'task-'+t.id};
   });
+  const latestTaskEvent=this.c.beta?db.prepare(`SELECT at FROM events
+   WHERE ${taskEventLookupId}=? AND task_id IS NOT NULL ORDER BY seq DESC LIMIT 1`):null;
   for(let index=0;index<rows.length;index++){
    const task=selected[index],row=rows[index],goal=this.c.store.get('goal',task.goalId),selection=reviewSelection(goal);
    const review=selection?commonReview(this.c.store,task,goal,selection):null;
    if(this.c.beta&&review)row.review=review;
    row.outcome=outcome(task,review);
    if(this.c.beta){
-    row.updatedAt=this.c.store.db.prepare('SELECT at FROM events WHERE task_id=? ORDER BY seq DESC LIMIT 1').get(task.id)?.at??null;
+    row.updatedAt=latestTaskEvent.get(task.id)?.at??null;
     if(task.spec.kind==='coding'){
      const check=this.c.store.db.prepare("SELECT at,type,json_extract(data,'$.attempt') AS attempt FROM events WHERE task_id=? AND type IN ('coding.checks.passed','coding.checks.failed','checks.failed') ORDER BY seq DESC LIMIT 1").get(task.id);
      row.lastCheck=check?{status:check.type==='coding.checks.passed'?'passed':'failed',at:check.at,attempt:check.attempt}:null;
@@ -244,18 +304,23 @@ export class Observer {
    }
   }
   const counts=new Map();
-  for(const {goal_id} of db.prepare("SELECT json_extract(data,'$.goalId') AS goal_id FROM records WHERE kind='task'").iterate()){
-   counts.set(goal_id,(counts.get(goal_id)??0)+1);
+  if(q.goalId){
+   const {count}=db.prepare(`SELECT COUNT(*) AS count FROM records WHERE kind='task'${goalFilter}`).get(...goalArgs);
+   counts.set(q.goalId,count);
+  }else{
+   for(const {goal_id} of db.prepare("SELECT json_extract(data,'$.goalId') AS goal_id FROM records WHERE kind='task'").iterate()){
+    counts.set(goal_id,(counts.get(goal_id)??0)+1);
+   }
   }
   const goals=Array.from(db.prepare("SELECT rowid FROM records WHERE kind='goal' AND (? IS NULL OR id=?) ORDER BY json_extract(data,'$.status')='active' DESC,rowid DESC LIMIT 100").iterate(q.goalId,q.goalId),row=>{
    const g=JSON.parse(readRecord.get(row.rowid).data);
    const selection=reviewSelection(g);
-   return {id:g.id,objective:trim(g.manifest.objective),status:g.status,mode:g.manifest.mode.id,...(this.c.selectedHost?{hostId:this.c.selectedHost}:{}),...(this.c.beta?{reviewPolicy:g.manifest.mode.review,...(selection?{reviewSelection:selection}:{}),workerProfile:g.manifest.workerProfile??null}:{}),environment:g.manifest.environment,deadline:g.deadline,maxTasks:g.manifest.limits.maxTasks,taskCount:counts.get(g.id)??0};
+   return {id:g.id,objective:trim(g.manifest.objective),status:g.status,mode:g.manifest.mode.id,...(this.c.selectedHost?{hostId:this.c.selectedHost}:{}),...(this.c.beta?{reviewPolicy:g.manifest.mode.review,controlBinding:controlBinding(this.c.store,g),...(selection?{reviewSelection:selection}:{}),workerProfile:g.manifest.workerProfile??null}:{}),environment:g.manifest.environment,deadline:g.deadline,maxTasks:g.manifest.limits.maxTasks,taskCount:counts.get(g.id)??0};
   });
   const cursor=Number(this.c.store.db.prepare('SELECT COALESCE(MAX(seq),0) AS n FROM events').get().n);
   const reviewers=this.c.beta?this.c.store.db.prepare("SELECT data FROM records WHERE kind='reviewer' AND (? IS NULL OR json_extract(data,'$.goalId')=?) ORDER BY rowid DESC LIMIT 100").all(q.goalId,q.goalId).map(r=>{const {id,taskId,goalId,status,at,finishedAt}=JSON.parse(r.data);return {id,taskId,goalId,status,at:finishedAt??at};}):undefined;
   const planning=this.c.beta?this.c.store.db.prepare("SELECT data FROM records WHERE kind='planning' AND (? IS NULL OR json_extract(data,'$.goalId')=?) ORDER BY rowid DESC LIMIT 100").all(q.goalId,q.goalId).map(r=>{const {goalId,status,reason}=JSON.parse(r.data);const event=this.c.store.db.prepare("SELECT at FROM events WHERE goal_id=? AND type LIKE 'planning.%' ORDER BY seq DESC LIMIT 1").get(goalId);return {goalId,status,reason,at:event?.at??null};}):undefined;
-  return {version:1,...(this.c.beta?{reviewers,planning}:{}),cursor,goals,tasks:rows,agents,queue:rows.filter(t=>queueStates.has(t.status)),attention:rows.filter(t=>attentionStates.has(t.status)).map(t=>({taskId:t.id,goalId:t.goalId,status:t.status,objective:t.objective,instruction:'Continue in Codex to inspect and decide.'})),overflow:{tasks:tasks.length>500},limits:{goals:100,tasks:500,agents:500},nativeAccounting:'unavailable unless supplied by the native host'};
+  return {version:1,...(this.c.beta?{reviewers,planning,connections:connections(this.c),needsYou:ownerInbox(this.c,q)}:{}),cursor,goals,tasks:rows,agents,queue:rows.filter(t=>queueStates.has(t.status)),attention:rows.filter(t=>attentionStates.has(t.status)).map(t=>({taskId:t.id,goalId:t.goalId,status:t.status,objective:t.objective,instruction:'Continue in Codex to inspect and decide.'})),overflow:{tasks:tasks.length>500},limits:{goals:100,tasks:500,agents:500},nativeAccounting:'unavailable unless supplied by the native host'};
  }
  async artifactsList(raw){keys(raw,['taskId'],'artifact query');identifier(raw.taskId,'task ID');return (await this.artifacts.list(raw.taskId,{limit:100})).map(a=>({...a,reference:'artifact-'+a.id}));}
  async evidence(raw){

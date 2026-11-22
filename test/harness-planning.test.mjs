@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {Coordinator} from '../src/harness/coordinator.mjs';
 import {Worker} from '../src/harness/worker.mjs';
+import {ProviderRegistry} from '../src/harness/providers/registry.mjs';
 
 function fixture(t,mode='deepseek_only',extra={}){
  const root=mkdtempSync(path.join(os.tmpdir(),'harness-planner-')),c=new Coordinator({root});t.after(()=>{c.close();rmSync(root,{recursive:true,force:true});});
@@ -52,4 +53,32 @@ test('planner explicit ceiling expansion spends only three planner requests and 
  assert.equal(calls,3);assert.equal(goal.tasks.length,0);assert.equal(goal.planning.status,'blocked');assert.equal(goal.planning.spent,3);assert.equal(goal.deadline,deadline);
  assert.equal(f.c.store.db.prepare('SELECT COUNT(*) AS n FROM requests WHERE task_id=?').get(goal.id).n,3);assert.ok(goal.planning.feedback.every(x=>/modelCalls/.test(x)));
  const reopened=new Coordinator({root:f.c.store.root});t.after(()=>reopened.close());await new Worker({c:reopened,config:f.config,provider:{complete:async()=>{throw Error('Spent planning requests must not restart');}}}).drain();assert.equal(reopened.getGoal(goal.id).planning.spent,3);
+});
+
+
+test('the planner sends only planning fields and never the private project and provider configuration',async t=>{
+ const profiles=['planner','unrelated'].map((id,i)=>({schema:1,id,revision:'r1',displayName:id,transport:'openai-chat',baseUrl:`https://${id}.fixture.example/v1`,model:`fixture-model-${i}`,roles:['worker'],capabilities:{workerProtocol:'mosaic-structured-v1',transports:['json'],modelDiscovery:'manual',taskKinds:['coding','consult']},maxContextTokens:null,maxOutputTokens:12000,concurrency:1,capacityGroup:id,credentialRef:id+'-dummy-key',streaming:false}));
+ const root=mkdtempSync(path.join(os.tmpdir(),'planner-projection-')),providerRegistry=ProviderRegistry({profiles});
+ const c=new Coordinator({root,providerRegistry});t.after(()=>{c.close();rmSync(root,{recursive:true,force:true});});
+ const providerPolicy={version:1,workers:providerRegistry.snapshot(profiles.map(({id,revision})=>({id,revision}))),plannerWorkerId:profiles[0].id,defaultWorkerId:profiles[1].id,capacityGroups:profiles.map(({id})=>({id,limit:1}))};
+ const project={...pilotProject,repo:'/private/demo/planner-private-root',checks:[{id:'verify',argv:['node','checks/verify.mjs','planner-argv-private-marker']}]};
+ const g=c.prepareGoal({submissionId:'internal-submission-marker',objective:'Plan the safe coding change',acceptance:['Use the protected check'],mode:'deepseek_only',environment:'fixture',project,providerPolicy,limits:{maxTasks:1}},'prepare');
+ c.activateGoal({goalId:g.id,hash:g.hash},'activate');
+ const inputs=[];
+ const worker=new Worker({c,config:{environment:'fixture'}});
+ worker.getProvider=()=>({complete:async messages=>{
+  inputs.push(messages.at(-1).content);
+  return {content:inputs.length===1?'FEEDMARK':JSON.stringify(codingPlan)};
+ }});
+ await worker.planner.tick();
+ assert.match(c.getGoal(g.id).planning.feedback[0],/FEEDMARK/);
+ await worker.planner.tick();
+ assert.equal(inputs.length,2);
+ const [,body]=inputs,{goal,priorRejections}=JSON.parse(body);
+ assert.equal(priorRejections,1);
+ assert.equal(goal.objective,'Plan the safe coding change');
+ assert.deepEqual(goal.acceptance,['Use the protected check']);
+ assert.deepEqual(goal.project,{readPaths:project.readPaths,writePaths:project.writePaths,checks:['verify']});
+ assert.equal(goal.limits.maxTasks,1);
+ for(const marker of ['planner-private-root','planner-argv-private-marker','internal-submission-marker','unrelated.fixture.example','fixture-model-1','providerPolicy','credentialRef','plannerBinding','FEEDMARK'])assert.ok(!body.includes(marker),marker);
 });

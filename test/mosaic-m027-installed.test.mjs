@@ -105,8 +105,8 @@ sys.exit(124 if timed_out else code if code else 125 if steps else 0)
 
 function guidedSteps(urls){
  const steps=[],add=(label,prompt,answer)=>steps.push({label,prompt,answer:answer+'\r'});
- add('coding app','Choose host [1]: ','3');
- add('guided choice','Choose worker setup [1]: ','6');
+ add('coding app','Pick your coding app','3');
+ add('guided choice','Choose a worker','6');
  add('worker count','How many workers? 2 or 3 [3]: ','3');
  for(let i=1;i<=3;i++){
   add('worker '+i+' location',`Choose for worker ${i} [1]: `,String(i));

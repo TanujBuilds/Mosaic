@@ -6,6 +6,7 @@ import path from 'node:path';
 import {isEntry} from '../harness/entry.mjs';
 import {verifyPackage} from '../harness/package.mjs';
 import {canonical} from '../harness/contracts.mjs';
+import {RemoteProviderTransportError,workerEndpoint} from '../harness/worker-profile.mjs';
 import {readBundledNativeCheckRuntime} from './package-contract.mjs';
 import {nativeImplementationSources,validateNativeCheckRuntime} from '../project/check-backends/native-runtime-dispatch.mjs';
 import {atomic,currentHome,entry,fileBytes,hash,jsonFile,localDirectory,locations,readMaintenanceDatabase,saveJson,shellQuote,withLock} from './files.mjs';
@@ -16,6 +17,23 @@ const versionPattern=/^\d+\.\d+\.\d+(?:-beta\.\d+)?$/;
 const header='# BEGIN MOSAIC BETA PATH v1';
 const footer='# END MOSAIC BETA PATH v1';
 const block=`${header}\nexport PATH="$HOME/.local/bin:$PATH"\n${footer}\n`;
+
+function writeInstallReceipt(output,paths,version){
+ const command=`${shellQuote(paths.launcher)} setup`;
+ const width=Math.min((output.columns??0)-1,50),status=`│  Installed  ${version}`;
+ if(!output.isTTY||width<43||status.length>width||process.env.TERM==='dumb'||Object.hasOwn(process.env,'NO_COLOR')){
+  output.write(`Mosaic Beta ${version} installed.\nRun ${command}\n`);
+  return;
+ }
+ const blue='\x1b[1;94m',bold='\x1b[1m',reset='\x1b[0m',title='╭─ Mosaic Beta ';
+ output.write([
+  '',blue+title+'─'.repeat(width-title.length)+reset,
+  `${blue}│${reset}  ${bold}Installed${reset}  ${version}`,
+  blue+'╰'+'─'.repeat(width-1)+reset,
+  '',`  ${bold}Install location${reset}`,`  ${paths.root}`,
+  '',`  ${bold}Run setup${reset}`,`  ${command}`,'',
+ ].join('\n'));
+}
 
 function launcherFor(paths,version,legacy=false){
  const installed=path.join(paths.versions,version,'runtime');
@@ -81,8 +99,20 @@ function nativeImplementationHash(manifest,nodeVersion){
 export async function assertStateCompatibility(paths,manifest){
  const compatible=manifest.stateCompatibility??{settings:[1],database:[0,1]};
  if(!compatible||!['settings','database'].every(key=>Array.isArray(compatible[key])&&compatible[key].length&&compatible[key].every(n=>Number.isInteger(n)&&n>=0)))throw Error('Invalid package state compatibility contract');
+ if(compatible.providerTransport!==undefined&&compatible.providerTransport!=='https-or-http-loopback')throw Error('Unknown package provider transport compatibility policy');
  const settings=await jsonFile(paths.config,{privateFile:true});
  if(settings&&!compatible.settings.includes(settings.schema))throw Error('Incompatible settings schema '+settings.schema+'. Keep the newer version; rollback does not restore an older state backup.');
+ if(settings&&compatible.providerTransport==='https-or-http-loopback'){
+  const profiles=settings.schema===1?(settings.worker?[settings.worker.profile]:[]):settings.providers;
+  if(!Array.isArray(profiles))throw Error('Invalid saved provider catalog. Review settings on the previous installed version before switching versions.');
+  for(const profile of profiles){
+   try{workerEndpoint(profile?.baseUrl);}
+   catch(error){
+    if(error instanceof RemoteProviderTransportError)throw Error(error.message+' Update saved provider URLs on the previous installed version before upgrading.');
+    throw Error('Invalid saved API base URL. Review settings on the previous installed version before switching versions.');
+   }
+  }
+ }
  const database=path.join(paths.state,'harness.sqlite3'),info=await entry(database);
  let savedExecution=null,heldNative=false;
  if(info){
@@ -139,7 +169,8 @@ function lifecycleFor(paths,lifecycle){
 }
 async function settingsSnapshot(paths){const bytes=await fileBytes(paths.config,{privateFile:true});return bytes?hash(bytes):null;}
 function validateTransaction(paths,tx){
- if(tx?.schema!==1||!versionPattern.test(tx.version??'')||!['prepared','staged','launcher','receipt','committed','restored'].includes(tx.phase)||typeof tx.oldLauncher!=='string'&&tx.oldLauncher!==null||typeof tx.staged!=='string'||!/^\.install-[a-f0-9-]+$/.test(tx.staged)||typeof tx.registered!=='boolean'||typeof tx.existed!=='boolean'||tx.settingsHash!==undefined&&tx.settingsHash!==null&&!/^[a-f0-9]{64}$/.test(tx.settingsHash))throw Error('Invalid installation recovery transaction; preserve it for inspection.');
+ if(tx?.schema!==1||!versionPattern.test(tx.version??'')||!['stopping','prepared','staged','launcher','receipt','committed','restored'].includes(tx.phase)||typeof tx.oldLauncher!=='string'&&tx.oldLauncher!==null||typeof tx.staged!=='string'||!/^\.install-[a-f0-9-]+$/.test(tx.staged)||typeof tx.registered!=='boolean'||typeof tx.existed!=='boolean'||tx.settingsHash!==undefined&&tx.settingsHash!==null&&!/^[a-f0-9]{64}$/.test(tx.settingsHash))throw Error('Invalid installation recovery transaction; preserve it for inspection.');
+ if(tx.phase==='stopping'&&(!tx.registered||!tx.existed||!tx.oldLauncher||!tx.oldReceipt||!/^[a-f0-9]{64}$/.test(tx.oldReceipt.contentHash??'')||tx.settingsHash===undefined))throw Error('Missing prior installation ownership for registered service shutdown; preserve the installation.');
  if(tx.oldReceipt&&tx.oldLauncher&&(!versionPattern.test(tx.oldReceipt.version??'')||hash(Buffer.from(tx.oldLauncher??'','base64'))!==tx.oldReceipt.launcherHash||![launcherFor(paths,tx.oldReceipt.version),launcherFor(paths,tx.oldReceipt.version,true)].includes(Buffer.from(tx.oldLauncher??'','base64').toString())))throw Error('Changed installation recovery ownership; preserve it for inspection.');
  if(tx.newReceipt?.version!==tx.version||tx.newReceipt.launcherHash!==hash(launcherFor(paths,tx.version)))throw Error('Changed installation recovery target; preserve it for inspection.');
 }
@@ -148,7 +179,8 @@ async function assertSettingsSnapshot(paths,tx){
  if(await settingsSnapshot(paths)!==tx.settingsHash)throw Error('Settings changed during installation recovery; preserve the transaction for inspection.');
 }
 async function assertHandoffPointer(paths,tx){
- const expectedReceipt=tx.phase==='restored'?tx.oldReceipt:tx.newReceipt,expectedLauncher=tx.phase==='restored'?(tx.oldLauncher?Buffer.from(tx.oldLauncher,'base64'):null):Buffer.from(launcherFor(paths,tx.version));
+ const previous=tx.phase==='stopping'||tx.phase==='restored';
+ const expectedReceipt=previous?tx.oldReceipt:tx.newReceipt,expectedLauncher=previous?(tx.oldLauncher?Buffer.from(tx.oldLauncher,'base64'):null):Buffer.from(launcherFor(paths,tx.version));
  const current=await fileBytes(paths.launcher,{max:16384}),receipt=await jsonFile(paths.installation,{privateFile:true,max:8192});
  if((current?hash(current):null)!==(expectedLauncher?hash(expectedLauncher):null)||canonical(receipt)!==canonical(expectedReceipt))throw Error('Installation pointer or receipt changed during owned restart; preserve it for inspection.');
  await assertSettingsSnapshot(paths,tx);
@@ -187,7 +219,18 @@ async function recoverLocked(paths,lifecycle){
  const current=await fileBytes(paths.launcher,{max:16384}),receipt=await jsonFile(paths.installation,{privateFile:true,max:8192});
  const currentHash=current?hash(current):null,oldHash=tx.oldLauncher?hash(Buffer.from(tx.oldLauncher,'base64')):null;
  if(![null,oldHash,tx.newReceipt.launcherHash].includes(currentHash)||receipt&&![hash(JSON.stringify(tx.oldReceipt)),hash(JSON.stringify(tx.newReceipt))].includes(hash(JSON.stringify(receipt))))throw Error('Installation pointer or receipt was modified after interruption; preserve it for inspection.');
- if(['committed','restored'].includes(tx.phase)){
+ if(tx.phase==='stopping'){
+  await assertHandoffPointer(paths,tx);
+  const previous=await verifyVersion(path.join(paths.versions,tx.oldReceipt.version),tx.oldReceipt.version);
+  if(previous.contentHash!==tx.oldReceipt.contentHash)throw Error('Prior package inventory differs from its installation receipt; preserve the pending shutdown.');
+  await assertStateCompatibility(paths,previous);
+  // The original service may have admitted work since the installer exited.
+  // Its live stop or proven offline quiescence must precede any restart handoff.
+  await lifecycle.stopForMaintenance(paths,{recovering:true});
+  await assertMaintenanceIdle(paths,{offline:true});
+  await assertHandoffPointer(paths,tx);
+  tx={...tx,phase:'restored'};await saveJson(transactionFile(paths),tx);
+ }else if(['committed','restored'].includes(tx.phase)){
   const target=tx.phase==='restored'?tx.oldReceipt:tx.newReceipt;
   if(target){const manifest=await verifyVersion(path.join(paths.versions,target.version),target.version);await assertStateCompatibility(paths,manifest);}
   if(tx.settingsHash===undefined){tx={...tx,settingsHash:await settingsSnapshot(paths)};await saveJson(transactionFile(paths),tx);}
@@ -228,9 +271,16 @@ export async function install(paths,payload,{noPath=false,afterStep=()=>{},lifec
   const launcher=launcherFor(paths,version),receipt={schema:1,version,contentHash:manifest.contentHash,launcherHash:hash(launcher),...(old.receipt?.pathBlock?{pathBlock:old.receipt.pathBlock,pathFileCreated:old.receipt.pathFileCreated}:{})};
   const switched=!present||!old.bytes||old.receipt.version!==version;
   if(!switched)return {receipt};
-  const existed=await lifecycle.verifyLaunchAgent(paths),registered=await lifecycle.stopForMaintenance(paths),staged='.install-'+randomUUID();
-  let tx={schema:1,version,phase:'prepared',oldLauncher:old.bytes?.toString('base64')??null,oldReceipt:old.receipt,newReceipt:receipt,existed,registered,staged,settingsHash:await settingsSnapshot(paths)};
-  // Persist the owned restart handoff before the post-shutdown state read can fail.
+  const existed=await lifecycle.verifyLaunchAgent(paths);
+  const original={schema:1,version,oldLauncher:old.bytes?.toString('base64')??null,oldReceipt:old.receipt,
+   newReceipt:receipt,existed,staged:'.install-'+randomUUID(),settingsHash:await settingsSnapshot(paths)};
+  const registered=await lifecycle.stopForMaintenance(paths,{beforeRegisteredStop:async()=>{
+   // Older versions must decline recovery while the old service may be live.
+   const stopping={...original,phase:'stopping',registered:true};
+   validateTransaction(paths,stopping);await saveJson(transactionFile(paths),stopping);
+  }});
+  const {staged}=original;
+  let tx={...original,phase:'prepared',registered};
   await saveJson(transactionFile(paths),tx);
   const advance=async(phase,event)=>{tx={...tx,phase};await saveJson(transactionFile(paths),tx);await afterStep(event);};let newVersion=false;
   try{
@@ -255,7 +305,7 @@ export async function install(paths,payload,{noPath=false,afterStep=()=>{},lifec
   if(current.receipt?.version!==version||current.receipt.contentHash!==manifest.contentHash)throw Error('Installed version changed before PATH binding; preserve it for inspection.');
   try{await saveJson(paths.installation,await applyPath(paths,current.receipt));}catch(error){process.stderr.write('PATH unchanged or needs inspection. '+error.message+'\n');}
  });
- process.stdout.write(`Mosaic Beta ${version} installed.\nRun ${shellQuote(paths.launcher)} setup\n`);
+ writeInstallReceipt(process.stdout,paths,version);
 }
 export async function rollbackVersion(paths,version,options={}){
  if(!versionPattern.test(version??''))throw Error('Choose an installed version for rollback');

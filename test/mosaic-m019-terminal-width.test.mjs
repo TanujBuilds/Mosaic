@@ -78,9 +78,10 @@ test('unrecognized wide goal status and workflow labels remain bounded',()=>{
 test('control, OSC, ANSI and bidi input stays inert before measurement in every view',()=>{
  const hostile='Ａ'.repeat(18)+'\x1b]52;c;PAYLOAD\x07'+'\x1b[2J'+'\x1b[31mBAD\x1b[0m'+'\u009d52;c;C1PAYLOAD\x07'+'\x1b]unfinished'+'\u202e\u2066';
  const s=populated(hostile);s.currentNotice=hostile;s.snapshot.sourceLabel=hostile;s.snapshot.sourceHint=hostile;
+ s.snapshot.connections={host:{id:'cursor',lastConnection:null},worker:{displayName:hostile,lastConnection:null}};
  for(const [width,height] of [[8,20],[20,20],[55,36],[80,50]]){
   for(const color of [false,true]){
-   for(const options of [{interactive:false},{interactive:true,selected:4},{interactive:true,picker:0},{interactive:true,detail:hostile,detailTitle:hostile}]){
+   for(const options of [{interactive:false},{interactive:true,selected:4},{interactive:true,picker:0},{interactive:true,detail:hostile,detailTitle:hostile},{interactive:true,view:'connections'},{interactive:true,view:'activity'}]){
     const frame=renderTerminal(s,{width,height,color,...options}),plain=stripVTControlCharacters(frame);
     bounded(frame,width,height);
     assert.doesNotMatch(plain,/[\x00-\x09\x0b-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]|PAYLOAD|unfinished/u);

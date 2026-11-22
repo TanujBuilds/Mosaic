@@ -30,7 +30,8 @@ export async function repository(service, { name = 'project', committed = true }
   await writeFile(path.join(root, 'README.md'), `${repoInstruction}\n`);
   await writeFile(path.join(root, 'package.json'), JSON.stringify({ scripts: { test: 'node checks/verify.mjs' } }));
   await git('add', '.');
-  if (committed) await git('commit', '-m', 'Mosaic assignment fixture');
+  // Keep post-commit background maintenance out of the read-only snapshots.
+  if (committed) await git('-c', 'maintenance.auto=false', '-c', 'gc.auto=0', 'commit', '-m', 'Mosaic assignment fixture');
   return { root, git, marker, baseCommit: committed ? await git('rev-parse', 'HEAD') : null };
 }
 

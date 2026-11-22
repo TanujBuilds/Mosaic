@@ -8,7 +8,7 @@ import {spawn} from 'node:child_process';
 import http from 'node:http';
 import {locations,privateDirectories,saveJson} from '../src/beta/files.mjs';
 import {normalizeSettings,readSettings} from '../src/beta/settings.mjs';
-import {setup,setupComplete} from '../src/beta/setup.mjs';
+import {doctor,setup,setupComplete} from '../src/beta/setup.mjs';
 import {setupPortable} from '../src/beta/portable-setup.mjs';
 import {Coordinator} from '../src/harness/coordinator.mjs';
 
@@ -158,7 +158,7 @@ test('public CLI PTY rotates one key, explicitly replaces a model and retains th
  const server=http.createServer((req,res)=>{calls.push(req.method);res.end('{}');});await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));t.after(()=>new Promise(resolve=>{server.closeAllConnections();server.close(resolve);}));const url=`http://127.0.0.1:${server.address().port}/v1`;
  const old=settings(),first={...profile('first','custom-first-key'),displayName:'First fixture',baseUrl:url},second={...profile('second','custom-second-key'),displayName:'Second fixture',baseUrl:url,capacityGroup:'first'};
  old.providers=[first,second];old.defaults={workerId:'first',plannerWorkerId:'second',review:{source:'host',hostId:'cursor'},routing:{version:1,rules:[],defaultWorkerId:'first'}};old.capacityGroups=[{id:'first',limit:1}];await saveJson(paths.config,old);await saveJson(paths.credentials,{schema:1,entries:{'custom-first-key':'dummy-first-before-wave01','custom-second-key':'dummy-second-retained-wave01',retained:'dummy-unrelated-wave01'}});
- const steps=[['Choose host [1]: ','3'],['Number of already-running API worker profiles [0]: ','2']];
+ const steps=[['Choose host [3]: ',''],['Number of already-running API worker profiles [0]: ','2']];
  for(const [i,p] of [first,second].entries())steps.push([`Profile ${i+1} identifier: `,p.id],['Display name: ',p.displayName],['Already-running server API base URL (local or explicit remote): ',url],['Model ID (manual, no discovery required): ',i===0?'explicit-new-model':'fixture-model'],['Does this endpoint require an API bearer key?',i===0?'y':'k'],...(i===0?[['Bearer key (hidden): ','dummy-first-after-wave01']]:[]));
  steps.push(['Default worker identifier (Enter for first worker): ','first'],['Planner worker identifier (Enter for default worker): ','second'],['Add an explicit specialty route? [y/N] ','n'],['Use a separately configured API reviewer instead of the selected host? [y/N] ','n'],['Service maximum concurrent tasks [1]: ','1'],['Run optional model discovery check? [y/N] ','n'],['Run optional inference connectivity test with that fixed setup-only message? [y/N] ','n'],['Apply this exact setup and managed host binding? [y/N] ','y']);
  const driver=spawn('/usr/bin/python3',['-c',ptyDriver],{stdio:['pipe','pipe','pipe'],timeout:15000});let stdout='',stderr='';driver.stdout.on('data',c=>stdout+=c);driver.stderr.on('data',c=>stderr+=c);driver.stdin.end(JSON.stringify({argv:[process.execPath,new URL('../src/beta/cli.mjs',import.meta.url).pathname,'--home',paths.home,'setup'],steps}));
@@ -199,4 +199,29 @@ for(const owner of ['profile','unused'])test(`new advanced profile key cannot ov
   if(/Choose host/.test(prompt))return '3';if(/Number of already-running/.test(prompt))return '2';if(/Profile \d identifier/.test(prompt))return ++current===1?'worker':'second';if(/Display name/.test(prompt))return current===1?'First fixture':'Second fixture';if(/API base URL/.test(prompt))return current===1?'http://127.0.0.1:2/v1':second.baseUrl;if(/Model ID/.test(prompt))return 'fixture-model';if(/require an API bearer key/.test(prompt))return current===1?'y':'k';if(options?.secret)return 'dummy-new-profile-wave01';if(/Default worker identifier|Planner worker identifier/.test(prompt))return 'second';if(/Service maximum/.test(prompt))return '1';if(/Apply this exact/.test(prompt))return 'y';return 'n';
  };
  assert.equal(await run(paths,{ask,output:{write(){}}}),true);const saved=await readSettings(paths),creds=JSON.parse(await readFile(paths.credentials));for(const [ref,value] of Object.entries(retained))assert.equal(creds.entries[ref],value);assert.equal(saved.providers[1].credentialRef,second.credentialRef);assert.ok(!Object.hasOwn(retained,saved.providers[0].credentialRef));assert.equal(creds.entries[saved.providers[0].credentialRef],'dummy-new-profile-wave01');
+});
+
+
+test('rotating a key still rejects an identity containing its retired value before diagnostics',async t=>{
+ const {paths,old,host}=await fixture(t),before=await bytes([paths.config,paths.credentials,host]);
+ const io=advanced({key:'y',model:'model-dummy-original-wave01'});
+ let preflight=false;
+ await assert.rejects(run(paths,io,{verifyExecution:()=>{preflight=true;}}),/Credential values must occur only/);
+ assert.equal(preflight,false);assert.doesNotMatch(io.text(),/dummy-original-wave01|Mosaic setup summary|optional model discovery/);
+ assert.deepEqual(await bytes([paths.config,paths.credentials,host]),before);await noIntent(paths);
+});
+
+for(const withKey of [false,true])test(`saved remote HTTP settings fail before a ${withKey?'credentialed':'keyless'} setup or diagnostic`,async t=>{
+ const {paths,old,host}=await fixture(t);
+ old.providers[0].baseUrl='http://192.0.2.2:8000/v1';
+ if(!withKey)old.providers[0].credentialRef=null;
+ await saveJson(paths.config,old);
+ const before=await bytes([paths.config,paths.credentials,host]);
+ await assert.rejects(readSettings(paths),/HTTPS/);
+ await assert.rejects(run(paths,{ask:()=>assert.fail('No interactive setup or diagnostic allowed'),output:{write(){}}}),/HTTPS/);
+ let diagnostic='';
+ await doctor(paths,{write:value=>{diagnostic+=value;}},{providers:true,gitReady:async()=>null});
+ assert.match(diagnostic,/HTTPS.*previous installed version/);
+ assert.doesNotMatch(diagnostic,/192\.0\.2\.2|dummy-original-wave01|Provider worker/);
+ assert.deepEqual(await bytes([paths.config,paths.credentials,host]),before);await noIntent(paths);
 });

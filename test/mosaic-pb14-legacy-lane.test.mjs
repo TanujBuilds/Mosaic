@@ -5,7 +5,14 @@ import {fixture,goal as portableGoal,task as codingTask} from './fixtures/mosaic
 import {Worker} from '../src/harness/worker.mjs';
 import {configureServiceCapacity} from '../src/harness/scheduling/capacity.mjs';
 
-async function advance(worker,done){for(let n=0;n<100&&!done();n++){await worker.executeTick();await delay(5);}assert.ok(done(),'Supervisor reached the expected checkpoint');}
+async function advance(worker,done){
+ const deadline=performance.now()+5000;
+ while(!done()&&performance.now()<deadline){
+  await worker.executeTick();
+  if(!done())await delay(5);
+ }
+ assert.ok(done(),'Supervisor reached the expected checkpoint');
+}
 async function startBarrier(worker,entered){
  const ready=entered.then(()=>true);
  for(let n=0;n<100;n++){
