@@ -31,14 +31,25 @@ function Get-GitConfigHash([string] $Path) {
 
 function Get-Git {
     $candidates = @((Join-Path $local 'Programs\Git\cmd\git.exe'))
-    foreach ($root in @($env:ProgramFiles, [Environment]::GetEnvironmentVariable('ProgramFiles(x86)'))) {
+    foreach ($root in @($env:ProgramW6432, $env:ProgramFiles, [Environment]::GetEnvironmentVariable('ProgramFiles(x86)'))) {
         if ($root) { $candidates += Join-Path $root 'Git\cmd\git.exe' }
     }
     foreach ($candidate in $candidates) {
         $item = Get-Item -LiteralPath $candidate -Force -ErrorAction SilentlyContinue
-        if ($item -and -not $item.PSIsContainer -and -not ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+        if (-not $item -or $item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { continue }
+        $plain = $true
+        for ($directory = $item.Directory; $directory; $directory = $directory.Parent) {
+            if ($directory.Attributes -band [IO.FileAttributes]::ReparsePoint) { $plain = $false; break }
+        }
+        if (-not $plain) { continue }
+        Push-Location -LiteralPath $item.DirectoryName
+        try {
             $reply = & $item.FullName --version 2>$null
-            if ($LASTEXITCODE -eq 0 -and $reply -match '^git version \d') { return $item.FullName }
+            if ($LASTEXITCODE -eq 0 -and $reply -match '^git version \d+\.\d+\.\d+\.windows\.\d+$') { return $item.FullName }
+        } catch {
+            continue
+        } finally {
+            Pop-Location
         }
     }
     return $null
@@ -50,11 +61,15 @@ function Require-Git {
     Write-Host 'Mosaic uses Git for Windows to prepare a project and verify its changes.'
     $winget = Join-Path $local 'Microsoft\WindowsApps\winget.exe'
     if ([IO.File]::Exists($winget) -and (Read-Host 'Install Git for this user with Windows Package Manager? [y/N]') -match '^y(es)?$') {
-        & $winget install --id Git.Git --exact --source winget --scope user | Out-Host
+        try { & $winget install --id Git.Git --exact --source winget --scope user | Out-Host }
+        catch { Write-Host 'Windows Package Manager could not complete the Git install.' }
+        # The installer can change a later session's PATH. Probe the known
+        # per-user installation location again in this session.
         $installed = Get-Git
         if ($installed) { return $installed }
     }
-    throw 'Install Git for Windows from https://git-scm.com/install/windows, then rerun this install command.'
+    Write-Host 'Install Git for Windows from https://git-scm.com/install/windows, then run mosaic first-task when ready.'
+    return $null
 }
 
 function Copy-PublicRepository([string] $Git, [string] $Uri, [string] $Destination) {
@@ -209,6 +224,7 @@ try {
     $codingStatus = Invoke-GuideStep $node @($lifecycle, 'coding-status') @(0, 3)
     if ($codingStatus -eq 3) { return }
     $git = Require-Git
+    if (-not $git) { return }
     $gitDirectory = [IO.Path]::GetDirectoryName($git)
     if (($env:Path -split ';') -notcontains $gitDirectory) { $env:Path = $gitDirectory + ';' + $env:Path }
     Write-Host '3. Start a coding task'
