@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   windows:
-    name: Windows x64 CI (Windows Server 2025)
+    name: Windows x64 source and platform tests
     runs-on: windows-2025
     timeout-minutes: 25
     steps:
@@ -35,20 +35,49 @@ jobs:
         run: npm ci --ignore-scripts --no-audit --no-fund
       - name: Run portable coordinator and committed Git fixture tests on Windows
         run: node --test --test-concurrency=1 test/coordinator.test.mjs .github/scripts/windows-first-task-fixture.test.mjs
+      - name: Run Windows platform tests
+        shell: pwsh
+        run: |
+          $tests = @(Get-ChildItem -LiteralPath test -File -Filter 'windows-*.test.mjs' |
+            Where-Object Name -ne 'windows-protected-checks.test.mjs' | Sort-Object Name | ForEach-Object FullName)
+          if ($tests.Count -eq 0) {
+            Write-Output '::notice::No Windows-specific platform tests have landed.'
+            exit 0
+          }
+          $tests | Write-Output
+          node --test --test-concurrency=1 @tests
+          exit $LASTEXITCODE
+
+  windows-isolation:
+    name: Required Windows x64 protected execution qualification
+    runs-on: windows-2025
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24.22.3'
+          package-manager-cache: false
+      - name: Report Windows runner and Node versions
+        shell: pwsh
+        run: |
+          $os = Get-CimInstance Win32_OperatingSystem
+          Write-Output "$($os.Caption) $($os.Version) $($os.OSArchitecture)"
+          Write-Output "Runner image: $env:ImageOS ($env:ImageVersion)"
+          Write-Output "PowerShell: $($PSVersionTable.PSVersion)"
+          node --version
+      - name: Install locked test dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
       - name: Find native build inputs
         id: native
         shell: pwsh
         run: |
           $source = Test-Path -LiteralPath 'src/project/check-backends/windows-supervisor.cpp' -PathType Leaf
           $test = Test-Path -LiteralPath 'test/windows-protected-checks.test.mjs' -PathType Leaf
-          if ($source -ne $test) {
-            throw 'The Windows supervisor and its protected-check test must land together.'
-          }
-          if (-not $source) {
-            Write-Output '::notice::Native Windows protected checks are pending. The source and test have not landed.'
-            'Native Windows protected checks: pending source and fixture.' >> $env:GITHUB_STEP_SUMMARY
-            'available=false' >> $env:GITHUB_OUTPUT
-            exit 0
+          if (-not $source -or -not $test) {
+            throw 'The required Windows supervisor and its protected-check tests must be present.'
           }
 
           $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
@@ -57,9 +86,7 @@ jobs:
           $devCmd = Join-Path $visualStudio 'Common7/Tools/VsDevCmd.bat'
           if (-not (Test-Path -LiteralPath $devCmd -PathType Leaf)) { throw 'VsDevCmd.bat is unavailable.' }
           "dev_cmd=$devCmd" >> $env:GITHUB_OUTPUT
-          'available=true' >> $env:GITHUB_OUTPUT
       - name: Build the x64 Windows protected-check supervisor
-        if: steps.native.outputs.available == 'true'
         shell: cmd
         env:
           MOSAIC_VS_DEV_CMD: ${{ steps.native.outputs.dev_cmd }}
@@ -73,24 +100,15 @@ jobs:
           if not exist "mosaic-windows-supervisor.exe" exit /b 1
           >>"%GITHUB_ENV%" echo MOSAIC_TEST_WINDOWS_SUPERVISOR=%RUNNER_TEMP%\mosaic-windows-supervisor.exe
           popd
-      - name: Run available Windows-specific tests
-        shell: pwsh
-        run: |
-          $tests = @(Get-ChildItem -LiteralPath test -File -Filter 'windows-*.test.mjs' | Sort-Object Name | ForEach-Object FullName)
-          if ($tests.Count -eq 0) {
-            Write-Output '::notice::No Windows-specific runtime tests have landed.'
-            exit 0
-          }
-          $tests | Write-Output
-          node --test --test-concurrency=1 @tests
-          exit $LASTEXITCODE
+      - name: Run native protected execution tests
+        run: node --test --test-concurrency=1 test/windows-protected-checks.test.mjs
       - name: Record remaining release gates
         if: always()
         shell: pwsh
         run: |
           @'
-          Runner: Windows Server 2025 x64. See the individual steps for source and native results.
-          Anonymous package install and recovery, clean Windows 11 x64 onboarding, and signed-in coding apps require separate candidate qualification.
+          Runner: Windows Server 2025 x64. The native supervisor and protected execution tests are required.
+          A Windows 11 x64 client and signed-in coding apps require separate candidate qualification.
           '@ >> $env:GITHUB_STEP_SUMMARY
 
   package-inputs:
@@ -276,6 +294,42 @@ jobs:
         if: steps.maintenance.outputs.available == 'true'
         shell: pwsh
         run: node .github/scripts/windows-package-smoke.mjs (Join-Path $env:RUNNER_TEMP 'Mosaic Windows candidate') "$env:MOSAIC_PWSH" "$env:MOSAIC_UPDATE_FIXTURE_DIR"
+
+  windows-download:
+    name: Windows x64 interrupted HTTPS download and recovery
+    needs: package
+    runs-on: windows-2025
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Detect the private loopback HTTPS fixture
+        id: smoke
+        shell: pwsh
+        run: |
+          if (Test-Path -LiteralPath '.github/scripts/windows-download-smoke.mjs' -PathType Leaf) {
+            'available=true' >> $env:GITHUB_OUTPUT
+          } else {
+            'Interrupted HTTPS download: pending the private loopback fixture.' >> $env:GITHUB_STEP_SUMMARY
+            'available=false' >> $env:GITHUB_OUTPUT
+          }
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        if: steps.smoke.outputs.available == 'true'
+        with:
+          node-version: '24.22.3'
+          package-manager-cache: false
+      - name: Download the exact Beta artifact into the isolated test runner
+        if: steps.smoke.outputs.available == 'true'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          artifact-ids: ${{ needs.package.outputs.artifact_id }}
+          merge-multiple: true
+          path: ${{ runner.temp }}/Mosaic Windows candidate
+      - name: Verify HTTPS interruption and one-line recovery using exact candidate bytes
+        if: steps.smoke.outputs.available == 'true'
+        shell: pwsh
+        run: node .github/scripts/windows-download-smoke.mjs (Join-Path $env:RUNNER_TEMP 'Mosaic Windows candidate')
 
   windows-arm-diagnostics:
     name: Windows 11 ARM64 host capability diagnostics
