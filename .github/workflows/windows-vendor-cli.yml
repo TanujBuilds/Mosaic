@@ -1,0 +1,56 @@
+name: Windows Codex CLI registration
+
+on:
+  push:
+    paths:
+      - '.github/workflows/windows-vendor-cli.yml'
+      - '.github/scripts/windows-vendor-cli.mjs'
+      - 'distribution/onboarding/host.mjs'
+      - 'src/beta/hosts/detection.mjs'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  codex-cli:
+    runs-on: windows-2025
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24.22.3'
+          package-manager-cache: false
+      - name: Check vendor binary and run offline registration
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:RUNNER_ENVIRONMENT -ne 'github-hosted' -or $env:RUNNER_ARCH -ne 'X64') { throw 'Disposable hosted Windows x64 runner required' }
+          $root = Join-Path $env:RUNNER_TEMP ('Mosaic vendor CLI ' + [guid]::NewGuid())
+          $bin = Join-Path $root '.codex\packages\standalone\current\bin'
+          $exe = Join-Path $bin 'codex.exe'
+          $rule = 'MosaicVendorCLI-' + [guid]::NewGuid()
+          try {
+            New-Item -ItemType Directory -Path $bin -Force | Out-Null
+            $asset = 'https://github.com/openai/codex/releases/download/rust-v0.171.0/codex-x86_64-pc-windows-msvc.exe'
+            $sha = 'cefea4ffee1fff04983a99c0dda99944d8b380e891e740a28b32f4b815a6e0b7'
+            $curl = Join-Path ([Environment]::SystemDirectory) 'curl.exe'
+            & $curl -q --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --max-time 240 --max-filesize 407421232 --output $exe -- $asset
+            if ($LASTEXITCODE -ne 0 -or (Get-Item -LiteralPath $exe).Length -ne 407421232 -or (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash -ine $sha) { throw 'Codex release artifact verification failed' }
+            $policy = New-NetFirewallRule -Name $rule -DisplayName $rule -Direction Outbound -Action Block -Program $exe -Profile Any
+            $profiles = @(Get-NetFirewallProfile -PolicyStore ActiveStore)
+            if ($profiles.Count -ne 3 -or @($profiles | Where-Object Enabled -ne 'True').Count) { throw 'All firewall profiles must enforce policy before running Codex' }
+            $active = Get-NetFirewallRule -PolicyStore ActiveStore -Name $rule
+            if ($active.Enabled -ne 'True' -or $active.Direction -ne 'Outbound' -or $active.Action -ne 'Block') { throw 'Vendor network block unavailable' }
+            $program = Get-NetFirewallApplicationFilter -AssociatedNetFirewallRule $active
+            if ($program.Program -ine $exe) { throw 'Firewall block does not identify the verified Codex executable' }
+            Get-CimInstance Win32_OperatingSystem | Select-Object Caption, Version, OSArchitecture
+            node .github/scripts/windows-vendor-cli.mjs $root $exe
+            if ($LASTEXITCODE -ne 0) { throw 'Codex CLI qualification failed' }
+          } finally {
+            if ($policy) { Remove-NetFirewallRule -Name $rule }
+            if (Test-Path -LiteralPath $root) { Remove-Item -Recurse -Force -LiteralPath $root }
+          }
