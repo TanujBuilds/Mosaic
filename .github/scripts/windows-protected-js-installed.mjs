@@ -89,6 +89,14 @@ if (invoiceTotal(1250, 0) !== 1250) throw 'Preserve zero shipping';
   await git('add','--','.');
   await git('commit','--quiet','-m','Baseline invoice fixture');
   const base = (await git('rev-parse','HEAD')).trim();
+  const rejectionRepo = worker ? path.join(caseRoot,'Invoice scope rejection project') : null;
+  if (rejectionRepo) {
+    // The scope-denied candidate remains retained. Its write scope must not
+    // overlap the independent passing fixture's repository.
+    await exec('git.exe',['clone','--quiet','--no-hardlinks','--',repo,rejectionRepo],{windowsHide:true});
+    const rejectionBase = (await exec('git.exe',['-C',rejectionRepo,'rev-parse','HEAD'],{windowsHide:true})).stdout.trim();
+    assert.equal(rejectionBase,base);
+  }
   const executionPolicy = {version:1,backend:'windows-isolated-js',backendRevision:1,runtimeFingerprint:candidate.javascriptFingerprint};
   const module = relative => import(pathToFileURL(path.join(runtime,relative)));
   const {readBundledJavaScriptCheckRuntime} = await module('src/beta/package-contract.mjs');
@@ -195,10 +203,10 @@ if (invoiceTotal(1250, 0) !== 1250) throw 'Preserve zero shipping';
     };
     const {runFirstTask} = await module('src/beta/first-task.mjs');
     const firstTaskPaths = {...paths,state};
-    const prepare = async mode => {
+    const prepare = async (mode,project=repo) => {
       let transcript = '', prepared;
       const replies = [mode,'Include shipping in the invoice total','Preserve zero shipping','src/, checks/',source,'node checks/verify.mjs'];
-      const wizardStatus = await runFirstTask(firstTaskPaths,['--repo',repo],{
+      const wizardStatus = await runFirstTask(firstTaskPaths,['--repo',project],{
         ask:async prompt => {
           assert.ok(replies.length,'Unexpected guided prompt: '+prompt);
           return replies.shift();
@@ -223,7 +231,7 @@ if (invoiceTotal(1250, 0) !== 1250) throw 'Preserve zero shipping';
       assert.equal(draft.manifest.mode.id,mode);
       return draft;
     };
-    const draft = await prepare(collaborative?'collaborative':'codex_only');
+    const draft = await prepare(collaborative?'collaborative':'codex_only',rejectionRepo??repo);
     assert.deepEqual(draft.manifest.project.checks[0].argv,[path.join(artifact,'node.exe'),script]);
     const taskSpec = (actor,submissionId) => ({actor,submissionId,kind:'coding',
       objective:'Include shipping',acceptance:['Both invoice totals are correct'],
