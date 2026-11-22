@@ -614,9 +614,24 @@ static int run(int argc, wchar_t **argv, bool isolatedJavaScript = false) {
       "\",\"code\":" + std::to_string(code) +
       ",\"termSignal\":0,\"activeProcesses\":0,\"leaderExited\":true}";
   const auto temp = receipt.parent_path() / L"completion.pending";
-  Handle f(CreateFileW(temp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW,
-                       FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH,
-                       nullptr));
+  Handle supervisorToken;
+  require(OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &supervisorToken.h) != 0,
+          "open supervisor token for private receipt");
+  const auto identity = tokenInfo(supervisorToken.h, TokenUser);
+  const wstring sid =
+      sidString(reinterpret_cast<const TOKEN_USER *>(identity.data())->User.Sid);
+  // An elevated process can default to Administrators ownership. Bind this
+  // record to the same exact owner SID required by the coordinator's reader.
+  const wstring sddl = L"O:" + sid + L"D:P(A;;FA;;;" + sid +
+                       L")(A;;FA;;;SY)(A;;FA;;;BA)";
+  PSECURITY_DESCRIPTOR descriptor = nullptr;
+  require(ConvertStringSecurityDescriptorToSecurityDescriptorW(
+              sddl.c_str(), SDDL_REVISION_1, &descriptor, nullptr) != 0,
+          "build private receipt security descriptor");
+  Local allocation{reinterpret_cast<HLOCAL>(descriptor)};
+  SECURITY_ATTRIBUTES receiptSecurity{sizeof(receiptSecurity), descriptor, FALSE};
+  Handle f(CreateFileW(temp.c_str(), GENERIC_WRITE, 0, &receiptSecurity, CREATE_NEW,
+                       FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH, nullptr));
   require(f.h != INVALID_HANDLE_VALUE, "create private receipt");
   writeAll(f.h, record);
   require(FlushFileBuffers(f.h) != 0, "flush private receipt");
