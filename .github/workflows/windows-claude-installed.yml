@@ -1,0 +1,71 @@
+name: Signed-out Claude Code with installed Windows Beta
+
+'on':
+  push:
+    branches:
+      - codex/windows-claude-installed
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  claude-installed:
+    name: Installed Windows Beta and Claude Code MCP handshake
+    runs-on: windows-2025
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24.22.3'
+          package-manager-cache: false
+      - name: Download the frozen Beta artifact by immutable ID
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          github-token: ${{ github.token }}
+          run-id: 44991971753
+          artifact-ids: 14742128055
+          merge-multiple: true
+          path: ${{ runner.temp }}/Mosaic frozen Beta
+      - name: Verify the vendor executable and run it with an active network block
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:RUNNER_ENVIRONMENT -ne 'github-hosted' -or $env:RUNNER_ARCH -ne 'X64') { throw 'Disposable hosted Windows x64 runner required' }
+          $root = Join-Path $env:RUNNER_TEMP ('Mosaic signed-out Claude ' + [guid]::NewGuid())
+          $bundle = Join-Path $env:RUNNER_TEMP 'Mosaic frozen Beta'
+          $bin = Join-Path $root '.local\bin'
+          $exe = Join-Path $bin 'claude.exe'
+          $rule = 'MosaicVendorCLI-' + [guid]::NewGuid()
+          $policy = $null
+          try {
+            New-Item -ItemType Directory -Path $bin -Force | Out-Null
+            $asset = 'https://downloads.claude.ai/claude-code-releases/2.1.323/win32-x64/claude.exe'
+            $sha = '5064e6e0572dca86257363ca04d48653eef20ef27f1bd04b504ed7199ed3fd13'
+            $curl = Join-Path ([Environment]::SystemDirectory) 'curl.exe'
+            & $curl -q --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --max-time 240 --max-filesize 367634080 --output $exe -- $asset
+            if ($LASTEXITCODE -ne 0 -or (Get-Item -LiteralPath $exe).Length -ne 367634080 -or (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash -ine $sha) { throw 'Claude release artifact verification failed' }
+            $policy = New-NetFirewallRule -Name $rule -DisplayName $rule -Direction Outbound -Action Block -Program $exe -Profile Any
+            $profiles = @(Get-NetFirewallProfile -PolicyStore ActiveStore)
+            if ($profiles.Count -ne 3 -or @($profiles | Where-Object Enabled -ne 'True').Count) { throw 'All firewall profiles must enforce policy' }
+            $active = Get-NetFirewallRule -PolicyStore ActiveStore -Name $rule
+            if ($active.Enabled -ne 'True' -or $active.Direction -ne 'Outbound' -or $active.Action -ne 'Block' -or $active.Profile -ne 'Any') { throw 'Active vendor network block unavailable' }
+            $program = Get-NetFirewallApplicationFilter -AssociatedNetFirewallRule $active
+            if ($program.Program -ine $exe) { throw 'Firewall rule does not identify the verified executable' }
+            Write-Output 'Verified active outbound firewall block for the pinned Claude Code executable.'
+            Get-CimInstance Win32_OperatingSystem | Select-Object Caption, Version, OSArchitecture
+            node .github/scripts/windows-claude-installed.mjs $root $exe $bundle
+            if ($LASTEXITCODE -ne 0) { throw 'Installed Claude Code MCP handshake evidence failed' }
+          } finally {
+            $fixtureProcesses = @(Get-Process -Name claude -ErrorAction SilentlyContinue | Where-Object Path -eq $exe)
+            foreach ($process in $fixtureProcesses) {
+              Stop-Process -Id $process.Id -Force
+              Wait-Process -Id $process.Id -Timeout 10 -ErrorAction SilentlyContinue
+            }
+            if (Get-Process -Name claude -ErrorAction SilentlyContinue | Where-Object Path -eq $exe) { throw 'Retain firewall policy while fixture processes remain' }
+            if ($policy) { Remove-NetFirewallRule -Name $rule }
+            if (Test-Path -LiteralPath $root) { Remove-Item -Recurse -Force -LiteralPath $root }
+          }
