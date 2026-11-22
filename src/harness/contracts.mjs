@@ -65,7 +65,7 @@ const nativePolicySchema = (backend, revision) => objectSchema({
 },['version','backend','backendRevision','runtimeFingerprint']);
 export const executionPolicyInputSchema={anyOf:[
  objectSchema({version:{type:'integer',enum:[1]},backend:{type:'string',enum:['codex-sandbox','darwin-seatbelt']},backendRevision:{type:'integer',enum:[1]}},['version','backend','backendRevision']),
- nativePolicySchema('darwin-seatbelt',2), nativePolicySchema('windows-appcontainer',1)
+ nativePolicySchema('darwin-seatbelt',2), nativePolicySchema('windows-appcontainer',1), nativePolicySchema('windows-isolated-js',1)
 ]};
 export const goalDispatchInputSchema={...goalInputSchema,properties:{...goalInputSchema.properties,project:projectDispatchInputSchema,executionPolicy:executionPolicyInputSchema,researchPolicy:researchPolicyInputSchema,providerPolicy:providerPolicyInputSchema,reviewPolicy:reviewPolicyInputSchema,routingPolicy:routingPolicyInputSchema,overnightPolicy:objectSchema({preflightCheckIds:stringsSchema,finalOnlyCheckIds:stringsSchema,launchCheckIds:stringsSchema,maxBatches:{type:'integer',minimum:1,maximum:20},maxExchanges:{type:'integer',minimum:1,maximum:40},maxCorrections:{type:'integer',minimum:0,maximum:2},reconnectMs:{type:'integer',minimum:1,maximum:1800000}},['preflightCheckIds','finalOnlyCheckIds'])}};
 export const taskDispatchInputSchema={...taskInputSchema,properties:{...taskInputSchema.properties,researchPolicy:researchPolicyInputSchema,routing:taskRoutingInputSchema,role:{type:'string',enum:['implementation','final']}}};

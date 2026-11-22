@@ -290,7 +290,7 @@ function preparedEvent(event, owner, binding, pid) {
   );
 }
 
-async function supervise({ runtime, stage, owner, binding, timeoutMs, signal, revalidate }) {
+export async function superviseWindowsCheck({ runtime, stage, owner, binding, timeoutMs, signal, revalidate, isolatedJavaScript = false }) {
   if (
     !uuid(owner?.requestId) ||
     !['prepared', 'authorizeGo', 'complete', 'uncertain'].every((k) => typeof owner[k] === 'function') ||
@@ -309,15 +309,17 @@ async function supervise({ runtime, stage, owner, binding, timeoutMs, signal, re
   const child = spawn(
     runtime.supervisor.executable,
     [
+      ...(isolatedJavaScript ? ['--isolated-js'] : []),
       owner.requestId,
       binding.bindingHash,
       owner.receiptPath,
       String(timeoutMs),
       stage,
-      ...binding.argv.slice(1),
+      ...(isolatedJavaScript ? [String(process.pid)] : binding.argv.slice(1)),
     ],
     {
       cwd: runtime.root,
+      detached: isolatedJavaScript,
       windowsHide: true,
       // CreateProcessW resolves an AppContainer's per-user profile from the
       // trusted launcher's LOCALAPPDATA. The supervisor builds an independent
@@ -527,7 +529,7 @@ export function createWindowsBackend({ workspace, options = {} }) {
         safeToRemove = false;
         let result;
         try {
-          result = await supervise({
+          result = await superviseWindowsCheck({
             runtime,
             stage,
             owner,

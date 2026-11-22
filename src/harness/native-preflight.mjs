@@ -4,11 +4,13 @@ import {Journal} from '../project/journal.mjs';
 import {Workspace} from '../project/workspace.mjs';
 import {Pause} from '../project/contracts.mjs';
 import {digest} from './contracts.mjs';
-import {approvedChecks,isNativeExecution,executionFields,windowsHostConsult} from './execution.mjs';
+import {assertWindowsJavaScriptChecks} from '../project/check-backends/windows-isolated-js-runner.mjs';
+import {approvedChecks,isNativeExecution,isWindowsJavaScriptPolicy,executionFields,windowsHostConsult} from './execution.mjs';
 import {overnightInputs} from './overnight-preflight.mjs';
 
 function assertNativeCheckLaunchers(manifest, inputs) {
  const executable = inputs.sandboxRuntime.runtime.executable;
+ if(isWindowsJavaScriptPolicy(manifest.executionPolicy))return assertWindowsJavaScriptChecks(manifest.project,executable);
  const invalid = manifest.project.checks.find(check => check.argv[0] !== executable);
  if (invalid) throw new Pause(`Protected check ${invalid.id} must use the bundled Node launcher at ${executable}. Prepare a draft with the exact check command.`, 'isolation');
 }

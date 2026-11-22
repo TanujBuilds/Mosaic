@@ -7,11 +7,16 @@ import {assertDarwinSeatbeltContainment} from '../project/check-backends/darwin-
 import {nativeBackendFactory,validateNativeCheckRuntime} from '../project/check-backends/platform-native-runtime.mjs';
 
 import {WindowsCheckRunner} from '../project/check-backends/windows-check-runner.mjs';
+import {windowsJavaScriptBackend} from '../project/check-backends/windows-js-artifact.mjs';
+import {WindowsIsolatedJavaScriptCheckRunner} from '../project/check-backends/windows-isolated-js-runner.mjs';
 import {WINDOWS_BACKEND} from '../project/check-backends/windows-appcontainer.mjs';
 
+export function isWindowsJavaScriptPolicy(policy) {
+ return policy?.backend === windowsJavaScriptBackend.id && policy.backendRevision === windowsJavaScriptBackend.revision;
+}
 function nativePolicy(raw) {
  return raw?.backend === 'darwin-seatbelt' && raw.backendRevision === 2 ||
-   raw?.backend === WINDOWS_BACKEND.id && raw.backendRevision === WINDOWS_BACKEND.revision;
+   raw?.backend === WINDOWS_BACKEND.id && raw.backendRevision === WINDOWS_BACKEND.revision || isWindowsJavaScriptPolicy(raw);
 }
 export function normalizeExecutionPolicy(raw){
  if(raw===undefined)return undefined;
@@ -39,7 +44,7 @@ export function windowsHostConsult(c, manifest) {
   manifest.capabilities.length === 1 && manifest.capabilities[0].id === 'consult';
 }
 export function assertExecutionAvailable(manifest,config={}){
- if(process.platform==='win32')throw new Pause('Windows protected coding is in development. No execution backend has passed Windows filesystem isolation qualification.','isolation');
+ if(process.platform==='win32' && !isWindowsJavaScriptPolicy(manifest.executionPolicy))throw new Pause('Windows protected coding is in development. No execution backend has passed Windows filesystem isolation qualification.','isolation');
  return assertExecutionPrerequisites(manifest,config);
 }
 export function assertExecutionPrerequisites(manifest,config={}){
@@ -48,9 +53,12 @@ export function assertExecutionPrerequisites(manifest,config={}){
  // Native revision 1 has no safe arbitrary-process containment. This gate is
  // independent of fixtures or executable identity and cannot enable execution.
  if(nativePolicy(policy)) {
-  const required = policy.backend === WINDOWS_BACKEND.id ? 'win32' : 'darwin';
+  const required = (policy.backend === WINDOWS_BACKEND.id || isWindowsJavaScriptPolicy(policy)) ? 'win32' : 'darwin';
   if(process.platform !== required) throw new Pause('Approved native backend requires '+required, 'isolation');
-  nativeRuntime(config,policy.runtimeFingerprint);return;
+  const runtime=nativeRuntime(config,policy.runtimeFingerprint);
+  if(isWindowsJavaScriptPolicy(policy) && runtime.backend?.id !== windowsJavaScriptBackend.id)
+   throw new Pause('Windows isolated JavaScript requires its exact installed artifact','isolation');
+  return;
  }
  if(policy?.backend==='darwin-seatbelt')assertDarwinSeatbeltContainment();
  if(policy){if(typeof codexPath!=='string'||!codexPath||/[\0\r\n]/.test(codexPath))throw new Pause('Invalid approved Codex sandbox executable','isolation');const candidates=(path.isAbsolute(codexPath)||codexPath.includes('/'))?[codexPath]:(process.env.PATH??'').split(path.delimiter).map(dir=>path.join(dir,codexPath));if(!candidates.some(file=>{try{const resolved=realpathSync(file);accessSync(resolved,constants.X_OK);return statSync(resolved).isFile();}catch{return false;}}))throw new Pause('Approved codex-sandbox revision 1 prerequisite missing: Codex sandbox executable unavailable','isolation');}
@@ -59,7 +67,9 @@ export function approvedChecks(workspace,{checksFactory,config={},context={}}={}
  const policy=executionIdentity(workspace.manifest);
  assertExecutionAvailable(workspace.manifest,config);
  let options={codex:config.codexPath??'codex',backend:policy.backend};
- if(isNativeExecution(workspace.manifest)){const c=context.c;if(!c?.executionOwnership||!context.goalId||!context.operationKey)throw new Pause('Native checks require a durable exact execution context','isolation');const goal=c.store.get('goal',context.goalId);const approved=context.revisionId?c.store.get('goal_revision',context.revisionId):goal;if(context.revisionId&&(approved.goalId!==goal.id||approved.previousHash!==goal.hash||approved.status!=='draft'))throw new Pause('Native preflight revision identity changed','isolation');if(!sameExecutionBackend(approved.manifest,workspace.manifest))throw new Pause('Native workspace policy differs from approved goal','isolation');const proof=c.store.maybe('native_preflight',context.goalId+':'+approved.hash),expectedDependencyHash=context.expectedDependencyHash??(proof?.passed&&proof.goalHash===approved.hash?proof.inputs?.dependenciesHash:undefined);if(!/^[a-f0-9]{64}$/.test(expectedDependencyHash??''))throw new Pause('Exact native dependency preflight identity required','isolation');options={...options,backendRevision:policy.backendRevision,backendFactory:nativeBackendFactory,backendOptions:{expectedDependencyHash,nativeCheckRuntime:config.nativeCheckRuntime,expectedRuntimeFingerprint:policy.runtimeFingerprint,ownership:c.executionOwnership.forContext({...context,expectedDependencyHash,workspaceRoot:workspace.root})}};}
+ if(isNativeExecution(workspace.manifest)){const c=context.c;if(!c?.executionOwnership||!context.goalId||!context.operationKey)throw new Pause('Native checks require a durable exact execution context','isolation');const goal=c.store.get('goal',context.goalId);const approved=context.revisionId?c.store.get('goal_revision',context.revisionId):goal;if(context.revisionId&&(approved.goalId!==goal.id||approved.previousHash!==goal.hash||approved.status!=='draft'))throw new Pause('Native preflight revision identity changed','isolation');if(!sameExecutionBackend(approved.manifest,workspace.manifest))throw new Pause('Native workspace policy differs from approved goal','isolation');const proof=c.store.maybe('native_preflight',context.goalId+':'+approved.hash),expectedDependencyHash=context.expectedDependencyHash??(proof?.passed&&proof.goalHash===approved.hash?proof.inputs?.dependenciesHash:undefined);if(!/^[a-f0-9]{64}$/.test(expectedDependencyHash??''))throw new Pause('Exact native dependency preflight identity required','isolation');options={...options,backendRevision:policy.backendRevision,backendFactory:nativeBackendFactory,backendOptions:{repo:goal.manifest.project.repo,baseCommit:approved.manifest.project.baseCommit,expectedDependencyHash,nativeCheckRuntime:config.nativeCheckRuntime,expectedRuntimeFingerprint:policy.runtimeFingerprint,ownership:c.executionOwnership.forContext({...context,expectedDependencyHash,workspaceRoot:workspace.root})}};}
+ if(isWindowsJavaScriptPolicy(policy)&&!checksFactory)
+  return new WindowsIsolatedJavaScriptCheckRunner(workspace,options.backendOptions);
  const Runner=policy.backend===WINDOWS_BACKEND.id?WindowsCheckRunner:CheckRunner;
  const runner=checksFactory?.(workspace,options)??new Runner(workspace,options);
  if(workspace.manifest.executionPolicy){const identity=runner.backendIdentity;if(identity?.id!==policy.backend||identity.revision!==policy.backendRevision)throw new Pause('Check runner identity differs from the approved execution backend','isolation');}

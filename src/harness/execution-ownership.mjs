@@ -1,6 +1,7 @@
 import {capacitySnapshot,canClaim,CapacityWaitError} from './scheduling/capacity.mjs';
 import {windowsFileSync} from '../beta/windows-files.mjs';
 import {validateWindowsQuiescenceReceipt,WINDOWS_BACKEND} from '../project/check-backends/windows-appcontainer.mjs';
+import {windowsJavaScriptBackend} from '../project/check-backends/windows-js-artifact.mjs';
 import {isNativeExecution,nativeRuntime} from './execution.mjs';
 import {validateQuiescenceReceipt} from '../project/check-backends/native-supervisor.mjs';
 import {randomUUID} from 'node:crypto';
@@ -13,6 +14,7 @@ import {digest as bindingDigest,Pause} from '../project/contracts.mjs';
 const held=row=>row.status!=='quiescent';
 const positive=value=>Number.isSafeInteger(value)&&value>0;
 const hex=value=>typeof value==='string'&&/^[a-f0-9]{64}$/.test(value);
+const windowsBackend = id => [WINDOWS_BACKEND.id,windowsJavaScriptBackend.id].includes(id);
 const windowsBootGuid = value => typeof value==='string' && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(value) && value!=='00000000-0000-0000-0000-000000000000';
 export function executionBootId(config){
  if(process.platform==='win32'){
@@ -28,7 +30,7 @@ export function executionBootId(config){
 export function executionHolds(c,{goalId,taskId}={}){return c.store.all('execution_owner').filter(row=>held(row)&&(!goalId||row.goalId===goalId)&&(!taskId||row.taskId===taskId));}
 function positivelyChangedBoot(row,current){
  if(!row.bootId||!current||row.bootId===current)return false;
- if(row.binding?.backend?.id!==WINDOWS_BACKEND.id)return true;
+ if(!windowsBackend(row.binding?.backend?.id))return true;
  return [row.bootId,current].every(value=>typeof value==='string'&&value.startsWith('win32:')&&windowsBootGuid(value.slice(6)));
 }
 function unknown(message){const error=new Pause(message,'isolation');error.executionOutcome='unknown';return error;}
@@ -45,7 +47,7 @@ function receiptFile(row){
  const fd=openSync(row.receiptPath,constants.O_RDONLY|constants.O_NOFOLLOW);try{const s=fstatSync(fd);if(!s.isFile()||s.size>32768||s.mode&0o077||s.uid!==process.getuid?.())throw Error('Unsafe native completion receipt');return JSON.parse(readFileSync(fd,'utf8'));}finally{closeSync(fd);}
 }
 function exactReceipt(row,receipt){
- const validate=row.binding?.backend?.id===WINDOWS_BACKEND.id?validateWindowsQuiescenceReceipt:validateQuiescenceReceipt;
+ const validate=windowsBackend(row.binding?.backend?.id)?validateWindowsQuiescenceReceipt:validateQuiescenceReceipt;
  return validate(receipt,{requestId:row.id,bindingHash:row.bindingHash,helperPid:row.helperPid,leaderPid:row.leaderPid});
 }
 function adoptStartupIdentity(row,receipt){

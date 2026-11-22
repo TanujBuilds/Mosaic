@@ -1,3 +1,6 @@
+import path from 'node:path';
+import {isolatedJavaScriptRuntime} from './windows-isolated-js-runner.mjs';
+import {javascriptArtifactManifest} from './windows-js-artifact.mjs';
 import { Pause, relativePath } from '../contracts.mjs';
 import * as darwin from './native-runtime-dispatch.mjs';
 import {
@@ -9,6 +12,9 @@ import {
 export const windowsCodingHold = 'Protected coding is in development on Windows. A qualified Windows filesystem boundary is required before Mosaic can run a coding task.';
 export const nativeImplementationSources = darwin.nativeImplementationSources;
 export function validateNativeCheckRuntime(config, fingerprint) {
+  if (process.platform === 'win32' && typeof config?.artifactManifestPath === 'string' &&
+      path.basename(config.artifactManifestPath) === javascriptArtifactManifest)
+    return isolatedJavaScriptRuntime(config,fingerprint);
   return process.platform === 'win32'
     ? validateWindowsRuntime(config, fingerprint)
     : darwin.validateNativeCheckRuntime(config, fingerprint);

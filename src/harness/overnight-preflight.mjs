@@ -10,7 +10,7 @@ import {gitSync} from '../project/git.mjs';
 import {createHash} from 'node:crypto';
 import {Journal} from '../project/journal.mjs';
 import {Workspace} from '../project/workspace.mjs';
-import {approvedChecks,executionFields,assertExecutionAvailable,isNativeExecution,nativeRuntime} from './execution.mjs';
+import {approvedChecks,executionFields,assertExecutionAvailable,isNativeExecution,isWindowsJavaScriptPolicy,nativeRuntime} from './execution.mjs';
 import {matches,secretPath} from '../project/contracts.mjs';
 import {digest} from './contracts.mjs';
 import {isOvernightV2} from './overnight.mjs';
@@ -34,7 +34,7 @@ function windowsPreflightSources(project,git){
  return entries.sort(([a],[b])=>a<b?-1:a>b?1:0);
 }
 export function overnightInputs(manifest,codex='codex'){
- const native=isNativeExecution(manifest),windows=native&&manifest.executionPolicy.backend===WINDOWS_BACKEND.id;
+ const native=isNativeExecution(manifest),windows=native&&(manifest.executionPolicy.backend===WINDOWS_BACKEND.id||isWindowsJavaScriptPolicy(manifest.executionPolicy));
  const config=typeof codex==='string'?{codexPath:codex}:codex;
  assertExecutionAvailable(manifest,config);
  const p=manifest.project,git=(...args)=>gitSync(p.repo,...args);
