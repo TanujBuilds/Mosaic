@@ -17,6 +17,7 @@
 #include <stdexcept>
 #include <string>
 #include <userenv.h>
+#include <versionhelpers.h>
 #include <vector>
 
 namespace fs = std::filesystem;
@@ -616,8 +617,68 @@ static int bootId() {
               id.Data4[3], id.Data4[4], id.Data4[5], id.Data4[6], id.Data4[7]);
   return 0;
 }
+// Read-only diagnostic for host qualification. Export availability does not
+// establish that an access policy can confine a check on this machine.
+template <typename T> static T systemExport(HMODULE module, const char *name) {
+  FARPROC symbol = module ? GetProcAddress(module, name) : nullptr;
+  T typed = nullptr;
+  static_assert(sizeof(typed) == sizeof(symbol));
+  std::memcpy(&typed, &symbol, sizeof(typed));
+  return typed;
+}
+static int hostSecurity() {
+  constexpr wchar_t release[] =
+      L"SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion";
+  wchar_t buildText[32]{};
+  DWORD bytes = sizeof(buildText), revision = 0;
+  require(RegGetValueW(HKEY_LOCAL_MACHINE, release, L"CurrentBuildNumber",
+                       RRF_RT_REG_SZ, nullptr, buildText,
+                       &bytes) == ERROR_SUCCESS,
+          "read host build");
+  bytes = sizeof(revision);
+  require(RegGetValueW(HKEY_LOCAL_MACHINE, release, L"UBR", RRF_RT_REG_DWORD,
+                       nullptr, &revision, &bytes) == ERROR_SUCCESS,
+          "read host update revision");
+  size_t consumed = 0;
+  const auto build = std::stoul(buildText, &consumed);
+  require(build && consumed == wstring(buildText).size(),
+          "numeric Windows build");
+  const HMODULE model = LoadLibraryExW(L"processmodel.dll", nullptr,
+                                       LOAD_LIBRARY_SEARCH_SYSTEM32);
+  using Version = HRESULT(WINAPI *)(DWORD, BOOLEAN *, DWORD *);
+  using Support = HRESULT(WINAPI *)(ULONGLONG *);
+  const auto version = systemExport<Version>(
+      model, "IsProcessSecurityEnvironmentVersionSupported");
+  const auto support =
+      systemExport<Support>(model, "QueryProcessSecurityEnvironmentSupport");
+  DWORD minor = 0;
+  BOOLEAN majorAvailable = FALSE;
+  ULONGLONG flags = 0;
+  const HRESULT versionResult =
+      version ? version(1, &majorAvailable, &minor) : E_NOTIMPL;
+  const HRESULT supportResult = support ? support(&flags) : E_NOTIMPL;
+  const bool create =
+      model && GetProcAddress(model, "CreateProcessSecurityEnvironment");
+  const bool close =
+      model && GetProcAddress(model, "CloseProcessSecurityEnvironment");
+  std::printf(
+      "{\"build\":%lu,\"revision\":%lu,\"client\":%s,\"processModel\":%s,"
+      "\"createEnvironment\":%s,\"closeEnvironment\":%s,\"versionResult\":%ld,"
+      "\"version1\":%s,\"minor\":%lu,\"supportResult\":%ld,\"supportFlags\":\"%"
+      "llu\"}\n",
+      build, revision, IsWindowsServer() ? "false" : "true",
+      model ? "true" : "false", create ? "true" : "false",
+      close ? "true" : "false", versionResult,
+      SUCCEEDED(versionResult) && majorAvailable ? "true" : "false", minor,
+      supportResult, flags);
+  if (model)
+    FreeLibrary(model);
+  return 0;
+}
 int wmain(int argc, wchar_t **argv) {
   try {
+    if (argc == 2 && wstring(argv[1]) == L"--host-security")
+      return hostSecurity();
     if (argc == 2 && wstring(argv[1]) == L"--boot-id")
       return bootId();
     return run(argc, argv);
