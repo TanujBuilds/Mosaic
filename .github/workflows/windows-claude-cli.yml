@@ -1,0 +1,58 @@
+name: Windows Claude Code CLI registration
+
+on:
+  push:
+    paths:
+      - '.github/workflows/windows-claude-cli.yml'
+      - '.github/scripts/windows-claude-cli.mjs'
+      - 'src/beta/hosts/claude-code.mjs'
+      - 'src/beta/hosts/detection.mjs'
+      - 'src/beta/hosts/shared.mjs'
+      - 'src/beta/files.mjs'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  claude-cli:
+    runs-on: windows-2025
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24.22.3'
+          package-manager-cache: false
+      - name: Check vendor binary and run offline registration
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:RUNNER_ENVIRONMENT -ne 'github-hosted' -or $env:RUNNER_ARCH -ne 'X64') { throw 'Disposable hosted Windows x64 runner required' }
+          $root = Join-Path $env:RUNNER_TEMP ('Mosaic vendor CLI ' + [guid]::NewGuid())
+          $bin = Join-Path $root '.local\bin'
+          $exe = Join-Path $bin 'claude.exe'
+          $rule = 'MosaicVendorCLI-' + [guid]::NewGuid()
+          try {
+            New-Item -ItemType Directory -Path $bin -Force | Out-Null
+            $asset = 'https://downloads.claude.ai/claude-code-releases/2.1.323/win32-x64/claude.exe'
+            $sha = '5064e6e0572dca86257363ca04d48653eef20ef27f1bd04b504ed7199ed3fd13'
+            $curl = Join-Path ([Environment]::SystemDirectory) 'curl.exe'
+            & $curl -q --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --max-time 240 --max-filesize 367634080 --output $exe -- $asset
+            if ($LASTEXITCODE -ne 0 -or (Get-Item -LiteralPath $exe).Length -ne 367634080 -or (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash -ine $sha) { throw 'Claude Code release artifact verification failed' }
+            $policy = New-NetFirewallRule -Name $rule -DisplayName $rule -Direction Outbound -Action Block -Program $exe -Profile Any
+            $profiles = @(Get-NetFirewallProfile -PolicyStore ActiveStore)
+            if ($profiles.Count -ne 3 -or @($profiles | Where-Object Enabled -ne 'True').Count) { throw 'All firewall profiles must enforce policy before running Claude Code' }
+            $active = Get-NetFirewallRule -PolicyStore ActiveStore -Name $rule
+            if ($active.Enabled -ne 'True' -or $active.Direction -ne 'Outbound' -or $active.Action -ne 'Block') { throw 'Vendor network block unavailable' }
+            $program = Get-NetFirewallApplicationFilter -AssociatedNetFirewallRule $active
+            if ($program.Program -ine $exe) { throw 'Firewall block does not identify the verified Claude Code executable' }
+            Get-CimInstance Win32_OperatingSystem | Select-Object Caption, Version, OSArchitecture
+            node .github/scripts/windows-claude-cli.mjs $root $exe
+            if ($LASTEXITCODE -ne 0) { throw 'Claude Code CLI qualification failed' }
+          } finally {
+            if ($policy) { Remove-NetFirewallRule -Name $rule }
+            if (Test-Path -LiteralPath $root) { Remove-Item -Recurse -Force -LiteralPath $root }
+          }
