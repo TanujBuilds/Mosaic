@@ -1,4 +1,7 @@
 import {capacitySnapshot,canClaim,CapacityWaitError} from './scheduling/capacity.mjs';
+import {windowsFileSync} from '../beta/windows-files.mjs';
+import {validateWindowsQuiescenceReceipt,WINDOWS_BACKEND} from '../project/check-backends/windows-appcontainer.mjs';
+import {isNativeExecution,nativeRuntime} from './execution.mjs';
 import {validateQuiescenceReceipt} from '../project/check-backends/native-supervisor.mjs';
 import {randomUUID} from 'node:crypto';
 import {mkdirSync,lstatSync,readFileSync,realpathSync,constants,openSync,closeSync,fstatSync} from 'node:fs';
@@ -10,18 +13,40 @@ import {digest as bindingDigest,Pause} from '../project/contracts.mjs';
 const held=row=>row.status!=='quiescent';
 const positive=value=>Number.isSafeInteger(value)&&value>0;
 const hex=value=>typeof value==='string'&&/^[a-f0-9]{64}$/.test(value);
-export function executionBootId(){
+const windowsBootGuid = value => typeof value==='string' && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(value) && value!=='00000000-0000-0000-0000-000000000000';
+export function executionBootId(config){
+ if(process.platform==='win32'){
+  if(!config?.nativeCheckRuntime)return null;
+  try{
+   const {supervisor}=nativeRuntime(config);
+   const id=execFileSync(supervisor.executable,['--boot-id'],{encoding:'utf8',timeout:5000,maxBuffer:128,windowsHide:true,stdio:['ignore','pipe','ignore'],env:{SystemRoot:process.env.SystemRoot}}).trim();
+   return windowsBootGuid(id)?'win32:'+id.toLowerCase():null;
+  }catch{return null;}
+ }
  try{if(process.platform==='darwin'){const id=execFileSync('/usr/sbin/sysctl',['-n','kern.bootsessionuuid'],{encoding:'utf8',timeout:2000,stdio:['ignore','pipe','ignore']}).trim();return /^[a-f0-9-]{36}$/i.test(id)?'darwin:'+id.toLowerCase():null;}if(process.platform==='linux'){const id=readFileSync('/proc/sys/kernel/random/boot_id','utf8').trim();return /^[a-f0-9-]{36}$/i.test(id)?'linux:'+id:null;}}catch{}return null;
 }
 export function executionHolds(c,{goalId,taskId}={}){return c.store.all('execution_owner').filter(row=>held(row)&&(!goalId||row.goalId===goalId)&&(!taskId||row.taskId===taskId));}
+function positivelyChangedBoot(row,current){
+ if(!row.bootId||!current||row.bootId===current)return false;
+ if(row.binding?.backend?.id!==WINDOWS_BACKEND.id)return true;
+ return [row.bootId,current].every(value=>typeof value==='string'&&value.startsWith('win32:')&&windowsBootGuid(value.slice(6)));
+}
 function unknown(message){const error=new Pause(message,'isolation');error.executionOutcome='unknown';return error;}
-function privateDirectory(dir){mkdirSync(dir,{recursive:true,mode:0o700});const s=lstatSync(dir);if(!s.isDirectory()||s.isSymbolicLink()||s.mode&0o077||s.uid!==process.getuid?.()||realpathSync(dir)!==dir)throw Error('Unsafe private native execution directory');}
+function privateDirectory(dir){
+ if(process.platform==='win32'){windowsFileSync('mkdir',dir);windowsFileSync('private-directory',dir);return;}
+ mkdirSync(dir,{recursive:true,mode:0o700});const s=lstatSync(dir);if(!s.isDirectory()||s.isSymbolicLink()||s.mode&0o077||s.uid!==process.getuid?.()||realpathSync(dir)!==dir)throw Error('Unsafe private native execution directory');}
 function receiptFile(row){
- const directory=path.dirname(row.receiptPath);const d=lstatSync(directory);if(!d.isDirectory()||d.isSymbolicLink()||d.mode&0o077||d.uid!==process.getuid?.()||realpathSync(directory)!==directory)throw Error('Unsafe native completion receipt directory');
+ const directory=path.dirname(row.receiptPath);
+ if(process.platform==='win32'){
+  windowsFileSync('private-directory',directory);
+  return JSON.parse(windowsFileSync('read-private',row.receiptPath,{max:32768}));
+ }
+ const d=lstatSync(directory);if(!d.isDirectory()||d.isSymbolicLink()||d.mode&0o077||d.uid!==process.getuid?.()||realpathSync(directory)!==directory)throw Error('Unsafe native completion receipt directory');
  const fd=openSync(row.receiptPath,constants.O_RDONLY|constants.O_NOFOLLOW);try{const s=fstatSync(fd);if(!s.isFile()||s.size>32768||s.mode&0o077||s.uid!==process.getuid?.())throw Error('Unsafe native completion receipt');return JSON.parse(readFileSync(fd,'utf8'));}finally{closeSync(fd);}
 }
 function exactReceipt(row,receipt){
- return validateQuiescenceReceipt(receipt,{requestId:row.id,bindingHash:row.bindingHash,helperPid:row.helperPid,leaderPid:row.leaderPid});
+ const validate=row.binding?.backend?.id===WINDOWS_BACKEND.id?validateWindowsQuiescenceReceipt:validateQuiescenceReceipt;
+ return validate(receipt,{requestId:row.id,bindingHash:row.bindingHash,helperPid:row.helperPid,leaderPid:row.leaderPid});
 }
 function adoptStartupIdentity(row,receipt){
  if(row.helperPid===null&&row.leaderPid===null&&!Object.hasOwn(row,'preparedAt')&&['startup-cancel','control-eof'].includes(receipt?.reason)&&row.binding?.runtimeFingerprint===row.runtimeFingerprint&&hex(row.runtimeFingerprint)){
@@ -55,14 +80,14 @@ function assertResumeProbe(c,goal,context,binding){
   throw Error('Native resume probe no longer matches the approved control state');
 }
 export class ExecutionOwnership{
- constructor(c,{bootId=executionBootId()}={}){this.c=c;this.bootId=bootId;this.lastScan=-Infinity;}
+ constructor(c,{bootId=executionBootId(c.executionConfig)}={}){this.c=c;this.bootId=bootId;this.lastScan=-Infinity;}
  holds(input={}){return executionHolds(this.c,input);}
  assertClear({goalId,taskId,workspaceRoot}={}){if(this.holds().some(row=>(row.goalId===goalId&&(!taskId||!row.taskId||row.taskId===taskId))||(workspaceRoot&&row.workspaceRoot===workspaceRoot)))throw unknown('Native execution ownership remains held; verify exact quiescence before reuse');}
  forContext(context){const self=this;return Object.freeze({begin(binding){return self.begin(context,binding);}});}
  begin(context,binding){
  const c=this.c,g=executionApproval(c,context),t=context.taskId?c.store.get('task',context.taskId):null;
  if(t&&t.goalId!==g.id||!context.operationKey||typeof context.operationKey!=='string'||context.operationKey.length>500||!context.workspaceRoot||realpathSync(binding.cwd)!==realpathSync(context.workspaceRoot))throw Error('Exact native execution context required');
- const {bindingHash,...raw}=binding;if(!hex(bindingHash)||bindingDigest(raw)!==bindingHash||raw.schema!==1||raw.backend?.id!=='darwin-seatbelt'||raw.backend.revision!==2||!hex(binding.dependencyInventoryHash)||binding.dependencyInventoryHash!==context.expectedDependencyHash||g.manifest.executionPolicy?.backendRevision!==2||g.manifest.executionPolicy?.backend!=='darwin-seatbelt'||g.manifest.executionPolicy.runtimeFingerprint!==binding.runtimeFingerprint||!['profileHash','inputInventoryHash','runtimeFingerprint','runtimeHash','supervisorHash'].every(key=>hex(binding[key]))||!Array.isArray(binding.argv)||!binding.argv.length)throw Error('Native execution binding differs from approved identity');
+ const {bindingHash,...raw}=binding;if(!hex(bindingHash)||bindingDigest(raw)!==bindingHash||raw.schema!==1||!isNativeExecution(g.manifest)||raw.backend?.id!==g.manifest.executionPolicy.backend||raw.backend.revision!==g.manifest.executionPolicy.backendRevision||!hex(binding.dependencyInventoryHash)||binding.dependencyInventoryHash!==context.expectedDependencyHash||g.manifest.executionPolicy.runtimeFingerprint!==binding.runtimeFingerprint||!['profileHash','inputInventoryHash','runtimeFingerprint','runtimeHash','supervisorHash'].every(key=>hex(binding[key]))||!Array.isArray(binding.argv)||!binding.argv.length)throw Error('Native execution binding differs from approved identity');
  c.verifyCurrentWorker?.();this.assertClear(context);
  if(context.resumeBinding)assertResumeProbe(c,g,context,binding);
  // A resume probe uses a new scratch checkout and does not write to the
@@ -99,11 +124,11 @@ export class ExecutionOwnership{
  }catch(error){this.uncertain(id,error);throw error;}
  }
  complete(id,receipt){const row=this.c.store.get('execution_owner',id);exactReceipt(row,receipt);const saved=receiptFile(row);exactReceipt(row,saved);if(digest(saved)!==digest(receipt))throw unknown('Durable native receipt differs from supervisor completion');return this.resolve(row,'receipt',saved);}
- resolve(row,resolution,receipt=null){const c=this.c;return c.store.tx(()=>{const current=c.store.get('execution_owner',row.id);if(!held(current))return current;if(resolution==='receipt')adoptStartupIdentity(current,receipt);else if(resolution==='new_boot'&&(!current.bootId||!this.bootId||current.bootId===this.bootId))throw Error('A positively changed boot identity is required');current.status='quiescent';current.resolution=resolution;current.receipt=receipt;current.finishedAt=c.now();c.store.put('execution_owner',current);if(current.operationId&&!executionHolds(c).some(row=>row.operationId===current.operationId)){const operation=c.store.maybe('operation',current.operationId);if(operation?.status==='uncertain'&&(current.operationKey===operation.key||current.operationKey==='effect-'+operation.key)){const {error,finishedAt,...saved}=operation;c.store.put('operation',{...saved,status:'retryable',quiescenceRequestId:current.id});}}if(current.taskId&&!executionHolds(c,{taskId:current.taskId}).length){const t=c.store.get('task',current.taskId),g=c.store.get('goal',current.goalId);if(!t.owner&&!t.native?.writerActive&&t.status==='uncertain'&&['ready_to_integrate','awaiting_review','awaiting_legacy_review','queued','suspended','codex_ready','stopped','paused','blocked'].includes(current.interruptedTaskStatus??current.priorTaskStatus)&&g.hash===current.goalHash&&t.hash===current.taskHash&&t.goalVersion===current.goalVersion){t.status=current.interruptedTaskStatus??current.priorTaskStatus;t.reason='Exact native quiescence proven; fresh protected verification still required';c.store.put('task',t);}}c.emit('execution.quiescent',current.goalId,current.taskId,{requestId:current.id,resolution});return current;});}
+ resolve(row,resolution,receipt=null){const c=this.c;return c.store.tx(()=>{const current=c.store.get('execution_owner',row.id);if(!held(current))return current;if(resolution==='receipt')adoptStartupIdentity(current,receipt);else if(resolution==='new_boot'&&!positivelyChangedBoot(current,this.bootId))throw Error('A positively changed boot identity is required');current.status='quiescent';current.resolution=resolution;current.receipt=receipt;current.finishedAt=c.now();c.store.put('execution_owner',current);if(current.operationId&&!executionHolds(c).some(row=>row.operationId===current.operationId)){const operation=c.store.maybe('operation',current.operationId);if(operation?.status==='uncertain'&&(current.operationKey===operation.key||current.operationKey==='effect-'+operation.key)){const {error,finishedAt,...saved}=operation;c.store.put('operation',{...saved,status:'retryable',quiescenceRequestId:current.id});}}if(current.taskId&&!executionHolds(c,{taskId:current.taskId}).length){const t=c.store.get('task',current.taskId),g=c.store.get('goal',current.goalId);if(!t.owner&&!t.native?.writerActive&&t.status==='uncertain'&&['ready_to_integrate','awaiting_review','awaiting_legacy_review','queued','suspended','codex_ready','stopped','paused','blocked'].includes(current.interruptedTaskStatus??current.priorTaskStatus)&&g.hash===current.goalHash&&t.hash===current.taskHash&&t.goalVersion===current.goalVersion){t.status=current.interruptedTaskStatus??current.priorTaskStatus;t.reason='Exact native quiescence proven; fresh protected verification still required';c.store.put('task',t);}}c.emit('execution.quiescent',current.goalId,current.taskId,{requestId:current.id,resolution});return current;});}
  uncertain(id,reason){const c=this.c;return c.store.tx(()=>{const row=c.store.get('execution_owner',id);if(!held(row)||row.status==='uncertain')return row;row.status='uncertain';row.reason=String(reason?.message??reason??'Native execution outcome unknown').slice(0,1000);c.store.put('execution_owner',row);
  if(row.taskId){const t=c.store.get('task',row.taskId);row.interruptedTaskStatus=t.status;c.store.put('execution_owner',row);t.reason=row.reason;if(!t.native?.writerActive)t.status='uncertain';c.store.put('task',t);}c.emit('execution.uncertain',row.goalId,row.taskId,{requestId:id,reason:row.reason});return row;});}
  reconcile({force=false}={}){const at=this.c.now();if(!force&&at-this.lastScan<5000)return [];this.lastScan=at;const resolved=[];for(const row of this.holds()){
- if(row.bootId&&this.bootId&&row.bootId!==this.bootId){resolved.push(this.resolve(row,'new_boot'));continue;}
+ if(positivelyChangedBoot(row,this.bootId)){resolved.push(this.resolve(row,'new_boot'));continue;}
  try{const receipt=receiptFile(row);resolved.push(this.resolve(row,'receipt',receipt));}catch{/* Neither time, liveness polling nor unreadable/forged receipts release ownership. */}
  }return resolved;}
 }

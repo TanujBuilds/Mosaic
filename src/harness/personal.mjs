@@ -1,6 +1,7 @@
 import {lstat,readFile} from 'node:fs/promises';
 import {spawn} from 'node:child_process';
 import path from 'node:path';
+import {windowsSystemTool} from './windows-desktop.mjs';
 
 const begin='<!-- BEGIN FRONTIER-HARNESS ONBOARDING v1 -->';
 const end='<!-- END FRONTIER-HARNESS ONBOARDING v1 -->';
@@ -26,6 +27,11 @@ export async function openObserver({root,run=runLocal}){
  try{const info=await lstat(file);if(!info.isFile()||info.isSymbolicLink()||info.size>8192)throw Error();connection=JSON.parse(await readFile(file,'utf8'));}catch{throw Error('Mosaic viewer connection unavailable; inspect the local coordinator');}
  let origin;
  try{const u=new URL(connection.url);if(u.protocol!=='http:'||u.hostname!=='127.0.0.1'||u.username||u.password||u.pathname!=='/'||u.search||u.hash||connection.role!=='viewer'||typeof connection.token!=='string'||connection.token.length<32)throw Error();origin=u.origin;}catch{throw Error('A viewer connection to the local loopback coordinator is required');}
- try{await run('/usr/bin/pbcopy',[],connection.token);await run('/usr/bin/open',[origin+'/']);}catch{throw Error('Could not open Mosaic locally; no connection key was displayed');}
+ try{
+  if(process.platform==='win32'){
+   await run(windowsSystemTool('clip.exe'),[],connection.token);
+   await run(windowsSystemTool('rundll32.exe'),['url.dll,FileProtocolHandler',origin+'/']);
+  }else{await run('/usr/bin/pbcopy',[],connection.token);await run('/usr/bin/open',[origin+'/']);}
+ }catch{throw Error('Could not open Mosaic locally; no connection key was displayed');}
  return {status:'opened',url:origin+'/',message:'Viewer key copied locally. Paste it into Connection key if login is requested.'};
 }

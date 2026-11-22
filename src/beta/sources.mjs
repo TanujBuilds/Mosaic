@@ -5,6 +5,7 @@ import {entry} from './files.mjs';
 import {chooseCurrent,currentHistory,currentRank} from './current.mjs';
 import {readHostConnection} from './hosts/connection-evidence.mjs';
 
+const coreState=paths=>process.platform==='win32'?path.join(path.dirname(paths.root),'Mosaic','state'):path.join(paths.home,'Library','Application Support','Mosaic','state');
 const labels={beta:'Mosaic Beta (mosaic-beta)',core:'Mosaic core (frontier-harness)'};
 const rank=snapshot=>snapshot.goals.some(g=>g.status==='active')?2:snapshot.goals.length?1:0;
 
@@ -14,7 +15,7 @@ export function observerClient(paths,{source='auto'}={}){
  if(!['auto','beta','core'].includes(source))throw Error('Observer source must be auto, beta or core');
  const clients={
   beta:client(paths,{viewer:true}),
-  core:client({...paths,state:path.join(paths.home,'Library','Application Support','Mosaic','state')},{viewer:true})
+  core:client({...paths,state:coreState(paths)},{viewer:true})
  };
  const recentSupport=new Map();
  const histories=new Map();
@@ -63,7 +64,7 @@ export function observerClient(paths,{source='auto'}={}){
   const timeout=AbortSignal.timeout(10000),bounded=signal?AbortSignal.any([signal,timeout]):timeout;
   const names=source==='auto'?['beta','core']:[source];
   const results=await Promise.allSettled(names.map(async id=>{
-   const state=id==='beta'?paths.state:path.join(paths.home,'Library','Application Support','Mosaic','state');
+   const state=id==='beta'?paths.state:coreState(paths);
    if(!await entry(path.join(state,'viewer-connection.json')))return null;
    const snapshot=await clients[id]('observer_snapshot',{},bounded);
    let history=histories.get(id);if(!history){history={cursor:0,activity:new Map()};histories.set(id,history);}

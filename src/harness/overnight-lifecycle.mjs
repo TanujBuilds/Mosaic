@@ -1,4 +1,5 @@
 import path from 'node:path';
+import {preventWindowsSleep,windowsAlert} from './windows-desktop.mjs';
 import {mkdir,writeFile,rename} from 'node:fs/promises';
 import {spawn} from 'node:child_process';
 import {command} from '../project/process.mjs';
@@ -58,11 +59,11 @@ export function deriveOvernightState(g,tasks,planning,now){
 }
 export class IdleSleepAssertion{
  constructor({platform=process.platform,spawnProcess=spawn}={}){this.platform=platform;this.spawn=spawnProcess;this.child=null;this.until=0;}
- sync(active,deadline){if(!active||deadline<=Date.now()){this.close();return;}if(this.platform!=='darwin')return;if(this.child&&this.until===deadline)return;this.close();this.until=deadline;const child=this.child=this.spawn('/usr/bin/caffeinate',['-i','-t',String(Math.max(1,Math.ceil((deadline-Date.now())/1000))),'-w',String(process.pid)],{stdio:'ignore'});child.once('error',()=>{if(this.child===child)this.child=null;});child.once('exit',()=>{if(this.child===child)this.child=null;});}
+ sync(active,deadline){if(!active||deadline<=Date.now()){this.close();return;}if(!['darwin','win32'].includes(this.platform))return;if(this.child&&this.until===deadline)return;this.close();this.until=deadline;const child=this.child=this.platform==='win32'?preventWindowsSleep(this.spawn,deadline):this.spawn('/usr/bin/caffeinate',['-i','-t',String(Math.max(1,Math.ceil((deadline-Date.now())/1000))),'-w',String(process.pid)],{stdio:'ignore'});child.once('error',()=>{if(this.child===child)this.child=null;});child.once('exit',()=>{if(this.child===child)this.child=null;});}
  close(){if(this.child){this.child.kill('SIGTERM');this.child=null;}this.until=0;}
 }
 const alertText={completion:'Mosaic overnight work is complete. Open Mosaic for the saved report.',blocker:'Mosaic overnight work needs attention. Open Mosaic for the saved blocker and evidence.',decision:'Mosaic overnight work needs your answer. Open Mosaic to review the question.'};
-export async function localOvernightAlert(kind){if(process.platform!=='darwin')throw Error('Local macOS alerts unavailable');const text=alertText[kind];if(!text)throw Error('Unsupported alert');const script='on run argv\ndisplay notification (item 1 of argv) with title "Mosaic"\nend run';const result=await command(['/usr/bin/osascript','-e',script,text],{timeoutMs:10000});if(result.code!==0||result.stopped)throw Error('macOS notification delivery failed');return {status:'submitted',visibility:'OS controls presentation; saved report authoritative'};}
+export async function localOvernightAlert(kind){const text=alertText[kind];if(!text)throw Error('Unsupported alert');if(process.platform==='win32')return windowsAlert(text);if(process.platform!=='darwin')throw Error('Local alerts unavailable');const script='on run argv\ndisplay notification (item 1 of argv) with title "Mosaic"\nend run';const result=await command(['/usr/bin/osascript','-e',script,text],{timeoutMs:10000});if(result.code!==0||result.stopped)throw Error('macOS notification delivery failed');return {status:'submitted',visibility:'OS controls presentation; saved report authoritative'};}
 async function atomic(file,content){await mkdir(path.dirname(file),{recursive:true,mode:0o700});const tmp=file+'.pending';await writeFile(tmp,content,{mode:0o600});await rename(tmp,file);}
 function renderMarkdown(report){
  const checkpoint=report.retainedProgress.lastVerifiedCheckpoint;

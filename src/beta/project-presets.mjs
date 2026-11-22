@@ -36,6 +36,11 @@ function validatePreset(value) {
 async function readSaved(paths, file) {
  const expectedHome = await realpath(paths.home);
  for (const dir of [paths.root, paths.configDir]) {
+  if(process.platform==='win32'){
+   const {windowsFile}=await import('./windows-files.mjs');
+   if(await windowsFile('private-directory',dir,{optional:true})===null)return null;
+   continue;
+  }
   const stat = await lstat(dir).catch(error => { if (error.code === 'ENOENT') return null; throw error; });
   if (!stat) return null;
   if (!stat.isDirectory() || stat.uid !== process.getuid() || stat.mode & 0o077

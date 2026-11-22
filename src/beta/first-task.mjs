@@ -1,6 +1,6 @@
 import {macGitReady, gitRecovery} from './git-readiness.mjs';
 import {execFile} from 'node:child_process';
-import {randomUUID} from 'node:crypto';
+import {randomBytes,randomUUID} from 'node:crypto';
 import {lstat, mkdtemp, realpath} from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -345,6 +345,10 @@ function showResult(output, goal, tasks, integrationOperations = new Map()) {
 async function demoResult(output, parent, run, goalId) {
   const root = path.join(parent, demoPrefix + run);
   for (const dir of [root, path.join(root, 'state')]) {
+    if(process.platform==='win32'){
+      const {windowsFile}=await import('./windows-files.mjs');
+      await windowsFile('private-directory',dir);continue;
+    }
     const info = await lstat(dir);
     if (!info.isDirectory() || info.uid !== process.getuid() || (info.mode & 0o077)) throw Error('Unsafe first-task demo directory.');
   }
@@ -356,9 +360,26 @@ async function demoResult(output, parent, run, goalId) {
   if (!snapshot.coverage.complete) line(output, 'Some saved demo evidence was unavailable.');
 }
 
-async function runDemo(output, parent, gitReady = macGitReady) {
-  if (await gitReady() === false) throw Error(gitRecovery);
-  const root = await mkdtemp(path.join(parent, demoPrefix));
+async function runDemo(output, parent, gitReady) {
+  const win=process.platform==='win32';
+  const tools=win?await import('./git-readiness.mjs'):null;
+  if(await (gitReady??tools?.windowsGitReady??macGitReady)()===false)throw Error(tools?.windowsGitRecovery??gitRecovery);
+  let root,env;
+  if(win){
+    const {windowsFile}=await import('./windows-files.mjs');
+    const {windowsGitProcess}=await import('../project/windows-git.mjs');
+    const git=windowsGitProcess();
+    if(!git)throw Error(tools.windowsGitRecovery);
+    root=path.join(await realpath(parent),demoPrefix+randomBytes(3).toString('hex'));
+    if(await entry(root))throw Error('Demo directory already exists. Retry the demo.');
+    await windowsFile('mkdir',root);
+    await windowsFile('private-directory',root);
+    env={...git.env,LOCALAPPDATA:process.env.LOCALAPPDATA,ProgramFiles:process.env.ProgramFiles,
+      HOME:root,USERPROFILE:root,TEMP:root,TMP:root,GIT_CONFIG_NOSYSTEM:'1',GIT_CONFIG_GLOBAL:'NUL',GIT_TERMINAL_PROMPT:'0'};
+  }else{
+    root=await mkdtemp(path.join(parent,demoPrefix));
+    env={PATH:'/usr/bin:/bin',HOME:root,GIT_CONFIG_NOSYSTEM:'1',GIT_CONFIG_GLOBAL:'/dev/null',GIT_TERMINAL_PROMPT:'0'};
+  }
   const run = path.basename(root).slice(demoPrefix.length);
   // Keep the literal import visible to the installed package's source closure.
   const script = `import {createOutcomeDemo} from '../harness/outcomes/demo.mjs';
@@ -366,7 +387,7 @@ async function runDemo(output, parent, gitReady = macGitReady) {
     process.stdout.write(goalId);`;
   const {stdout: goalId} = await runProcess(process.execPath, ['--input-type=module', '--eval', script, root], {
     cwd: import.meta.dirname,
-    env: {PATH: '/usr/bin:/bin', HOME: root, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', GIT_TERMINAL_PROMPT: '0'},
+    env,
     timeout: 30_000, maxBuffer: 65_536,
   });
   if (!id.test(goalId)) throw Error('The first-task demo did not save a valid goal ID.');

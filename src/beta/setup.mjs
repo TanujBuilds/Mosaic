@@ -56,6 +56,10 @@ function cli(command,...args){
 }
 
 async function findCodex(paths,explicit){
+ if(process.platform==='win32'){
+  const {windowsHostExecutable,windowsExecutable}=await import('./hosts/detection.mjs');
+  return explicit?windowsExecutable(explicit):windowsHostExecutable('codex',paths);
+ }
  const candidates=explicit?[explicit]:paths.isolated?[path.join(paths.home,'.local','bin','codex')]:
   [...(process.env.PATH??'').split(path.delimiter).filter(path.isAbsolute).map(dir=>path.join(dir,'codex')),
    path.join(paths.home,'.local','bin','codex'),'/opt/homebrew/bin/codex','/usr/local/bin/codex'];
@@ -315,12 +319,13 @@ export async function setup(paths,options={}){
  const old=await readSettings(paths);
  const runtimeRoot=fileURLToPath(new URL('../../',import.meta.url)),manifest=await jsonFile(path.join(path.dirname(runtimeRoot),'package-manifest.json'));
  const pending=await jsonFile(paths.setupIntent,{privateFile:true});
- if(options.portable||options.settings||old?.schema===2||pending?.schema===2||manifest?.layout==='terminal-beta-v2'){
+ if(options.portable||options.settings||old?.schema===2||pending?.schema===2||(manifest?.layout==='terminal-beta-v2'||process.platform==='win32'&&manifest?.layout==='windows-beta-v1')){
   let execution=options.execution??(old?.schema===2?old.execution:undefined),nativeCheckRuntime=options.nativeCheckRuntime??(old?.schema===2?old.nativeCheckRuntime:undefined);
-  if(!execution&&!options.settings&&!pending){nativeCheckRuntime=await (await import('./package-contract.mjs')).readBundledNativeCheckRuntime(runtimeRoot);execution={backend:'darwin-seatbelt',backendRevision:2,runtimeFingerprint:nativeCheckRuntime.artifactManifestSha256};}
+  if(!execution&&!options.settings&&!pending){nativeCheckRuntime=await (await import('./package-contract.mjs')).readBundledNativeCheckRuntime(runtimeRoot);execution={...(process.platform==='win32'?{backend:'windows-appcontainer',backendRevision:1}:{backend:'darwin-seatbelt',backendRevision:2}),runtimeFingerprint:nativeCheckRuntime.artifactManifestSha256};}
   const firstRun=!old&&!pending&&!options.settings;
   return askSession(input,output,async(ask,signal,choose)=>{
-   if(firstRun&&await (options.gitReady??macGitReady)()===false)output.write('You can finish setup now. '+gitRecovery+'\n\n');
+   const gitTools=process.platform==='win32'?await import('./git-readiness.mjs'):null;
+   if(firstRun&&await (options.gitReady??gitTools?.windowsGitReady??macGitReady)()===false)output.write('You can finish setup now. '+(gitTools?.windowsGitRecovery??gitRecovery)+'\n\n');
    return setupPortable(paths,{
     ...options,ask,choose,output,execution,nativeCheckRuntime,codexRegistrations:registrations,
     retryEndpoint:!!input.isTTY&&!!output.isTTY,
@@ -405,8 +410,9 @@ export async function doctor(paths,output=process.stdout,options={}){
  }catch{check('Setup',false,'Cannot read the private beta binding receipt. Inspect the beta settings directory.');}
  check('Installation',!!await entry(paths.launcher),'Expected launcher '+paths.launcher);
  if(!checks.some(item=>item.name==='Settings'))check('Settings',!!settings,settings?'Private setup saved.':'Run mosaic setup.');
- const gitReady=await (options.gitReady??macGitReady)();
- if(gitReady!==null)check('Git for coding tasks',gitReady,gitReady?'Git found in the selected Apple developer tools.':gitRecovery);
+ const gitTools=process.platform==='win32'?await import('./git-readiness.mjs'):null;
+ const gitReady=await (options.gitReady??gitTools?.windowsGitReady??macGitReady)();
+ if(gitReady!==null)check('Git for coding tasks',gitReady,gitReady?(gitTools?'Git for Windows found.':'Git found in the selected Apple developer tools.'):(gitTools?.windowsGitRecovery??gitRecovery));
  const selectedHost=settings?.host?.id??'codex';
  if(selectedHost==='codex'&&settings?.schema!==2){
  const codex=await findCodex(paths,settings?.codexPath);
