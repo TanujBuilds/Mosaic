@@ -1,7 +1,6 @@
 import { Pause, relativePath } from '../contracts.mjs';
 import * as darwin from './native-runtime-dispatch.mjs';
 import {
-  createWindowsBackend,
   validateWindowsRuntime,
   windowsRelativePath,
   WINDOWS_BACKEND,
@@ -17,7 +16,9 @@ export function nativeBackendFactory(configuration) {
   if (configuration.id === WINDOWS_BACKEND.id) {
     if (configuration.revision !== WINDOWS_BACKEND.revision)
       throw new Pause('Unsupported Windows backend revision', 'isolation');
-    return createWindowsBackend(configuration);
+    // Revision 1 failed its external-write qualification on a real Windows host.
+    // Native qualification exercises the backend directly with disposable fixtures.
+    throw new Pause('Windows protected coding is in development: filesystem isolation has not passed qualification.', 'isolation');
   }
   return darwin.nativeBackendFactory(configuration);
 }

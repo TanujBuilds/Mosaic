@@ -4,6 +4,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { formatTimelineEvent } from './project/timeline.mjs';
 
+import { isEntry } from './harness/entry.mjs';
+
 const currentFile = fileURLToPath(import.meta.url);
 const assets = path.join(path.dirname(currentFile), 'dashboard');
 const idPattern = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
@@ -63,6 +65,7 @@ export function summarizeJob(id, events) {
 
 export function describeEvent(event, mode) {
   const { type, data = {} } = event;
+  const host = process.platform === 'win32' ? 'Windows' : 'Mac';
   if (type.startsWith('project.') || type.startsWith('run.') || type.startsWith('attempt.') ||
       type.startsWith('operation.') || type.startsWith('edits.') || type === 'stage.accepted' ||
       type === 'provider.waiting') {
@@ -71,7 +74,7 @@ export function describeEvent(event, mode) {
     if (type === 'project.plan.requested') {
       const source = String(data.source ?? 'planner');
       const label = /codex/i.test(source) ? 'Codex' : /template/i.test(source) ? 'template plan' : /fake/i.test(source) ? 'fake planner' : 'DeepSeek';
-      return `Mac → ${label}: plan requested`;
+      return `${host} → ${label}: plan requested`;
     }
     return null;
   }
@@ -79,17 +82,17 @@ export function describeEvent(event, mode) {
     case 'frontier.call': return `Codex ${data.kind} call${data.stageId ? ` for ${data.stageId}` : ''}: ${data.decision ?? 'unknown'} (${data.durationMs ?? 0} ms)`;
     case 'stage.guidance': return `Codex guidance recorded for ${data.stageId}`;
     case 'job.created': return 'Brief recorded';
-    case 'frontier.plan.requested': return 'Mac → Codex: plan requested';
-    case 'plan.proposed': return 'Codex → Mac: focused plan proposed';
+    case 'frontier.plan.requested': return `${host} → Codex: plan requested`;
+    case 'plan.proposed': return `Codex → ${host}: focused plan proposed`;
     case 'plan.accepted': return 'You approved the plan';
     case 'assignment.sent': return 'Codex → DeepSeek: assignment ' + data.attempt;
-    case 'local.result': return 'DeepSeek → Mac: answer ' + data.attempt;
-    case 'frontier.review.requested': return 'Mac → Codex: answer sent for review';
-    case 'frontier.review': return 'Codex → Mac: ' + (data.review?.decision ?? 'review');
+    case 'local.result': return `DeepSeek → ${host}: answer ${data.attempt}`;
+    case 'frontier.review.requested': return `${host} → Codex: answer sent for review`;
+    case 'frontier.review': return `Codex → ${host}: ${data.review?.decision ?? 'review'}`;
     case 'provider.failed': return (data.stage ?? 'Provider') + ' failed: ' + (data.reason ?? 'unknown error');
     case 'job.finished': return 'Final status: ' + data.status;
     case 'job.paused': return 'Job paused';
-    case 'sandbox.verified': return 'Mac sandbox verified';
+    case 'sandbox.verified': return process.platform === 'win32' ? 'Sandbox verified' : 'Mac sandbox verified';
     case 'budget.started': return 'Job time budget started';
     default: return null;
   }
@@ -193,6 +196,10 @@ function options(args) {
 }
 
 async function main() {
+  if (process.argv.length === 3 && process.argv[2] === '--help') {
+    console.log('dashboard [--data-dir DIR] [--job ID] [--port PORT]');
+    return;
+  }
   const parsed = options(process.argv.slice(2));
   const server = createDashboardServer(parsed);
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen(parsed.port, '127.0.0.1', resolve); });
@@ -201,7 +208,7 @@ async function main() {
   console.log('Read-only local viewer. Press Ctrl-C to close it.');
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === currentFile) main().catch(error => {
+if (isEntry(import.meta.url)) main().catch(error => {
   console.error(error.message);
   process.exitCode = 1;
 });

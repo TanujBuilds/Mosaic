@@ -6,18 +6,25 @@ import {randomBytes,randomUUID} from 'node:crypto';
 import {setTimeout as delay} from 'node:timers/promises';
 import {isEntry} from './entry.mjs';
 import {waitForState} from './wait.mjs';
-import {waitClient} from './wait-client.mjs';
+import {readConnectionRecord,waitClient} from './wait-client.mjs';
 import {Coordinator} from './coordinator.mjs';
 import {Worker} from './worker.mjs';
 import {Dispatcher} from './tools.mjs';
 import {startApi} from './api.mjs';
-import {startMcp} from './mcp.mjs';
+import {windowsFile,windowsWrite} from '../beta/windows-files.mjs';
 import {openObserver} from './personal.mjs';
 
-const defaultRoot=path.join(os.homedir(),'Library','Application Support','Frontier Harness');
-async function atomic(file,value){await mkdir(path.dirname(file),{recursive:true,mode:0o700});const tmp=file+'.'+randomUUID()+'.tmp';await writeFile(tmp,JSON.stringify(value,null,2),{mode:0o600});await rename(tmp,file);}
-async function connection(root){return JSON.parse(await readFile(path.join(root,'connection.json'),'utf8'));}
-async function invoke(root,name,input){const cfg=await connection(root),url=new URL(cfg.url);if(url.protocol!=='http:'||url.hostname!=='127.0.0.1')throw Error('Authenticated loopback coordinator required');const response=await fetch(new URL('/api/invoke',url),{method:'POST',headers:{authorization:'Bearer '+cfg.token,'content-type':'application/json'},body:JSON.stringify({name,input}),signal:AbortSignal.timeout(35000)}),result=await response.json();if(!response.ok)throw Error(result.error??'Coordinator request failed');return result;}
+function defaultRoot(){
+ if(process.platform!=='win32')return path.join(os.homedir(),'Library','Application Support','Frontier Harness');
+ const local=process.env.LOCALAPPDATA||path.join(os.homedir(),'AppData','Local');
+ if(!/^[A-Za-z]:[\\/]/.test(local))throw Error('A local Windows profile is required');
+ return path.join(local,'Frontier Harness');
+}
+async function atomic(file,value){
+ if(process.platform==='win32')return windowsWrite(file,JSON.stringify(value,null,2));
+ await mkdir(path.dirname(file),{recursive:true,mode:0o700});const tmp=file+'.'+randomUUID()+'.tmp';await writeFile(tmp,JSON.stringify(value,null,2),{mode:0o600});await rename(tmp,file);}
+const connection=root=>readConnectionRecord(path.join(root,'connection.json'));
+async function invoke(root,name,input){const cfg=await connection(root),url=new URL(cfg.url);if(url.protocol!=='http:'||url.hostname!=='127.0.0.1'||url.username||url.password||!url.port||![url.origin,url.origin+'/'].includes(cfg.url))throw Error('Authenticated loopback coordinator required');const response=await fetch(new URL('/api/invoke',url),{method:'POST',redirect:'error',headers:{authorization:'Bearer '+cfg.token,'content-type':'application/json'},body:JSON.stringify({name,input}),signal:AbortSignal.timeout(35000)}),result=await response.json();if(!response.ok)throw Error(result.error??'Coordinator request failed');return result;}
 const idleProbeMs=5000;
 async function runStateLoop({c,signal,step,onError,refresh}){
  let revision,nextAt=0;
@@ -39,7 +46,13 @@ async function runStateLoop({c,signal,step,onError,refresh}){
  }
 }
 export async function serve({root,configFile,port,runtimeConfig,headless=false,canStop,verifyCurrentWorker,startupGuard}){
- const raw=runtimeConfig??(configFile?JSON.parse(await readFile(configFile,'utf8')):{}),config={...raw,deepseekBaseUrl:raw.deepseekBaseUrl??raw.DEEPSEEK_BASE_URL,deepseekModelId:raw.deepseekModelId??raw.DEEPSEEK_MODEL_ID},owner=randomUUID();
+ if(process.platform==='win32'){
+  await windowsFile('mkdir',root);
+  await windowsFile('private-directory',root);
+ }
+ const configText=runtimeConfig===undefined&&configFile?(process.platform==='win32'
+  ?await windowsFile('read-private',path.resolve(configFile),{max:1024*1024}):await readFile(configFile,'utf8')):null;
+ const raw=runtimeConfig??(configText===null?{}:JSON.parse(configText)),config={...raw,deepseekBaseUrl:raw.deepseekBaseUrl??raw.DEEPSEEK_BASE_URL,deepseekModelId:raw.deepseekModelId??raw.DEEPSEEK_MODEL_ID},owner=randomUUID();
  const construct=()=>{const coordinator=new Coordinator({root,beta:config.beta,workerProfile:config.workerProfile,providerRegistry:config.providerRegistry,configuredPolicies:config.configuredPolicies,selectedHost:config.hostId,hostRegistry:config.hostRegistry,serviceMaxConcurrentTasks:config.serviceMaxConcurrentTasks,executionPolicy:config.executionPolicy,codexPath:config.codexPath,nativeCheckRuntime:config.nativeCheckRuntime,defaultCodexPath:'codex',verifyCurrentWorker});try{coordinator.acquireWorker(owner);return coordinator;}catch(error){coordinator.close();throw error;}};
  const c=startupGuard?await startupGuard(construct):construct();
  const provider=config.environment==='fixture'?{complete:async()=>({content:config.fixtureReply??'Fixture answer',model:'fixture-no-model',usage:{}})}:undefined;
@@ -97,13 +110,13 @@ export async function main(argv=process.argv.slice(2)){
  const action=argv.shift(),flags={};const invalid=()=>{if(action==='wait')process.exitCode=2;return Error(action==='wait'?'Invalid wait input':'Invalid or duplicate command option');};const allowed={serve:['root','config','port'],call:['root','tool','input','input-json'],status:['root'],stop:['root'],mcp:['root'],observer:['root'],wait:['root','task','operation','timeout-ms','cursor']};if(!allowed[action])throw Error('Use serve, call, status, stop, observer or mcp');
  while(argv.length){const flag=argv.shift();if(!flag.startsWith('--')||!allowed[action].includes(flag.slice(2))||!argv.length||argv[0].startsWith('--')||flags[flag.slice(2)]!==undefined)throw invalid();flags[flag.slice(2)]=argv.shift();}
  if(action==='wait'&&(!flags.root||!!flags.task===!!flags.operation||flags['timeout-ms']!==undefined&&!/^[0-9]+$/.test(flags['timeout-ms'])))throw invalid();
- const root=path.resolve(flags.root??defaultRoot);
+ const root=path.resolve(flags.root??defaultRoot());
  if(action==='observer'){const result=await openObserver({root});process.stdout.write(JSON.stringify(result)+'\n');return result;}
  if(action==='wait'){const controller=new AbortController(),cancel=()=>controller.abort();process.once('SIGINT',cancel);process.once('SIGTERM',cancel);
   try{const result=await waitForState({invoke:waitClient(root),target:flags.task?'task':'operation',id:flags.task??flags.operation,cursor:flags.cursor===undefined?undefined:Number(flags.cursor),timeoutMs:flags['timeout-ms']===undefined?30000:Number(flags['timeout-ms']),signal:controller.signal});process.stdout.write(JSON.stringify(result)+'\n');process.exitCode=result.outcome==='ready'?0:['attention','timeout','cancelled'].includes(result.outcome)?3:2;return result;}catch{throw invalid();}finally{process.removeListener('SIGINT',cancel);process.removeListener('SIGTERM',cancel);}
  }
  if(action==='serve'){const port=flags.port===undefined?4332:Number(flags.port);if(!Number.isInteger(port)||port<0||port>65535)throw Error('Invalid port');return serve({root,configFile:flags.config,port});}
- if(action==='mcp'){const tools=await invoke(root,'tools_list',{});await startMcp({tools,invoke:(name,input)=>invoke(root,name,input)});return;}
+ if(action==='mcp'){const {startMcp}=await import('./mcp.mjs');const tools=await invoke(root,'tools_list',{});await startMcp({tools,invoke:(name,input)=>invoke(root,name,input)});return;}
  if(action==='status'){try{const result=await invoke(root,'goal_get',{});process.stdout.write(JSON.stringify(result,null,2)+'\n');}catch(error){if(error.code==='ENOENT'||error.cause?.code==='ECONNREFUSED')process.stdout.write(JSON.stringify({status:error.code==='ENOENT'?'not_started':'stopped',root})+'\n');else throw error;}return;}
  let input={};if(flags.input&&flags['input-json'])throw Error('Use one input source');if(flags.input)input=JSON.parse(await readFile(flags.input,'utf8'));if(flags['input-json'])input=JSON.parse(flags['input-json']);
  const tool=action==='status'?'goal_get':action==='stop'?'service_stop':flags.tool;if(!tool)throw Error('Provide --tool TOOL_NAME');if(action==='stop')input={idempotencyKey:randomUUID()};const result=await invoke(root,tool,input);process.stdout.write(JSON.stringify(result,null,2)+'\n');

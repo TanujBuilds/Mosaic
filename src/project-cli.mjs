@@ -11,6 +11,8 @@ import { digest } from './project/contracts.mjs';
 import { formatTimelineEvent, watchJournal } from './project/timeline.mjs';
 import { setTimeout as delay } from 'node:timers/promises';
 
+import { isEntry } from './harness/entry.mjs';
+
 function parse(args) {
   const action = args.shift(), options = {};
   while (args.length) {
@@ -53,11 +55,14 @@ async function background(journal, options) {
   } finally { await release(); }
   const sequence = journal.events.length;
   const log = await open(path.join(journal.dir, 'runner.log'), 'a', 0o600);
-  const child = spawn(process.execPath, [fileURLToPath(import.meta.url), 'run', '--job', journal.id, '--data-dir', journal.root, '--worker', '--json'], {
-    cwd: path.dirname(fileURLToPath(import.meta.url)), detached: true, stdio: ['ignore', log.fd, log.fd], env: process.env,
-  });
-  await new Promise((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject); });
-  child.unref(); await log.close();
+  let child;
+  try {
+    child = spawn(process.execPath, [fileURLToPath(import.meta.url), 'run', '--job', journal.id, '--data-dir', journal.root, '--worker', '--json'], {
+      cwd: path.dirname(fileURLToPath(import.meta.url)), detached: true, windowsHide: true, stdio: ['ignore', log.fd, log.fd], env: process.env,
+    });
+    await new Promise((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject); });
+    child.unref();
+  } finally { await log.close(); }
   for (let n = 0; n < 50; n++) {
     await delay(100);
     await journal.load();
@@ -67,6 +72,10 @@ async function background(journal, options) {
   return { jobId: journal.id, status: 'starting', pid: child.pid, log: path.join(journal.dir, 'runner.log'), reason: 'Startup is not yet confirmed; check status' };
 }
 async function main() {
+  if (process.argv.length === 3 && ['help', '--help'].includes(process.argv[2])) {
+    console.log('project plan --repo DIR --brief FILE --permissions FILE [--fake | --template]\nproject approve --job ID --hash HASH\nproject run|resume|watch|status|stop|guide --job ID\nUse --data-dir DIR to select the job store.');
+    return;
+  }
   const { action, options } = parse(process.argv.slice(2));
   const root = path.resolve(options['data-dir'] ?? fileURLToPath(new URL('../.data', import.meta.url)));
   let result;
@@ -134,4 +143,4 @@ async function main() {
   display(result, options.json);
   if (['failed', 'paused', 'needs_review', 'blocked', 'interrupted'].includes(result.status)) process.exitCode = result.status === 'failed' ? 1 : 2;
 }
-main().catch(error => { console.error(JSON.stringify({ error: error.message, code: error.code ?? 'error', ...(error.jobId ? { jobId: error.jobId } : {}) })); process.exitCode = 1; });
+if (isEntry(import.meta.url)) main().catch(error => { console.error(JSON.stringify({ error: error.message, code: error.code ?? 'error', ...(error.jobId ? { jobId: error.jobId } : {}) })); process.exitCode = 1; });

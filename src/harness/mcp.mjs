@@ -23,7 +23,9 @@ async function main(){
  if(args.length===1&&args[0]==='--registry-only'){await startMcp();return;}
  const at=args.indexOf('--connection'),connectionFile=at>=0?args[at+1]:process.env.FRONTIER_HARNESS_CONNECTION;
  if(!connectionFile)throw Error('Provide --connection PRIVATE_CONNECTION_JSON');
- const connection=JSON.parse(await readFile(connectionFile,'utf8'));
+ const connection=process.platform==='win32'
+  ?await (await import('./wait-client.mjs')).readConnectionRecord(connectionFile)
+  :JSON.parse(await readFile(connectionFile,'utf8'));
  const u=new URL(connection.url);if(u.protocol!=='http:'||u.hostname!=='127.0.0.1'||u.username||u.password)throw Error('Coordinator must use authenticated loopback');
  const invoke=async(name,input)=>{
   const response=await fetch(new URL('/api/invoke',u),{method:'POST',headers:{authorization:`Bearer ${connection.token}`,'content-type':'application/json'},body:JSON.stringify({name,input}),signal:AbortSignal.timeout(35000)});

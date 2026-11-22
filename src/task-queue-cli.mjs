@@ -6,6 +6,8 @@ import { randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { initQueue, enqueue, queueStatus, runQueue, stopQueue, retryItem, cancelItem } from './task-queue.mjs';
 
+import { isEntry } from './harness/entry.mjs';
+
 const self = fileURLToPath(import.meta.url);
 const common = ['data-dir', 'json'];
 const flags = {
@@ -40,7 +42,7 @@ const help = `task-queue CLI
 All commands accept --data-dir ROOT and --json. ROOT contains coordinator jobs/artifacts.
 Higher priority runs first; FIFO ties. Default run watches; --once drains available work.
 Init preserves existing limits. Restart retains spent budgets. Fake mode is chosen at init.
-Mac must remain powered on; background execution does not install a boot scheduler.`;
+${process.platform === 'win32' ? 'Windows' : 'Mac'} must remain powered on; background execution does not install a boot scheduler.`;
 async function background(root, options) {
   const before = await queueStatus({ root });
   if (!before.initialized) throw new Error('Run init first');
@@ -50,7 +52,7 @@ async function background(root, options) {
   let child;
   try {
     child = spawn(process.execPath, [self, 'run', '--data-dir', root, '--worker', '--worker-token', token, '--json', ...(options.once ? ['--once'] : [])], {
-      cwd: path.dirname(self), detached: true, stdio: ['ignore', log.fd, log.fd], env: process.env,
+      cwd: path.dirname(self), detached: true, windowsHide: true, stdio: ['ignore', log.fd, log.fd], env: process.env,
     });
     await new Promise((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject); });
     child.unref();
@@ -65,7 +67,7 @@ async function background(root, options) {
   return { status: 'starting', pid: child.pid, token, log: logPath, reason: 'Startup is not confirmed; inspect status' };
 }
 async function main() {
-  const { action, options } = parse(process.argv.slice(2));
+  const { action, options } = parse(process.argv[2] === '--help' && process.argv.length === 3 ? ['help'] : process.argv.slice(2));
   if (action === 'help') { console.log(help); return; }
   const root = path.resolve(options['data-dir'] ?? fileURLToPath(new URL('../.data', import.meta.url)));
   let result;
@@ -95,4 +97,4 @@ async function main() {
     if (result.report) console.log(`Report: ${result.report}`);
   }
 }
-main().catch(error => { console.error(JSON.stringify({ error: error.message, code: error.code ?? 'error' })); process.exitCode = 1; });
+if (isEntry(import.meta.url)) main().catch(error => { console.error(JSON.stringify({ error: error.message, code: error.code ?? 'error' })); process.exitCode = 1; });
