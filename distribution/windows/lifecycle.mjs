@@ -6,6 +6,8 @@ import {fileURLToPath} from 'node:url';
 import {client} from '../../runtime/src/beta/client.mjs';
 import {entry, locations} from '../../runtime/src/beta/files.mjs';
 import {readSettings} from '../../runtime/src/beta/settings.mjs';
+import {assertExecutionAvailable,isWindowsJavaScriptPolicy} from '../../runtime/src/harness/execution.mjs';
+import {windowsCodingHold} from '../../runtime/src/project/check-backends/platform-native-runtime.mjs';
 import {setupComplete} from '../../runtime/src/beta/setup.mjs';
 import {assertMaintenanceIdle, startLaunchAgent, stopForMaintenance} from '../../runtime/src/beta/service.mjs';
 
@@ -56,8 +58,15 @@ try {
       break;
     }
     case 'coding-status': {
-      const {windowsCodingHold}=await import('../../runtime/src/project/check-backends/platform-native-runtime.mjs');
-      if(windowsCodingHold){process.stdout.write(windowsCodingHold+'\n');process.exitCode=3;}
+      await assertCurrentVersion();
+      const settings=await readSettings(paths);
+      const executionPolicy=settings?.schema===2?{version:1,...settings.execution}:settings?.executionPolicy;
+      if(!isWindowsJavaScriptPolicy(executionPolicy)){
+        process.stdout.write(windowsCodingHold+'\n');
+        process.exitCode=3;
+      }else{
+        assertExecutionAvailable({executionPolicy},settings);
+      }
       break;
     }
     case 'ensure-ready':

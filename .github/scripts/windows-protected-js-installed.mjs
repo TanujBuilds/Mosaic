@@ -95,6 +95,16 @@ if (invoiceTotal(1250, 0) !== 1250) throw 'Preserve zero shipping';
     execution:{backend:executionPolicy.backend,backendRevision:executionPolicy.backendRevision,
       runtimeFingerprint:executionPolicy.runtimeFingerprint},nativeCheckRuntime};
   const {configuredPolicies} = await module('src/beta/settings.mjs');
+  const {locations,privateDirectories,saveJson} = await module('src/beta/files.mjs');
+  const paths = locations(env.USERPROFILE);
+  await privateDirectories(paths);
+  const installedVersion = path.dirname(runtime);
+  const lifecycle = path.join(installedVersion,'distribution','windows','lifecycle.mjs');
+  const status = () => exec(node,[lifecycle,'coding-status'],{env,windowsHide:true,timeout:30000});
+  await assert.rejects(status(), error => error.code===3 && /Protected coding is in development/.test(error.stdout));
+  await saveJson(paths.config,settings);
+  assert.equal((await status()).stdout,'');
+  console.log('The installed guide passes the saved, verified JavaScript policy and holds unconfigured coding.');
   const config = {beta:true,hostId:'claude-code',executionPolicy,nativeCheckRuntime,configuredPolicies:configuredPolicies(settings)};
   const service = String.raw`
     import {serve} from ${JSON.stringify(pathToFileURL(path.join(runtime,'src','harness','cli.mjs')).href)};
@@ -137,17 +147,15 @@ if (invoiceTotal(1250, 0) !== 1250) throw 'Preserve zero shipping';
       throw Error(name+' exceeded fixture deadline');
     };
     const {runFirstTask} = await module('src/beta/first-task.mjs');
-    const {locations} = await module('src/beta/files.mjs');
-    const paths = {...locations(env.USERPROFILE),state};
+    const firstTaskPaths = {...paths,state};
     let transcript = '', prepared;
     const replies = ['1','Include shipping in the invoice total','Preserve zero shipping','src/, checks/',source,'node checks/verify.mjs'];
-    const wizardStatus = await runFirstTask(paths,['--repo',repo],{
+    const wizardStatus = await runFirstTask(firstTaskPaths,['--repo',repo],{
       ask:async prompt => {
         assert.ok(replies.length,'Unexpected guided prompt: '+prompt);
         return replies.shift();
       },
       output:{write:text=> { transcript += text; }},
-      loadSettings:async()=>settings,
       invoke:async (name,input)=>{
         const reply = name==='assignment_prepare'
           ? await invoke(name,{...input,manifest:{...input.manifest,environment:'fixture'}})
