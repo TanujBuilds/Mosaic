@@ -66,7 +66,7 @@ function hostFixture(id, answers) {
     },
     open: (target, args) => { opened.push({target, args}); return true; },
     interactive: () => assert.fail('Windows must not call a macOS launcher'),
-    install: () => assert.fail('Windows guided install must not invoke a POSIX shell'),
+    install: () => assert.fail('The Windows guide must ask for consent before installing'),
     registerCodex: () => assert.fail('Unexpected Codex settings write'),
   };
   return {context, io, messages, opened, calls};

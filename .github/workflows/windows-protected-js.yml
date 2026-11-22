@@ -75,7 +75,7 @@ jobs:
         run: |
           call "%MOSAIC_DEV_CMD%" -arch=x64 -host_arch=x64
           if errorlevel 1 exit /b 1
-          node scripts\package-windows-beta.mjs --version 0.1.0-beta.236 --output "%RUNNER_TEMP%\Mosaic JavaScript candidate" --check-js-tgz "%MOSAIC_JS_TARBALL%"
+          node scripts\package-windows-beta.mjs --version 0.1.0-beta.237 --output "%RUNNER_TEMP%\Mosaic JavaScript candidate" --check-js-tgz "%MOSAIC_JS_TARBALL%"
           exit /b %ERRORLEVEL%
       - name: Verify the actual installed artifact and reject tampered runtime bytes
         shell: pwsh

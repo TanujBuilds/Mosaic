@@ -93,10 +93,18 @@ function windowsPowerShell() {
   return path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
 }
 
+function windowsPowerShellEnvironment() {
+  // Windows PowerShell must rebuild its module path when Mosaic was launched from PowerShell 7.
+  return Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toLowerCase() !== 'psmodulepath'));
+}
+
 function installCli(url) {
+  const env = {...windowsPowerShellEnvironment(), MOSAIC_HOST_INSTALL_URL: url};
+  // Let Mosaic verify the connection before the installer can open Codex.
+  if (url === hosts.codex.installer) env.CODEX_NON_INTERACTIVE = '1';
   const result = spawnSync(windowsPowerShell(), ['-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command',
     "$ErrorActionPreference = 'Stop'; Invoke-RestMethod -UseBasicParsing -Uri $env:MOSAIC_HOST_INSTALL_URL | Invoke-Expression"],
-  {env: {...process.env, MOSAIC_HOST_INSTALL_URL: url}, stdio: 'inherit'});
+  {env, stdio: 'inherit'});
   return result.status === 0;
 }
 
@@ -111,7 +119,7 @@ async function openWindows(target, args = []) {
   // Open the fixed vendor URL as data, without substituting it into a command.
   const result = await capture(windowsPowerShell(), ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command',
     'Start-Process -FilePath $env:MOSAIC_HOST_OPEN_TARGET -ErrorAction Stop'],
-  {env: {...process.env, MOSAIC_HOST_OPEN_TARGET: target}, windowsHide: true});
+  {env: {...windowsPowerShellEnvironment(), MOSAIC_HOST_OPEN_TARGET: target}, windowsHide: true});
   return result.status === 0;
 }
 
