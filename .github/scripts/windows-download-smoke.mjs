@@ -42,15 +42,20 @@ const shell=path.join(process.env.SystemRoot,'System32','WindowsPowerShell','v1.
 const exec=promisify(execFile);
 const psArgs=source=>['-NoLogo','-NoProfile','-NonInteractive','-EncodedCommand',Buffer.from(source,'utf16le').toString('base64')];
 const env=Object.fromEntries(Object.entries(process.env).filter(([key])=>
-  !/^(?:no_proxy|https?_proxy|all_proxy|curl_ca_bundle|ssl_cert_file|ssl_cert_dir|node_options|node_path)$/i.test(key)));
+  !/^(?:no_proxy|https?_proxy|all_proxy|curl_ca_bundle|ssl_cert_file|ssl_cert_dir|node_options|node_path|psmodulepath)$/i.test(key)));
 env.NO_PROXY='127.0.0.1';
 const options={cwd:scratch,env,windowsHide:true,timeout:240000,maxBuffer:2*1024*1024};
 const passphrase=randomBytes(32).toString('hex');
 const certId=randomUUID();
 // The trust owner waits on an anonymous pipe. Normal exit and loss of the Node
 // parent both close stdin and remove the exact certificate and its private key.
-const certScript=String.raw`
+const certModule=String.raw`
 $ErrorActionPreference='Stop'
+$ProgressPreference='SilentlyContinue'
+Import-Module (Join-Path $PSHOME 'Modules\Microsoft.PowerShell.Security\Microsoft.PowerShell.Security.psd1') -ErrorAction Stop
+$null=Get-PSDrive -Name Cert -ErrorAction Stop
+`;
+const certScript=certModule+String.raw`
 $cert=$null
 $store=[Security.Cryptography.X509Certificates.X509Store]::new('Root','CurrentUser')
 try {
@@ -189,8 +194,7 @@ try {
     const [code]=await ownerClosed;
     // Verify independently of the owner. Also reclaim the exact certificate if the owner stalled.
     if(createdCert){
-      const cleanup=String.raw`
-$ErrorActionPreference='Stop'
+      const cleanup=certModule+String.raw`
 foreach($store in @('Root','My')){
  $file="Cert:\CurrentUser\$store\$env:MOSAIC_CERT_HASH"
  $cert=Get-Item -LiteralPath $file -ErrorAction SilentlyContinue

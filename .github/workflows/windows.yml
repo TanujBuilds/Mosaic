@@ -35,6 +35,38 @@ jobs:
         run: npm ci --ignore-scripts --no-audit --no-fund
       - name: Run portable coordinator and committed Git fixture tests on Windows
         run: node --test --test-concurrency=1 test/coordinator.test.mjs .github/scripts/windows-first-task-fixture.test.mjs
+      - &find-x64-supervisor
+        name: Find native build inputs
+        id: native
+        shell: pwsh
+        run: |
+          $source = Test-Path -LiteralPath 'src/project/check-backends/windows-supervisor.cpp' -PathType Leaf
+          $test = Test-Path -LiteralPath 'test/windows-protected-checks.test.mjs' -PathType Leaf
+          if (-not $source -or -not $test) {
+            throw 'The required Windows supervisor and its protected-check tests must be present.'
+          }
+
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
+          $visualStudio = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if ($LASTEXITCODE -ne 0 -or -not $visualStudio) { throw 'The x64 MSVC toolchain is unavailable.' }
+          $devCmd = Join-Path $visualStudio 'Common7/Tools/VsDevCmd.bat'
+          if (-not (Test-Path -LiteralPath $devCmd -PathType Leaf)) { throw 'VsDevCmd.bat is unavailable.' }
+          "dev_cmd=$devCmd" >> $env:GITHUB_OUTPUT
+      - &build-x64-supervisor
+        name: Build the x64 Windows protected-check supervisor
+        shell: cmd
+        env:
+          MOSAIC_VS_DEV_CMD: ${{ steps.native.outputs.dev_cmd }}
+        run: |
+          call "%MOSAIC_VS_DEV_CMD%" -arch=x64 -host_arch=x64
+          if errorlevel 1 exit /b 1
+          pushd "%RUNNER_TEMP%"
+          if errorlevel 1 exit /b 1
+          cl /nologo /std:c++17 /EHsc /W4 /DUNICODE /D_UNICODE "%GITHUB_WORKSPACE%\src\project\check-backends\windows-supervisor.cpp" /Fe:mosaic-windows-supervisor.exe /link advapi32.lib userenv.lib
+          if errorlevel 1 exit /b 1
+          if not exist "mosaic-windows-supervisor.exe" exit /b 1
+          >>"%GITHUB_ENV%" echo MOSAIC_TEST_WINDOWS_SUPERVISOR=%RUNNER_TEMP%\mosaic-windows-supervisor.exe
+          popd
       - name: Run Windows platform tests
         shell: pwsh
         run: |
@@ -70,36 +102,8 @@ jobs:
           node --version
       - name: Install locked test dependencies
         run: npm ci --ignore-scripts --no-audit --no-fund
-      - name: Find native build inputs
-        id: native
-        shell: pwsh
-        run: |
-          $source = Test-Path -LiteralPath 'src/project/check-backends/windows-supervisor.cpp' -PathType Leaf
-          $test = Test-Path -LiteralPath 'test/windows-protected-checks.test.mjs' -PathType Leaf
-          if (-not $source -or -not $test) {
-            throw 'The required Windows supervisor and its protected-check tests must be present.'
-          }
-
-          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
-          $visualStudio = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
-          if ($LASTEXITCODE -ne 0 -or -not $visualStudio) { throw 'The x64 MSVC toolchain is unavailable.' }
-          $devCmd = Join-Path $visualStudio 'Common7/Tools/VsDevCmd.bat'
-          if (-not (Test-Path -LiteralPath $devCmd -PathType Leaf)) { throw 'VsDevCmd.bat is unavailable.' }
-          "dev_cmd=$devCmd" >> $env:GITHUB_OUTPUT
-      - name: Build the x64 Windows protected-check supervisor
-        shell: cmd
-        env:
-          MOSAIC_VS_DEV_CMD: ${{ steps.native.outputs.dev_cmd }}
-        run: |
-          call "%MOSAIC_VS_DEV_CMD%" -arch=x64 -host_arch=x64
-          if errorlevel 1 exit /b 1
-          pushd "%RUNNER_TEMP%"
-          if errorlevel 1 exit /b 1
-          cl /nologo /std:c++17 /EHsc /W4 /DUNICODE /D_UNICODE "%GITHUB_WORKSPACE%\src\project\check-backends\windows-supervisor.cpp" /Fe:mosaic-windows-supervisor.exe /link advapi32.lib userenv.lib
-          if errorlevel 1 exit /b 1
-          if not exist "mosaic-windows-supervisor.exe" exit /b 1
-          >>"%GITHUB_ENV%" echo MOSAIC_TEST_WINDOWS_SUPERVISOR=%RUNNER_TEMP%\mosaic-windows-supervisor.exe
-          popd
+      - *find-x64-supervisor
+      - *build-x64-supervisor
       - name: Run native protected execution tests
         run: node --test --test-concurrency=1 test/windows-protected-checks.test.mjs
       - name: Record remaining release gates
