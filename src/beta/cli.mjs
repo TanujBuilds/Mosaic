@@ -126,6 +126,11 @@ export async function main(args=process.argv.slice(2)){
   }
   return state;
  }
+ if(process.platform==='win32'&&['rollback','recover','uninstall'].includes(command)){
+  if(args.length!==(command==='rollback'?1:0))throw Error('Use mosaic '+command+(command==='rollback'?' VERSION':''));
+  const {runWindowsInstallMaintenance}=await import(new URL('../../../distribution/windows/maintenance.mjs',import.meta.url));
+  return runWindowsInstallMaintenance(command,args[0]);
+ }
  if(command==='rollback'){if(args.length!==1)throw Error('Use mosaic rollback VERSION');return (await import('./install.mjs')).rollbackVersion(paths,args[0]);}
  let providerDiagnostics=false;
  if(command==='doctor'){if(args.length>1||args.length===1&&args[0]!=='--providers')throw Error('Use mosaic doctor [--providers]');providerDiagnostics=args.shift()==='--providers';}
@@ -137,8 +142,14 @@ export async function main(args=process.argv.slice(2)){
   const [{installedLauncher,verifyVersion},{doctor}]=await Promise.all([import('./install.mjs'),import('./setup.mjs')]);
   let valid=false;
   try{
+   if(process.platform==='win32'){
+    const {runWindowsInstallMaintenance}=await import(new URL('../../../distribution/windows/maintenance.mjs',import.meta.url));
+    await runWindowsInstallMaintenance('verify');
+    valid=true;
+   }else{
    const {receipt,bytes}=await installedLauncher(paths);
    if(bytes){const manifest=await verifyVersion(path.join(paths.versions,receipt.version),receipt.version);valid=manifest.contentHash===receipt.contentHash;}
+   }
   }catch{}
   process.stdout.write(valid?'OK  Package integrity · installed version verified.\n':'CHECK  Package integrity · reinstall Mosaic Beta from a verified archive.\n');
   if(!await doctor(paths,process.stdout,{providers:providerDiagnostics})||!valid)process.exitCode=1;

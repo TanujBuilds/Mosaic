@@ -221,9 +221,10 @@ async function build(options) {
       await copyInto(path.join(repository, relative), payload, 'runtime/' + relative);
     }
     for (const relative of ['LICENSE', 'THIRD_PARTY_NOTICES.md', 'docs/TERMINAL_BETA.md', 'distribution/onboarding/host.mjs', 'distribution/onboarding/windows-host.mjs',
-      'distribution/windows/guide.ps1', 'distribution/windows/lifecycle.mjs']) {
+      'distribution/windows/guide.ps1', 'distribution/windows/lifecycle.mjs', 'distribution/windows/maintenance.mjs']) {
       await copyInto(path.join(repository, relative), payload, relative);
     }
+    await copyInto(path.join(repository, 'install.ps1'), payload, 'distribution/windows/install.ps1');
     const notices = await listFiles(path.join(repository, 'distribution', 'notices'));
     for (const notice of notices) {
       const relative = 'distribution/notices/' + notice;

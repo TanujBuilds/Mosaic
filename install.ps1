@@ -1,10 +1,14 @@
 [CmdletBinding(DefaultParameterSetName = 'Download')]
 param(
-    [Parameter(Mandatory)] [ValidatePattern('^(?:0|[1-9]\d{0,8})\.(?:0|[1-9]\d{0,8})\.(?:0|[1-9]\d{0,8})(?:-beta\.(?:0|[1-9]\d{0,8}))?$')] [string] $Version,
-    [Parameter(Mandatory)] [ValidatePattern('^[a-f0-9]{64}$')] [string] $ArchiveSha256,
+    [Parameter(Mandatory, ParameterSetName = 'Download')] [Parameter(Mandatory, ParameterSetName = 'Local')]
+    [ValidatePattern('^(?:0|[1-9]\d{0,8})\.(?:0|[1-9]\d{0,8})\.(?:0|[1-9]\d{0,8})(?:-beta\.(?:0|[1-9]\d{0,8}))?$')] [string] $Version,
+    [Parameter(Mandatory, ParameterSetName = 'Download')] [Parameter(Mandatory, ParameterSetName = 'Local')]
+    [ValidatePattern('^[a-f0-9]{64}$')] [string] $ArchiveSha256,
     [Parameter(Mandatory, ParameterSetName = 'Download')] [uri] $ArchiveUri,
     [Parameter(Mandatory, ParameterSetName = 'Local')] [string] $Archive,
-    [switch] $NoGuide
+    [switch] $NoGuide,
+    [Parameter(Mandatory, ParameterSetName = 'Maintenance')] [ValidateSet('verify', 'recover', 'rollback', 'uninstall')] [string] $Maintenance,
+    [Parameter(ParameterSetName = 'Maintenance')] [string] $TargetVersion
 )
 
 $ErrorActionPreference = 'Stop'
@@ -184,6 +188,7 @@ function Read-Inventory($Manifest, [string] $ExpectedVersion) {
     foreach ($required in @('runtime/bin/node.exe', 'runtime/src/beta/cli.mjs', 'runtime/check-artifact/node.exe',
             'runtime/check-artifact/mosaic-windows-supervisor.exe', 'runtime/check-artifact/artifact-manifest.json',
             'distribution/windows/mosaic.exe', 'distribution/windows/guide.ps1', 'distribution/windows/lifecycle.mjs',
+            'distribution/windows/install.ps1', 'distribution/windows/maintenance.mjs',
             'distribution/onboarding/windows-host.mjs')) {
         if (-not $files.ContainsKey($required) -or $files[$required].path -cne $required) { throw 'The Windows release payload is incomplete.' }
     }
@@ -232,6 +237,43 @@ function Test-SameRecord($First, $Second) {
     return ($First.version -ceq $Second.version -and $First.archiveSha256 -ceq $Second.archiveSha256 -and
         $First.manifestSha256 -ceq $Second.manifestSha256 -and $First.launcherHash -ceq $Second.launcherHash -and
         $First.contentHash -ceq $Second.contentHash)
+}
+
+function Test-RetainedVersion([string] $Versions, $Record) {
+    Test-Record $Record
+    $target = Join-Path $Versions $Record.version
+    $manifest = Test-VersionDirectory $target $Record.manifestSha256 $Record.version
+    if ($manifest.contentHash -cne $Record.contentHash) { throw 'The retained Mosaic version no longer matches its receipt.' }
+    return $manifest
+}
+
+function Save-VersionReceipt([string] $History, $Record) {
+    if (-not $Record) { return }
+    Test-Record $Record
+    $file = Join-Path $History ($Record.version + '.json')
+    $existing = Read-JsonFile $file 8192
+    if ($existing) {
+        if (-not (Test-SameRecord $existing $Record)) { throw 'A retained Mosaic version has a conflicting receipt.' }
+    } else { Write-JsonFile $file $Record }
+}
+
+function Complete-Uninstall($Record, [string] $Pointer, [string] $Launcher, [string] $Backup, [string] $Disabled) {
+    if (Get-PlainItem $Launcher) {
+        if ((Get-Sha256 $Launcher) -cne $Record.launcherHash) { throw 'The stable launcher changed during uninstall.' }
+        if (Get-PlainItem $Backup) {
+            if ((Get-Sha256 $Backup) -cne $Record.launcherHash) { throw 'The retained launcher backup changed.' }
+        } else { Write-Atomic $Backup ([IO.File]::ReadAllBytes($Launcher)) }
+    } elseif (-not (Get-PlainItem $Backup) -or (Get-Sha256 $Backup) -cne $Record.launcherHash) {
+        throw 'Mosaic could not verify the owned launcher backup.'
+    }
+    Write-JsonFile $Disabled $Record
+    if (Get-PlainItem $Pointer) { [IO.File]::Delete($Pointer) }
+    if (Get-PlainItem $Launcher) {
+        try { [IO.File]::Delete($Launcher) }
+        catch [UnauthorizedAccessException], [IO.IOException] {
+            Write-Host 'Windows has the launcher open. It remains inactive and can be removed after closing Mosaic.'
+        }
+    }
 }
 
 function Expand-Release([string] $File, [string] $Destination) {
@@ -312,11 +354,12 @@ if ($env:OS -ne 'Windows_NT' -or [Runtime.InteropServices.RuntimeInformation]::O
     throw 'Use native 64-bit PowerShell on Windows 11 x64.'
 }
 Add-Type -AssemblyName System.IO.Compression
-$ArchiveSha256 = $ArchiveSha256.ToLowerInvariant()
+if ($ArchiveSha256) { $ArchiveSha256 = $ArchiveSha256.ToLowerInvariant() }
 $currentSid = [Security.Principal.WindowsIdentity]::GetCurrent().User
 $local = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)
 Assert-LocalPath $local
 $root = Join-Path $local 'Mosaic Beta'
+if ($Maintenance -and -not (Get-PlainItem $root -Directory)) { throw 'Mosaic installation is unavailable.' }
 Initialize-Root $root
 $lockPath = Join-Path $root 'install.lock'
 Get-PlainItem $lockPath | Out-Null
@@ -328,14 +371,18 @@ try {
     $versions = (Get-PlainDirectory (Join-Path $root 'versions')).FullName
     $config = (Get-PlainDirectory (Join-Path $root 'config')).FullName
     $cache = (Get-PlainDirectory (Join-Path $root 'downloads')).FullName
-    $target = Join-Path $versions $Version
+    $history = (Get-PlainDirectory (Join-Path $config 'installed-versions')).FullName
     $launcher = Join-Path $bin 'mosaic.exe'
     $receiptPath = Join-Path $config 'installation.json'
     $intentPath = Join-Path $root 'install-intent.json'
     $pointerPath = Join-Path $root 'current-version.txt'
+    $disabledPath = Join-Path $config 'installation-disabled.json'
+    $backupPath = Join-Path $config 'retained-launcher.exe'
     $receipt = Read-JsonFile $receiptPath 8192
     if ($receipt) { Test-Record $receipt }
     $intent = Read-JsonFile $intentPath 32768
+    $disabled = Read-JsonFile $disabledPath 8192
+    if ($disabled) { Test-Record $disabled }
     $current = $null
     $pointer = Get-PlainItem $pointerPath
     if ($pointer) {
@@ -345,27 +392,100 @@ try {
         if ($current -cnotmatch $versionPattern -or $pointerText -cne ($current + [char]10)) { throw 'The Mosaic version pointer is invalid.' }
     }
     $launcherHash = if (Get-PlainItem $launcher) { Get-Sha256 $launcher } else { $null }
+    $inactive = $disabled -and -not $current -and (Test-SameRecord $disabled $receipt) -and
+        (-not $launcherHash -or $launcherHash -ceq $receipt.launcherHash)
+    $active = $receipt -and $current -ceq $receipt.version -and $launcherHash -ceq $receipt.launcherHash -and -not $disabled
+
+    if ($Maintenance -eq 'verify') {
+        if (-not $active -or $intent) { throw 'The active Windows installation is incomplete.' }
+        Test-RetainedVersion $versions $receipt | Out-Null
+        return
+    }
+    if ($Maintenance -eq 'uninstall' -or ($Maintenance -eq 'recover' -and $intent.operation -eq 'uninstall')) {
+        if ($TargetVersion) { throw 'Uninstall does not take a version.' }
+        if (-not $intent) {
+            if ($inactive) { Write-Host 'Mosaic is already inactive. Its saved data and releases are retained.'; return }
+            if (-not $active) { throw 'Existing Mosaic install bindings are missing or changed.' }
+            $intent = [ordered]@{schema = 1; operation = 'uninstall'; previous = $receipt}
+            Write-JsonFile $intentPath $intent
+        }
+        if ($intent.schema -ne 1 -or $intent.operation -cne 'uninstall' -or -not (Test-SameRecord $receipt $intent.previous) -or
+            ($current -and $current -cne $intent.previous.version) -or ($disabled -and -not (Test-SameRecord $disabled $receipt)) -or
+            ($launcherHash -and $launcherHash -cne $intent.previous.launcherHash)) { throw 'Uninstall recovery bindings have changed.' }
+        Test-RetainedVersion $versions $intent.previous | Out-Null
+        Save-VersionReceipt $history $intent.previous
+        $old = Join-Path $versions $intent.previous.version
+        try { Invoke-Lifecycle $old 'prepare-uninstall' @(0) | Out-Null }
+        catch {
+            if ($active) { [IO.File]::Delete($intentPath) }
+            throw
+        }
+        Complete-Uninstall $intent.previous $pointerPath $launcher $backupPath $disabledPath
+        [IO.File]::Delete($intentPath)
+        Write-Host 'Mosaic was deactivated for this user. Its saved data and releases are retained.'
+        return
+    }
+    if ($Maintenance -eq 'rollback') {
+        if ($TargetVersion -cnotmatch $versionPattern -or -not $active -or $intent -or (Compare-Version $TargetVersion $current) -ge 0) {
+            throw 'Choose an older retained version while the current installation is healthy.'
+        }
+        $oldManifest = Test-RetainedVersion $versions $receipt
+        $selected = Read-JsonFile (Join-Path $history ($TargetVersion + '.json')) 8192
+        if (-not $selected -or $selected.version -cne $TargetVersion -or $selected.launcherHash -cne $launcherHash) {
+            throw 'The requested rollback version has no matching retained receipt.'
+        }
+        $selectedManifest = Test-RetainedVersion $versions $selected
+        if ($oldManifest.nativeCheckArtifact.fingerprint -cne $selectedManifest.nativeCheckArtifact.fingerprint) {
+            throw 'Rollback requires a compatible protected-check artifact. The existing installation was preserved.'
+        }
+        $Version = $selected.version
+        $ArchiveSha256 = $selected.archiveSha256
+        $intent = [ordered]@{schema = 1; operation = 'rollback'; previous = $receipt; target = $selected}
+        Write-JsonFile $intentPath $intent
+    }
+    if ($Maintenance -eq 'recover') {
+        if ($TargetVersion) { throw 'Recovery uses the saved version and takes no version argument.' }
+        if ($intent) {
+            Test-Record $intent.target
+            $Version = $intent.target.version
+            $ArchiveSha256 = $intent.target.archiveSha256
+        } elseif ($active) {
+            $Version = $receipt.version
+            $ArchiveSha256 = $receipt.archiveSha256
+        } else { throw 'No active release can be recovered. Run its verified install command.' }
+    }
+    $target = Join-Path $versions $Version
+
     if ($intent) {
-        if ($intent.schema -ne 1 -or $intent.target.version -cne $Version -or $intent.target.archiveSha256 -cne $ArchiveSha256) {
+        if ($intent.schema -ne 1 -or $intent.operation -notin @($null, 'install', 'rollback') -or
+            $intent.target.version -cne $Version -or $intent.target.archiveSha256 -cne $ArchiveSha256) {
             throw 'Finish the pending Mosaic installation using its original verified command before choosing another version.'
         }
         Test-Record $intent.target
         if ($intent.previous) { Test-Record $intent.previous }
-        if ($current -notin @($intent.previous.version, $Version) -or
+        $pendingReinstall = -not $current -and $disabled -and (Test-SameRecord $disabled $intent.previous)
+        if (($current -notin @($intent.previous.version, $Version) -and -not $pendingReinstall) -or
             (-not (Test-SameRecord $receipt $intent.previous) -and -not (Test-SameRecord $receipt $intent.target)) -or
-            $launcherHash -notin @($intent.previous.launcherHash, $intent.target.launcherHash)) {
+            ($current -and -not $launcherHash) -or
+            ($launcherHash -and $launcherHash -notin @($intent.previous.launcherHash, $intent.target.launcherHash))) {
             throw 'Mosaic installation bindings changed while recovery was pending.'
         }
         $manifest = Test-VersionDirectory $target $intent.target.manifestSha256 $Version
         if ($manifest.contentHash -cne $intent.target.contentHash) { throw 'The interrupted install target no longer matches its receipt.' }
     } else {
-        if (($receipt -and ($current -cne $receipt.version -or $launcherHash -cne $receipt.launcherHash)) -or
-            (-not $receipt -and ($current -or $launcherHash))) { throw 'Existing Mosaic install bindings are missing or changed.' }
-        if ($receipt -and (Compare-Version $Version $current) -lt 0) { throw 'This command would downgrade Mosaic. Use its supported rollback flow.' }
+        if (($receipt -and -not $active -and -not $inactive) -or (-not $receipt -and ($current -or $launcherHash -or $disabled))) {
+            throw 'Existing Mosaic install bindings are missing or changed.'
+        }
+        if ($receipt -and (Compare-Version $Version $receipt.version) -lt 0) { throw 'This command would downgrade Mosaic. Use its supported rollback flow.' }
         if ($current -ceq $Version) {
             if ($receipt.archiveSha256 -cne $ArchiveSha256) { throw 'This installed version has different release bytes. Choose a newer version.' }
             $manifest = Test-VersionDirectory $target $receipt.manifestSha256 $Version
             if ($manifest.contentHash -cne $receipt.contentHash) { throw 'The installed version no longer matches its receipt.' }
+        } elseif ($inactive -and $receipt.version -ceq $Version) {
+            if ($receipt.archiveSha256 -cne $ArchiveSha256) { throw 'This retained version has different release bytes.' }
+            Test-RetainedVersion $versions $receipt | Out-Null
+            $intent = [ordered]@{schema = 1; operation = 'install'; previous = $receipt; target = $receipt}
+            Write-JsonFile $intentPath $intent
         } else {
             if ($receipt) {
                 $old = Join-Path $versions $receipt.version
@@ -386,8 +506,8 @@ try {
             }
             $newReceipt = [ordered]@{schema = 1; platform = 'win32-x64'; version = $Version; archiveSha256 = $ArchiveSha256;
                 manifestSha256 = $verification.ManifestSha256; contentHash = $verification.ContentHash; launcherHash = $verification.LauncherSha256}
-            if ($launcherHash) { $newReceipt.launcherHash = $launcherHash }
-            $intent = [ordered]@{schema = 1; previous = $receipt; target = $newReceipt}
+            if ($receipt) { $newReceipt.launcherHash = $receipt.launcherHash }
+            $intent = [ordered]@{schema = 1; operation = 'install'; previous = $receipt; target = $newReceipt}
             Write-JsonFile $intentPath $intent
         }
     }
@@ -401,19 +521,24 @@ try {
                 throw
             }
         }
+        Save-VersionReceipt $history $intent.previous
+        Save-VersionReceipt $history $intent.target
         if (-not $launcherHash) {
-            $launcherBytes = [IO.File]::ReadAllBytes((Join-Path $target 'distribution\windows\mosaic.exe'))
+            $launchSource = if (Get-PlainItem $backupPath) { $backupPath } else { Join-Path $target 'distribution\windows\mosaic.exe' }
+            if ((Get-Sha256 $launchSource) -cne $intent.target.launcherHash) { throw 'The retained launcher no longer matches its receipt.' }
+            $launcherBytes = [IO.File]::ReadAllBytes($launchSource)
             Write-Atomic $launcher $launcherBytes
         }
         if ((Get-Sha256 $launcher) -cne $intent.target.launcherHash) { throw 'The stable Mosaic launcher does not match its receipt.' }
         Write-JsonFile $receiptPath $intent.target
         Write-Atomic $pointerPath ($utf8.GetBytes($Version + [char]10))
+        if (Get-PlainItem $disabledPath) { [IO.File]::Delete($disabledPath) }
         [IO.File]::Delete($intentPath)
-    }
+    } else { Save-VersionReceipt $history $receipt }
 } finally { $lock.Dispose() }
 
 if (($env:Path -split ';') -notcontains $bin) { $env:Path = $bin + ';' + $env:Path }
 Write-Host "Mosaic $Version installed for this user."
-if ($NoGuide) { Invoke-Lifecycle $target 'ensure-ready' @(0, 3) | Out-Null; return }
+if ($NoGuide -or $Maintenance) { Invoke-Lifecycle $target 'ensure-ready' @(0, 3) | Out-Null; return }
 $guide = Join-Path $target 'distribution\windows\guide.ps1'
 & ([ScriptBlock]::Create([IO.File]::ReadAllText($guide))) -VersionDirectory $target -Launcher $launcher

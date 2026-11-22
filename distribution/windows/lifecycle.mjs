@@ -43,7 +43,8 @@ try {
   if (process.argv.length !== 3) throw Error('Invalid installation lifecycle command');
   switch (process.argv[2]) {
     case 'prepare-update':
-      await assertMaintenanceIdle(paths, {settingsChange: true});
+    case 'prepare-uninstall':
+      await assertMaintenanceIdle(paths, {settingsChange: process.argv[2] === 'prepare-update'});
       await stopForMaintenance(paths, {recovering: true});
       await assertMaintenanceIdle(paths, {offline: true});
       break;

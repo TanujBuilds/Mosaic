@@ -88,7 +88,7 @@ PROCESS_INFORMATION launch(const std::wstring& root, int argc, wchar_t** argv) {
     if (!lock.valid() || !GetFileInformationByHandle(lock.get(), &lock_info) ||
         lock_info.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT) ||
         lock_info.nNumberOfLinks != 1 ||
-        path_present(root + L"\\install-intent.json")) {
+        (path_present(root + L"\\install-intent.json") && !(argc == 2 && std::wstring(argv[1]) == L"recover"))) {
         throw std::runtime_error("Mosaic installation is pending. Rerun the same verified install command to recover");
     }
     const std::wstring versions = root + L"\\versions";

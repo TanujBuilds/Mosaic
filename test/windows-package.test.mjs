@@ -73,7 +73,7 @@ test('PowerShell checks the archive and installs only its verified inventory', {
   const required = ['runtime/bin/node.exe', 'runtime/src/beta/cli.mjs', 'runtime/check-artifact/node.exe',
     'runtime/check-artifact/mosaic-windows-supervisor.exe', 'runtime/check-artifact/artifact-manifest.json',
     'distribution/windows/mosaic.exe', 'distribution/windows/guide.ps1', 'distribution/windows/lifecycle.mjs',
-    'distribution/onboarding/windows-host.mjs'];
+    'distribution/windows/install.ps1', 'distribution/windows/maintenance.mjs', 'distribution/onboarding/windows-host.mjs'];
   const files = required.map(path => ({path, sha256: sha256(content), bytes: content.length}));
   const version = '0.1.0-beta.229';
   const manifest = Buffer.from(JSON.stringify({schema: 1, platform: 'win32', arch: 'x64', layout: 'windows-beta-v1',
@@ -115,6 +115,22 @@ test('PowerShell checks the archive and installs only its verified inventory', {
     '$verified = Expand-Release $archive $destination',
     'if ($verified.ManifestSha256 -cne ' + literal(sha256(manifest)) + ') { throw "Manifest hash mismatch" }',
     '$null = Test-VersionDirectory $destination $verified.ManifestSha256 $Version',
+    '$history = New-Item -ItemType Directory -Path (Join-Path ' + literal(folder) + ' "history")',
+    '$launcher = Join-Path ' + literal(folder) + ' "mosaic.exe"',
+    '$backup = Join-Path ' + literal(folder) + ' "backup.exe"',
+    '$pointer = Join-Path ' + literal(folder) + ' "active.txt"',
+    '$disabled = Join-Path ' + literal(folder) + ' "disabled.json"',
+    '$record = @{schema=1; platform="win32-x64"; version=$Version; archiveSha256=$ArchiveSha256; manifestSha256=$verified.ManifestSha256; launcherHash=$verified.LauncherSha256; contentHash=$verified.ContentHash}',
+    '[IO.File]::Copy((Join-Path $destination "distribution/windows/mosaic.exe"), $launcher)',
+    'Write-Atomic $pointer ($utf8.GetBytes($Version + [char]10))',
+    'Save-VersionReceipt $history.FullName $record',
+    'Save-VersionReceipt $history.FullName $record',
+    '$saved = Read-JsonFile (Join-Path $history.FullName ($Version + ".json")) 8192',
+    'if (-not (Test-SameRecord $record $saved)) { throw "The retained receipt changed" }',
+    'Complete-Uninstall $record $pointer $launcher $backup $disabled',
+    'Complete-Uninstall $record $pointer $launcher $backup $disabled',
+    '$inactive = Read-JsonFile $disabled 8192',
+    'if ((Get-PlainItem $pointer) -or (Get-PlainItem $launcher) -or (Get-Sha256 $backup) -cne $record.launcherHash -or -not (Test-SameRecord $record $inactive)) { throw "Uninstall did not preserve the exact inactive receipt and backup" }',
     '$leaf = Join-Path $destination "runtime/bin/node.exe"',
     'Write-Atomic $leaf ([byte[]](1, 2, 3))',
     '$rejected = $false',
