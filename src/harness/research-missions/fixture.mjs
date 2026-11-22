@@ -1,16 +1,18 @@
 import {execFile} from 'node:child_process';
 import {randomUUID} from 'node:crypto';
-import {lstat, mkdir, realpath, writeFile} from 'node:fs/promises';
+import {lstat, mkdir, realpath, rename, rm, writeFile} from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {promisify} from 'node:util';
+import {windowsFile} from '../../beta/windows-files.mjs';
 import {Coordinator} from '../coordinator.mjs';
 import {Integration} from '../integration.mjs';
 import {ResearchAdapter} from '../research.mjs';
 import {Dispatcher} from '../tools.mjs';
 
 const exec = promisify(execFile);
+const windows = process.platform === 'win32';
 const driver = fileURLToPath(new URL('./fixture-driver.py', import.meta.url));
 const fixture = {
   sourceBasis: 'invented_local_sources',
@@ -50,11 +52,34 @@ async function claimOutput(output) {
     const info = await lstat(parent);
     if (info.isSymbolicLink() || !info.isDirectory()) throw Error('Unsafe output parent or symlink');
   }
+  const directory = path.join(parent, parts.at(-1));
+  if (windows) {
+    try {
+      await windowsFile('private-directory', parent);
+    } catch (error) {
+      throw Error('Use a caller-owned, private Windows temp parent', {cause: error});
+    }
+    // Create with an explicit user owner and private ACL, then publish to a
+    // fresh name. Windows directory renames fail if the destination exists.
+    const staging = path.join(parent, '.mosaic-fixture-' + randomUUID());
+    await windowsFile('mkdir', staging);
+    try {
+      await rename(staging, directory);
+    } catch (error) {
+      if (await lstat(directory).catch(failure => {
+        if (failure.code !== 'ENOENT') throw failure;
+      })) throw Error('Demo output must be a fresh directory', {cause: error});
+      throw error;
+    } finally {
+      await rm(staging, {recursive: true, force: true});
+    }
+    await windowsFile('private-directory', directory);
+    return directory;
+  }
   const parentInfo = await lstat(parent);
   if (parentInfo.uid !== process.getuid?.() || (parentInfo.mode & 0o022) !== 0) {
     throw Error('Use a caller-owned, private temp parent created with mktemp -d');
   }
-  const directory = path.join(parent, parts.at(-1));
   try {
     await mkdir(directory, {mode: 0o700});
   } catch (error) {
@@ -67,14 +92,14 @@ async function claimOutput(output) {
 export async function runFixtureMission(output) {
   const root = await claimOutput(output);
   const coordinator = path.join(root, 'coordinator');
-  const python = process.env.FRONTIER_TEST_PYTHON ?? 'python3';
+  const python = process.env.FRONTIER_TEST_PYTHON ?? (windows ? 'python.exe' : 'python3');
   const config = {environment: 'fixture', research: {pollMs: 0}};
   const stages = [];
   const checks = {};
   let c, dispatcher, adapter, owner;
 
   async function runPython(args, packet) {
-    const child = exec(python, ['-ISB', driver, root, ...args],
+    const child = exec(python, ['-ISB', '-X', 'utf8', driver, root, ...args],
       {timeout: 15_000, maxBuffer: 2 * 1024 * 1024});
     child.child.stdin.on('error', () => {});
     child.child.stdin.end(packet === undefined ? undefined : JSON.stringify(packet));

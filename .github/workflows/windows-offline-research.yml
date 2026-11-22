@@ -22,6 +22,7 @@ jobs:
           node-version: '24.22.3'
           package-manager-cache: false
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        id: python
         with:
           python-version: '3.12'
           architecture: x64
@@ -36,7 +37,6 @@ jobs:
           $dev = Join-Path $vs 'Common7/Tools/VsDevCmd.bat'
           if (!(Test-Path -LiteralPath $dev -PathType Leaf)) { throw 'VsDevCmd.bat unavailable' }
           "MOSAIC_VS_DEV_CMD=$dev" >> $env:GITHUB_ENV
-          "FRONTIER_TEST_PYTHON=$((Get-Command python.exe -CommandType Application).Source)" >> $env:GITHUB_ENV
           python --version
       - name: Build the native Windows file utility for private fixture state
         shell: cmd
@@ -53,5 +53,7 @@ jobs:
           popd
       - name: Install locked dependencies
         run: npm ci --ignore-scripts --no-audit --no-fund
-      - name: Run local research demo and authenticated preview
+      - name: Check research activation hold, offline artifacts and authenticated preview
+        env:
+          FRONTIER_TEST_PYTHON: ${{ steps.python.outputs.python-path }}
         run: node .github/scripts/windows-offline-research.mjs

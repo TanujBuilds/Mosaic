@@ -139,6 +139,7 @@ async function pythonArtifacts() {
   const packet = await request('export');
   const collected = await drive(['collect'], packet);
   assert.equal(collected.checksums_verified, true);
+  assert.deepEqual(Object.keys(packet.files).sort(), ['claims.json', 'manifest.json', 'receipt.json', 'report.md', 'sources.json']);
   const hashes = {};
   for (const [name, bytes] of Object.entries(packet.files)) {
     const content = await readFile(path.join(collected.directory, name));
