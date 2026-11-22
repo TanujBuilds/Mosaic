@@ -94,7 +94,9 @@ const hostProgram = String.raw`
   const [supervisor, mode, diagnostics, ...args] = process.argv.slice(1);
   const log = openSync(diagnostics, 'wx');
   const child = spawn(supervisor, ['--isolated-js', ...args, String(process.pid)], {
-    windowsHide:true, stdio:['pipe','pipe',log],
+    // libuv otherwise kills the supervisor with its parent before it can
+    // drain the check job and persist the independent completion record.
+    detached:true, windowsHide:true, stdio:['pipe','pipe',log],
   });
   closeSync(log);
   child.stdin.on('error', () => {});
