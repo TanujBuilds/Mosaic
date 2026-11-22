@@ -1,0 +1,38 @@
+name: Windows local dashboard authority evidence
+
+'on':
+  push:
+    branches:
+      - codex/windows-dashboard-authority
+
+permissions:
+  contents: read
+
+jobs:
+  dashboard:
+    name: Windows x64 legacy dashboard authorization
+    runs-on: windows-2025
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24.22.3'
+          package-manager-cache: false
+      - name: Bind the runner and exact two-file source candidate
+        shell: pwsh
+        run: |
+          $candidate = git rev-parse 'HEAD^'
+          if ($LASTEXITCODE -ne 0 -or $candidate -ne 'de978772a13eeddbee9c33dcbdfc4bb9ea84e873') { throw 'Unexpected source candidate' }
+          git diff --exit-code 'HEAD^' HEAD -- src/dashboard.mjs test/dashboard.test.mjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $arch = node -p 'process.arch'
+          if ($LASTEXITCODE -ne 0 -or $arch -ne 'x64') { throw 'Expected x64 runtime' }
+          Get-CimInstance Win32_OperatingSystem | Select-Object Caption, Version, OSArchitecture
+          node --version
+          Write-Output "Source candidate: $candidate"
+      - name: Test correct local and refused dashboard requests
+        run: node --test test/dashboard.test.mjs test/coordinator.test.mjs
