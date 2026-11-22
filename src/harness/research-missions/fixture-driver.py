@@ -15,6 +15,59 @@ def deny_external_effects(event, _args):
 sys.addaudithook(deny_external_effects)
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / ".agents/skills/deep-research/scripts"))
 
+# The Unix worker and collector are unchanged. Supply their two platform I/O
+# operations inside this isolated, offline fixture process on Windows only.
+if sys.platform == "win32":
+    import ctypes
+    from ctypes import wintypes
+    import errno
+    import msvcrt
+    import os
+    from types import ModuleType
+
+    fcntl = ModuleType("fcntl")
+    fcntl.LOCK_EX, fcntl.LOCK_NB, fcntl.LOCK_UN = 2, 4, 8
+
+    def flock(fd, operation):
+        if operation == (fcntl.LOCK_EX | fcntl.LOCK_NB):
+            mode = msvcrt.LK_NBLCK
+        elif operation == fcntl.LOCK_UN:
+            mode = msvcrt.LK_UNLCK
+        else:
+            raise ValueError("Unexpected offline fixture lock operation")
+        position = os.lseek(fd, 0, os.SEEK_CUR)
+        try:
+            os.lseek(fd, 0, os.SEEK_SET)
+            msvcrt.locking(fd, mode, 1)
+        except OSError as error:
+            if mode == msvcrt.LK_NBLCK and error.errno in (errno.EACCES, errno.EAGAIN):
+                raise BlockingIOError(errno.EAGAIN, "Offline fixture worker lock is held") from error
+            raise
+        finally:
+            os.lseek(fd, position, os.SEEK_SET)
+
+    fcntl.flock = flock
+    sys.modules["fcntl"] = fcntl
+
+    move_file = ctypes.WinDLL("kernel32.dll", use_last_error=True).MoveFileExW
+    move_file.argtypes = (wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD)
+    move_file.restype = wintypes.BOOL
+    replace_existing, write_through = 0x1, 0x8
+
+    def write_windows_artifact(path, data):
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        staged = path.with_name(path.name + ".tmp")
+        with staged.open("wb") as stream:
+            stream.write(data.encode("utf-8") if isinstance(data, str) else data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        if not move_file(str(staged), str(path), replace_existing | write_through):
+            raise ctypes.WinError(ctypes.get_last_error())
+
+    import research_worker
+    research_worker.atomic = write_windows_artifact
+
 from research_review import digest
 from research_cli import MAX_PACKET, collect, rpc
 from research_state import Store

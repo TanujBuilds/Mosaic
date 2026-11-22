@@ -1,0 +1,59 @@
+name: Windows offline research and recipe preview
+
+'on':
+  push:
+    branches:
+      - codex/windows-offline-research
+
+permissions:
+  contents: read
+
+jobs:
+  offline-research:
+    name: Windows x64 offline research and recipe preview
+    runs-on: windows-2025
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24.22.3'
+          package-manager-cache: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        id: python
+        with:
+          python-version: '3.12'
+          architecture: x64
+      - name: Locate native Windows tools
+        shell: pwsh
+        run: |
+          $os = Get-CimInstance Win32_OperatingSystem
+          Write-Output "$($os.Caption) $($os.Version) $($os.OSArchitecture)"
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
+          $vs = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if ($LASTEXITCODE -ne 0 -or -not $vs) { throw 'MSVC x64 unavailable' }
+          $dev = Join-Path $vs 'Common7/Tools/VsDevCmd.bat'
+          if (!(Test-Path -LiteralPath $dev -PathType Leaf)) { throw 'VsDevCmd.bat unavailable' }
+          "MOSAIC_VS_DEV_CMD=$dev" >> $env:GITHUB_ENV
+          python --version
+      - name: Build the native Windows file utility for private fixture state
+        shell: cmd
+        run: |
+          call "%MOSAIC_VS_DEV_CMD%" -arch=x64 -host_arch=x64
+          if errorlevel 1 exit /b 1
+          if not exist "%GITHUB_WORKSPACE%\bin" mkdir "%GITHUB_WORKSPACE%\bin"
+          if errorlevel 1 exit /b 1
+          pushd "%RUNNER_TEMP%"
+          if errorlevel 1 exit /b 1
+          cl /nologo /std:c++17 /EHsc /W4 /DUNICODE /D_UNICODE "%GITHUB_WORKSPACE%\distribution\win32-files\mosaic-files.cpp" /Fe:"%GITHUB_WORKSPACE%\bin\mosaic-files.exe" /link advapi32.lib
+          if errorlevel 1 exit /b 1
+          if not exist "%GITHUB_WORKSPACE%\bin\mosaic-files.exe" exit /b 1
+          popd
+      - name: Install locked dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Check research activation hold, offline artifacts and authenticated preview
+        env:
+          FRONTIER_TEST_PYTHON: ${{ steps.python.outputs.python-path }}
+        run: node .github/scripts/windows-offline-research.mjs

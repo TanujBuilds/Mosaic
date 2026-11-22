@@ -13,6 +13,8 @@ node scripts/mosaic-research-mission.mjs demo --output "$demo_root/mission"
 
 Set `FRONTIER_TEST_PYTHON` to an existing Python interpreter if needed. The demo uses invented source documents and simulated independent reviewer responses. The Node coordinator, durable SQLite records, Python research protocol and targeted assembly run locally in disposable state. The demo forbids provider, retrieval and network access. It records the original candidate that needs revision, a fresh candidate awaiting review, the final accepted candidate and a separate partial result for an issue outside the targeted contract. Read `transcript.json` alongside the Markdown and JSON exports for the candidate identities and restart evidence.
 
+On Windows, the source demo can validate its output directory and prepare its disposable draft. The protected execution gate still holds goal activation, so the full demo stops there. The Windows offline fixture job verifies the Python artifact path independently. It uses the invented sources and a simulated reviewer to write, hash and collect a repaired report. An authenticated recipe preview against a saved draft returns the parked diagnostic and creates zero tasks or provider requests.
+
 ## Read an existing task
 
 Use the same authenticated coordinator connection as the harness CLI. The read commands require a running coordinator with the mission tools registered.
