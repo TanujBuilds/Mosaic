@@ -45,10 +45,14 @@ export function windowsHostConsult(c, manifest) {
 }
 export function assertExecutionAvailable(manifest,config={}){
  if(process.platform==='win32' && !isWindowsJavaScriptPolicy(manifest.executionPolicy))throw new Pause('Windows protected coding is in development. No execution backend has passed Windows filesystem isolation qualification.','isolation');
- if(isWindowsJavaScriptPolicy(manifest.executionPolicy)&&manifest.mode&&
-    (manifest.mode.id!=='codex_only'||manifest.reviewPolicy?.source!=='host'||
-     manifest.providerPolicy||manifest.workerProfile||manifest.overnightPolicy))
-  throw new Pause('The Windows isolated JavaScript candidate currently supports coding-app-only with host review','isolation');
+ if(isWindowsJavaScriptPolicy(manifest.executionPolicy)&&manifest.mode){
+  const appOnly=manifest.mode.id==='codex_only'&&!manifest.providerPolicy;
+  const collaborative=manifest.mode.id==='collaborative'&&manifest.mode.version===1&&
+   manifest.project&&manifest.providerPolicy&&/^[a-f0-9]{64}$/.test(manifest.providerPolicyHash??'');
+  if(manifest.reviewPolicy?.source!=='host'||manifest.workerProfile||manifest.overnightPolicy||
+     !(appOnly||collaborative))
+   throw new Pause('Windows isolated JavaScript requires host review and either coding-app-only or Collaborative with an approved API worker policy','isolation');
+ }
  return assertExecutionPrerequisites(manifest,config);
 }
 export function assertExecutionPrerequisites(manifest,config={}){

@@ -188,7 +188,9 @@ function handoff(output, goal, host) {
   const runAssignment = {
     deepseek_only: "let the coordinator's API-worker planner create the one allowed coding assignment after activation",
     overnight_review: "let the coordinator's overnight planner create the one allowed coding stage after preflight and activation",
-  }[goal.manifest.mode.id] ?? 'run one coding assignment after activation using the saved workflow';
+  }[goal.manifest.mode.id] ?? (goal.manifest.mode.id === 'collaborative' && isWindowsJavaScriptPolicy(goal.manifest.executionPolicy)
+    ? 'submit one coding assignment to the approved API worker'
+    : 'run one coding assignment after activation using the saved workflow');
   line(output);
   if (goal.manifest.reviewPolicy?.source === 'host') {
     const reviewer = getHost(goal.manifest.reviewPolicy.hostId).displayName;
@@ -205,7 +207,10 @@ async function guidedTask(output, ask, {repo, settings, host, invoke, readPreset
   const workerConfigured = !!(policy ?? settings.worker);
   const executionPolicy = settings.schema === 2 ? settings.execution : settings.executionPolicy;
   const isolatedJavaScript = isWindowsJavaScriptPolicy(executionPolicy);
-  const modeIds = workerConfigured && !isolatedJavaScript ? Object.keys(workflows) : ['codex_only'];
+  const windowsCollaborative = isolatedJavaScript && policy && settings.defaults.review.source === 'host';
+  const modeIds = isolatedJavaScript
+    ? (windowsCollaborative ? ['codex_only', 'collaborative'] : ['codex_only'])
+    : (workerConfigured ? Object.keys(workflows) : ['codex_only']);
   line(output, `Git project: ${display(repo)}`);
   let preset;
   try { preset = await readPreset?.(repo); }
@@ -213,7 +218,7 @@ async function guidedTask(output, ask, {repo, settings, host, invoke, readPreset
   if (preset?.mode && modeIds.includes(preset.mode)) line(output, `Saved workflow suggestion: ${workflowLabel(preset.mode, host)}`);
   const suggestedWorker = policy?.workers.find(worker => worker.id === preset?.workerId);
   if (suggestedWorker) line(output, `Saved worker suggestion: ${display(suggestedWorker.id)}`);
-  if (isolatedJavaScript) line(output, 'This Windows candidate supports coding-app-only with host review.');
+  if (isolatedJavaScript && !windowsCollaborative) line(output, 'Collaborative on Windows requires a configured API worker and host review.');
   else if (!workerConfigured) line(output, 'An API worker is needed for Collaborative, API-worker-only and Overnight review.');
   for (const [index, mode] of modeIds.entries()) {
     line(output, `  ${index + 1}. ${workflowLabel(mode, host)} · ${modeHelp[mode]}`);
