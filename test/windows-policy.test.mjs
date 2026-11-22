@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
+import {lstat} from 'node:fs/promises';
 import { executionPolicyInputSchema } from '../src/harness/contracts.mjs';
 import {
   assertExecutionAvailable,
@@ -127,7 +128,7 @@ test('every protected Windows policy is held before a check can start', {skip:pr
   }
 });
 
-test('retained Windows core approvals cannot reopen legacy native editing or take over a checkout', {
+test('retained Windows coding approvals hold unfinished work and replay saved results', {
   skip: process.platform !== 'win32', timeout: 120000,
 }, async t => {
   const {stageWindowsSource, createWorkflowRepository} = await import('../test-support/windows-workflows.mjs');
@@ -140,6 +141,7 @@ test('retained Windows core approvals cannot reopen legacy native editing or tak
   const acceptance = ['The approved check passes'];
   const initial = new Coordinator({root});
   let taskId, goalId;
+  const saved = {};
   try {
     const goal = initial.prepareLegacyGoal({
       submissionId: 'old-goal', objective, acceptance, mode: 'collaborative',
@@ -152,6 +154,22 @@ test('retained Windows core approvals cannot reopen legacy native editing or tak
     goalId = goal.id;
     taskId = initial.submitTask({goalId, submissionId: 'old-task', kind: 'coding', actor: 'codex',
       objective, acceptance}, 'submit').id;
+    const retain = (name, values) => {
+      const task = initial.submitTask({goalId, submissionId:name, kind:'coding', actor:'codex',
+        objective, acceptance}, 'submit-' + name);
+      initial.store.put('task', {...initial.store.get('task', task.id), ...values});
+      saved[name] = task.id;
+    };
+    const active = {status:'codex_active', executionActor:'codex', startedAt:activatedAt};
+    const legacy = {worktree:path.join(root, 'old checkout'), startSnapshot:{}};
+    const candidate = {layout:'candidate_v1', generation:1, writerActive:true};
+    retain('reviewed', {status:'ready_to_integrate', reviewed:true});
+    retain('legacy', {...active, native:legacy});
+    initial.store.put('goal', {...initial.store.get('goal', goal.id), integrationOwner:saved.legacy});
+    retain('candidate', {...active, native:candidate});
+    retain('integrated', {status:'accepted', integration:{commit:project.baseCommit, review:'codex_native'}});
+    retain('sealed', {status:'awaiting_review', native:{...candidate, writerActive:false}});
+    retain('released', {status:'partial', native:legacy, result:{savedNative:{head:project.baseCommit}}});
   } finally { initial.close(); }
 
   const reopened = new Coordinator({root});
@@ -165,6 +183,19 @@ test('retained Windows core approvals cannot reopen legacy native editing or tak
     for (const layout of [undefined, 'candidate_v1']) {
       const input = {taskId, reason: 'Take over the historical assignment', ...(layout ? {layout} : {})};
       await assert.rejects(integration.takeover(input, 'takeover-' + (layout ?? 'legacy')), denied);
+    }
+    const records = Object.fromEntries(Object.values(saved).map(id => [id, reopened.getTask(id)]));
+    await assert.rejects(integration.accept({taskId:saved.reviewed, feedback:'Accept the reviewed result'}, 'accept-held'), denied);
+    for (const layout of ['legacy', 'candidate']) {
+      await assert.rejects(integration.finishNative({taskId:saved[layout], summary:'Saved manual edits'}, 'finish-' + layout), denied);
+    }
+    assert.deepEqual(await integration.accept({taskId:saved.integrated, feedback:'Return the recorded integration'}, 'accepted-replay'), records[saved.integrated]);
+    assert.deepEqual(await integration.finishNative({taskId:saved.integrated, summary:'Already integrated'}, 'legacy-finish-replay'), records[saved.integrated]);
+    assert.deepEqual(await integration.finishNative({taskId:saved.sealed, summary:'Already sealed'}, 'candidate-finish-replay'), records[saved.sealed]);
+    assert.deepEqual(await integration.releaseNative({taskId:saved.released, reason:'Release already recorded'}, 'release-replay'), records[saved.released]);
+    for (const id of Object.values(saved)) assert.deepEqual(reopened.getTask(id), records[id]);
+    for (const name of ['integration', 'native-candidates']) {
+      await assert.rejects(lstat(path.join(root, name)), {code:'ENOENT'});
     }
     assert.deepEqual(reopened.getTask(taskId), task);
     assert.deepEqual(reopened.getGoal(goalId), goal);

@@ -445,6 +445,7 @@ export class Integration {
   };
   verifyBinding(t);
   if(t.status==='accepted'&&t.integration)return t;
+  if(isWindows)assertExecutionAvailable(g.manifest,this.config);
   this.c.liveGoal(g);
   this.c.liveTask(t);
   if(!['awaiting_review','ready_to_integrate'].includes(t.status))throw Error('Candidate is not ready for integration');
@@ -566,6 +567,7 @@ export class Integration {
   if(t.native?.layout==='candidate_v1')return this.nativeCandidates.finish(input);
   if(g.manifest.reviewPolicy)throw Error('Versioned review requires candidate_v1 finish and separate bound review');
   if(t.status==='accepted'&&t.integration?.review==='codex_native')return t;
+  if(isWindows)assertExecutionAvailable(g.manifest,this.config);
   this.c.liveGoal(g);if(t.status!=='codex_active'||g.integrationOwner!==t.id)throw Error('Native task ownership mismatch');
   this.c.liveTask(t);
   const target=await this.lockedGoal(g.id,{native:true}),release=target.release;try{

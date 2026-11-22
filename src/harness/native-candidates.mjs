@@ -113,6 +113,7 @@ export class NativeCandidates {
  async finish(input){
   let t=this.c.getTask(input.taskId);const g=this.c.store.get('goal',t.goalId);text(input.summary,'summary');
   if(['awaiting_review','ready_to_integrate','accepted'].includes(t.status)&&!t.native.writerActive)return t;
+  if(process.platform==='win32')assertExecutionAvailable(g.manifest,this.i.config);
   this.c.liveTask(t);if(t.status!=='codex_active'||!t.native.writerActive)throw Error('Native task ownership mismatch');
   const target=await this.open(t),release=await target.journal.lock();
   try{
