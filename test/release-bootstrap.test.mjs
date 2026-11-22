@@ -90,7 +90,7 @@ cd -- "${'$'}{0%/*}"
 root="$HOME/Library/Application Support/Mosaic Beta"
 mkdir -p "$root/config" "$root/versions" "$HOME/.local/bin"
 /bin/rm -f "$root/config/install-transaction.json"
-/bin/cp -Rp version "$root/versions/${version}"
+if [ ! -d "$root/versions/${version}" ]; then /bin/cp -Rp version "$root/versions/${version}"; fi
 /bin/cp -p receipt "$root/config/installation.json"
 /bin/cp -p launcher "$HOME/.local/bin/mosaic"
 printf 'ORIGINAL INSTALLER\\n'
@@ -178,7 +178,12 @@ fs.writeFileSync(arg('--output'), mode.full ? archive : archive.subarray(offset,
     };
     return {dir, home, root, work, stage, script, scriptFile, receiptFile, launcherFile, versionDir, run, mode, installed, env, receipt, launcher};
 }
-test('official installer binds the published archive and immutable onboarding files', () => {
+test('official installer binds the published archive and immutable onboarding files', async () => {
+    assert.match(source, /my \$guide_revision = '[a-f0-9]{40}';/);
+    for (const [key, file] of [['guide_sha', 'guide.sh'], ['helper_sha', 'host.mjs']]) {
+        const local = await readFile(new URL('../distribution/onboarding/' + file, import.meta.url));
+        assert.ok(source.includes(`my $${key} = '${sha(local)}';`), file + ' must match the published pin');
+    }
     assert.match(source, /ceec5744bf5bdd47a5404f1d7c500189abf7596cef241149aa0ee403d14fbdcc/);
     assert.match(source, /my \$archive_bytes = 86315583;/);
     assert.match(source, /7e2316cadfc1170a32eb4b67de330c8b907377c13ecc131b2fbd9ef1f461461f/);
@@ -282,6 +287,48 @@ test('modified runtime, launcher, missing receipt and interrupted transaction pr
     assert.notEqual(orphan.code,0); assert.match(orphan.out,/receipt is missing/);
     for (const result of [runtime,pending,foreign,orphan]) assert.doesNotMatch(result.out,/ORIGINAL INSTALLER|Guide input/);
 });
+test('uninstalled current and older releases restore the launcher and retain evidence', async t => {
+    for (const v of [version,'0.1.0-beta.36']) {
+        const f = await fixture(t);
+        await f.installed(v);
+        await rm(f.launcherFile);
+        const evidence = path.join(f.root,'retained-evidence');
+        await writeFile(evidence,'keep my history');
+        const restored = await f.run();
+        assert.equal(restored.code,0,restored.out);
+        assert.match(restored.out,/Restoring your launcher/);
+        assert.match(restored.out,/guide saw from terminal/);
+        assert.equal(await readFile(evidence,'utf8'),'keep my history');
+        assert.equal(await readFile(f.launcherFile,'utf8'),f.launcher(version));
+    }
+});
+test('uninstalled newer versions and unowned receipt hashes preserve the empty launcher path', async t => {
+    const f = await fixture(t);
+    const v = '0.1.0-beta.998';
+    await f.installed(v);
+    await rm(f.launcherFile);
+    const newer = await f.run();
+    assert.notEqual(newer.code,0);
+    assert.match(newer.out,/retained Mosaic .* is newer/);
+    await writeFile(f.receiptFile,JSON.stringify({...JSON.parse(f.receipt(v)),launcherHash:'0'.repeat(64)}));
+    const foreign = await f.run();
+    assert.notEqual(foreign.code,0);
+    assert.match(foreign.out,/does not identify a managed launcher/);
+    for (const result of [newer,foreign]) assert.doesNotMatch(result.out,/Downloading Mosaic|ORIGINAL INSTALLER|Guide input/);
+    await assert.rejects(stat(f.launcherFile),{code:'ENOENT'});
+});
+test('a reinstall interrupted after a supported uninstall resumes with its retained prior receipt', async t => {
+    const f = await fixture(t);
+    await f.installed();
+    await rm(f.launcherFile);
+    const receipt = JSON.parse(f.receipt(version));
+    const tx = {schema:1, phase:'prepared', version, newReceipt:receipt, oldReceipt:receipt, oldLauncher:null};
+    await writeFile(path.join(f.root,'config/install-transaction.json'),JSON.stringify(tx),{mode:0o600});
+    const resumed = await f.run();
+    assert.equal(resumed.code,0,resumed.out);
+    assert.match(resumed.out,/Resuming interrupted installation/);
+    assert.equal(await readFile(f.launcherFile,'utf8'),f.launcher(version));
+});
 test('owned pending transaction reaches the original installer across mismatched pointer phases', async t => {
     for (const phase of ['prepared','launcher','receipt']) {
         const f = await fixture(t);
@@ -332,6 +379,17 @@ test('an overridden or writable login home fails before a download or installati
     assert.notEqual(unsafe.code,0);
     assert.match(unsafe.out,/Unexpected directory/);
     for (const check of [misdirected,unsafe]) assert.doesNotMatch(check.out,/Downloading Mosaic|ORIGINAL INSTALLER|Guide input/);
+});
+test('a HOME alias installs using the account spelling and reruns from the ordinary login', async t => {
+    const f = await fixture(t);
+    const alias = path.join(f.dir,'home alias');
+    await symlink(f.home,alias,'dir');
+    const first = await f.run({HOME:alias});
+    assert.equal(first.code,0,first.out);
+    assert.match(first.out,/ORIGINAL INSTALLER/);
+    const normal = await f.run();
+    assert.equal(normal.code,0,normal.out);
+    assert.match(normal.out,/already installed/);
 });
 test('cache symlinks and nonprivate cache permissions do not overwrite other files', async t => {
     const f = await fixture(t);

@@ -28,9 +28,7 @@ my $resources = "https://raw.githubusercontent.com/TanujBuilds/Mosaic/$guide_rev
 my $rerun = 'curl -fsSL https://raw.githubusercontent.com/TanujBuilds/Mosaic/main/install.sh | /bin/sh';
 my $inspect = 'ls -ld "$HOME/.local/bin/mosaic" "$HOME/Library/Application Support/Mosaic Beta/config/installation.json" "$HOME/Library/Application Support/Mosaic Beta/config/install-transaction.json"';
 my $home = $ENV{HOME} // '';
-my $root = "$home/Library/Application Support/Mosaic Beta";
-my $launcher = "$home/.local/bin/mosaic";
-my $receipt = "$root/config/installation.json";
+my ($root, $launcher, $receipt);
 my ($stage, $cache_lock);
 my $curl = '/usr/bin/curl';
 my @curl_options = ('-q', '--fail', '--silent', '--show-error', '--location', '--globoff',
@@ -145,11 +143,13 @@ sub pending_release {
         && ($new->{launcherHash} // '') eq sha256_hex($expected);
     my $old = $tx->{oldReceipt};
     if (defined $old || defined $tx->{oldLauncher}) {
-        conflict($invalid) unless ref($old) eq 'HASH' && defined $tx->{oldLauncher};
+        conflict($invalid) unless ref($old) eq 'HASH' && ($old->{schema} // '') eq '1'
+            && ($old->{contentHash} // '') =~ /\A[a-f0-9]{64}\z/;
         my $v = $old->{version} // '';
         conflict("A newer release owns the prior installation.") if release_order($v) > 0;
         conflict($invalid) unless grep {
-            encode_base64($_, '') eq $tx->{oldLauncher} && sha256_hex($_) eq ($old->{launcherHash} // '')
+            (!defined($tx->{oldLauncher}) || encode_base64($_, '') eq $tx->{oldLauncher})
+                && sha256_hex($_) eq ($old->{launcherHash} // '')
         } managed_launchers($v);
     }
     return 'recovering';
@@ -163,7 +163,7 @@ sub install_state {
         conflict("An incomplete Mosaic installation needs inspection.") if present("$root/config/settings.json");
         return 'fresh';
     }
-    conflict("The Mosaic launcher or its installation receipt is missing.") unless present($launcher) && present($receipt);
+    conflict("The Mosaic installation receipt is missing.") unless present($receipt);
     my $r = eval { JSON::PP->new->utf8->decode(read_file($receipt, 8192)) };
     conflict("The Mosaic installation receipt is unreadable.") unless ref($r) eq 'HASH' && ($r->{schema} // '') eq '1'
         && ($r->{contentHash} // '') =~ /\A[a-f0-9]{64}\z/ && ($r->{launcherHash} // '') =~ /\A[a-f0-9]{64}\z/
@@ -172,15 +172,25 @@ sub install_state {
     my $order = release_order($v);
     my $directory = home_directories("Library/Application Support/Mosaic Beta/versions/$v", 0);
     conflict("The installed Mosaic runtime is missing.") unless defined $directory;
-    my $bytes = read_file($launcher, 16384);
     my @expected = managed_launchers($v);
-    conflict("The existing Mosaic launcher is foreign or modified.") unless -x $launcher
-        && sha256_hex($bytes) eq $r->{launcherHash} && grep { $_ eq $bytes } @expected;
+    conflict("The receipt does not identify a managed launcher for this home.")
+        unless grep { sha256_hex($_) eq $r->{launcherHash} } @expected;
+    my $bound = present($launcher);
+    if ($bound) {
+        my $bytes = read_file($launcher, 16384);
+        conflict("The existing Mosaic launcher is foreign or modified.") unless -x $launcher && sha256_hex($bytes) eq $r->{launcherHash};
+    }
     my $data = read_file("$directory/package-manifest.json", 8 * 1024 * 1024);
     my $manifest = eval { JSON::PP->new->utf8->decode($data) };
     conflict("The installed manifest and receipt disagree.") unless ref($manifest) eq 'HASH'
         && ($manifest->{version} // '') eq $v && ($manifest->{contentHash} // '') eq $r->{contentHash};
     verify_current($directory, $data, $manifest) if $order == 0;
+    # Package uninstall deliberately retains its receipt, runtime and history.
+    # Only a verified release installer may recreate a missing launcher.
+    if (!$bound) {
+        fail("Your retained Mosaic $v is newer than $version. Restore its launcher with the original installer for $v.") if $order > 0;
+        return 'restore';
+    }
     if ($order > 0) { print "Mosaic $v is newer than $version. Continue with your installed version:\n".'  "$HOME/.local/bin/mosaic" setup'."\n"; return 'newer'; }
     return $order < 0 ? 'older' : 'current';
 }
@@ -283,6 +293,12 @@ sub run {
     fail('HOME must point to the home directory of the current Mac login user.') unless defined $login_home
         && defined realpath($login_home) && realpath($home) eq realpath($login_home);
     owned_directory(realpath($home));
+    # The managed launcher's content includes literal absolute paths. Use the
+    # login account's spelling even when Terminal inherited an alias of HOME.
+    $ENV{HOME} = $home = $login_home;
+    $root = "$home/Library/Application Support/Mosaic Beta";
+    $launcher = "$home/.local/bin/mosaic";
+    $receipt = "$root/config/installation.json";
     $| = 1;
     umask 0077;
     my $state = install_state();
@@ -296,7 +312,8 @@ sub run {
         $state = install_state();
         return 0 if $state eq 'newer';
         if ($state ne 'current') {
-            print "Verified Mosaic Beta $version. ".($state eq 'recovering' ? 'Resuming interrupted installation…' : 'Installing…')."\n";
+            my $action = $state eq 'recovering' ? 'Resuming interrupted installation' : $state eq 'restore' ? 'Restoring your launcher' : 'Installing';
+            print "Verified Mosaic Beta $version. $action…\n";
             system('/usr/bin/tar', '-xzpf', $archive, '--no-same-owner', '-C', "$stage") == 0 or fail('The verified archive could not be unpacked.');
             # Keep files if this parent is interrupted while the package is running.
             $stage->unlink_on_destroy(0);
