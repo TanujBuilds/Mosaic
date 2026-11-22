@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import {execFile} from 'node:child_process';
 import {createHash, randomBytes, randomUUID} from 'node:crypto';
 import {createReadStream} from 'node:fs';
-import {appendFile, mkdir, mkdtemp, readFile, rm, writeFile} from 'node:fs/promises';
+import {appendFile, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile} from 'node:fs/promises';
 import path from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {promisify} from 'node:util';
@@ -11,15 +11,23 @@ assert.equal(process.platform, 'win32');
 assert.equal(process.arch, 'x64');
 assert.equal(process.versions.node, '24.22.3');
 assert.equal(process.env.GITHUB_ACTIONS, 'true');
-assert.equal(process.env.GITHUB_REF, 'refs/heads/codex/windows-ci-followups');
+assert.equal(process.env.GITHUB_REF, 'refs/heads/codex/windows-core-retained-upgrade');
 assert.equal(process.argv.length, 6);
-const [earlySource, heldSource, earlyInput, heldInput] = process.argv.slice(2).map(value => path.resolve(value));
-const inputs = [
-  {source: earlySource, directory: earlyInput, commit: '2f938fd74dd3920e11d4f33de636e1cc8cde388e', run: 44988516524, artifact: 14740862102,
-    archiveSha256: 'f6c26fbe21d3b3023b27cd62150fb7cb8c6243e476343c1aea0b9a6191e99d5a'},
-  {source: heldSource, directory: heldInput, commit: '97b7ae388f3e8d03f4eba132a24c57e3997d62df', run: 44991971753, artifact: 14742128055,
-    archiveSha256: 'bfcaf46c70228dea09b80746455233b89a6c3667c8e5549b24a8666d0cc4ddaf'},
-];
+const [earlySource, retainedSource, earlyInput, retainedInput] = process.argv.slice(2).map(value => path.resolve(value));
+const legacyInput = {
+  source: earlySource, directory: earlyInput, commit: '2f938fd74dd3920e11d4f33de636e1cc8cde388e',
+  run: 44988516524, artifact: 14740862102,
+  archiveSha256: 'f6c26fbe21d3b3023b27cd62150fb7cb8c6243e476343c1aea0b9a6191e99d5a',
+};
+const targetInput = {
+  source: retainedSource, directory: retainedInput, commit: 'a05b914e5ab788544b69734d1ae47c27399c588b',
+  tree: '10bb3be1e835236053644b2c730d4b0cfe8e2c29', run: 45020421872, artifact: 14754195267,
+  archiveBytes: 78499242,
+  archiveSha256: '7c812b103f7e997b19cd06f04db37559e3bf2b3a1e96e368e9dac323e0933d14',
+  activatorSha256: 'ad8c90448367fb59ff0d9c5b497efb14470990e02168640dfd073e064dd7fecd',
+  packageManifestSha256: '8d360b780a92798567dc807ddd945d6c0284a6f9cee9b5178aabfc128f1d8ec2',
+  runtimeInputManifestSha256: '03739eaf0921e6658d5f97a01f3393c467e08c6a1a274960cb5d1a165e5e7e42',
+};
 const exec = promisify(execFile);
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
 const system = path.join(process.env.SystemRoot, 'System32');
@@ -56,7 +64,8 @@ function ps(source, fields = {}) {
   return run(powershell, [...shellArgs, '-EncodedCommand', encoded], {inputEnv: {...env, ...fields}});
 }
 
-async function buildCore(input, label) {
+async function buildLegacyCore(input) {
+  const label = 'Historical Core rebuilt from exact Beta input';
   const {source, directory, commit} = input;
   const git = (...args) => run('git.exe', ['-C', source, ...args]);
   assert.equal(await git('rev-parse', 'HEAD'), commit);
@@ -71,8 +80,8 @@ async function buildCore(input, label) {
   assert.equal(candidate.archiveSha256, input.archiveSha256);
   const archive = path.join(directory, candidate.archiveName);
   assert.equal(await digestFile(archive), candidate.archiveSha256);
-  const payload = path.join(scratch, label + ' extracted Beta');
-  const destination = path.join(scratch, label + ' built Core');
+  const payload = path.join(scratch, 'Early extracted Beta');
+  const destination = path.join(scratch, 'Early built Core');
   await mkdir(payload);
   await run(tar, ['-xf', archive, '-C', payload]);
   assert.equal(await digestFile(path.join(payload, 'package-manifest.json')), candidate.packageManifestSha256);
@@ -89,6 +98,53 @@ async function buildCore(input, label) {
     betaSha256: candidate.archiveSha256, betaManifest: candidate.packageManifestSha256,
     coreSha256: build.archiveSha256, coreManifest: build.manifestSha256, nativeFingerprint: candidate.nativeFingerprint});
   return {...build, activate: path.join(source, 'distribution', 'windows-core', 'activate.ps1')};
+}
+
+async function verifyRetainedCore(input) {
+  const {source, directory, commit, tree} = input;
+  const git = (...args) => run('git.exe', ['-C', source, ...args]);
+  assert.equal(await git('rev-parse', 'HEAD'), commit);
+  assert.equal(await git('rev-parse', 'HEAD^{tree}'), tree);
+  assert.equal(await git('status', '--porcelain'), '');
+  const archiveName = 'mosaic-core-windows-x64.zip';
+  assert.deepEqual((await readdir(directory)).sort(),
+    ['activate.ps1', 'candidate.json', archiveName, 'package-manifest.json']);
+  const candidate = JSON.parse(await readFile(path.join(directory, 'candidate.json'), 'utf8'));
+  const {archiveBytes, archiveSha256, activatorSha256, packageManifestSha256, runtimeInputManifestSha256} = input;
+  assert.deepEqual(candidate, {
+    schema:1, kind:'mosaic-windows-standalone-core-candidate', platform:'win32-x64',
+    sourceCommit:commit, sourceTree:tree, archiveName, archiveBytes, archiveSha256,
+    activatorSha256, packageManifestSha256, runtimeInputManifestSha256,
+  });
+  const archive = path.join(directory, archiveName);
+  const activate = path.join(directory, 'activate.ps1');
+  assert.equal((await stat(archive)).size, archiveBytes);
+  assert.equal(await digestFile(archive), archiveSha256);
+  assert.equal(await digestFile(activate), activatorSha256);
+  // Verify the exact tracked Git object bytes, independent of checkout CRLF settings.
+  const {stdout:trackedActivator} = await exec('git.exe',
+    ['-C', source, 'show', 'HEAD:distribution/windows-core/activate.ps1'],
+    {cwd:scratch, env, encoding:'buffer', maxBuffer:1024 * 1024, timeout:15000, windowsHide:true});
+  assert.deepEqual(await readFile(activate), trackedActivator);
+  const sidecar = await readFile(path.join(directory, 'package-manifest.json'));
+  assert.equal(sha(sidecar), packageManifestSha256);
+  const manifest = JSON.parse(sidecar);
+  assert.equal(manifest.layout, 'shared-runtime-v1');
+  assert.equal(manifest.platform, 'win32');
+  assert.equal(manifest.arch, 'x64');
+  assert.equal(manifest.sourceCommit, commit);
+  assert.equal(manifest.sourceDirty, false);
+  assert.equal(manifest.runtimeInputHash, runtimeInputManifestSha256);
+
+  const extracted = path.join(scratch, 'Retained Core runtime');
+  await mkdir(extracted);
+  await run(tar, ['-xf', archive, '-C', extracted]);
+  assert.deepEqual(await readFile(path.join(extracted, 'package-manifest.json')), sidecar);
+  const runtime = path.join(extracted, 'runtime');
+  report.inputs.push({label:'Exact retained standalone Core', commit, tree, upstreamRun:input.run,
+    upstreamArtifact:input.artifact, coreSha256:archiveSha256, activatorSha256, coreManifest:packageManifestSha256,
+    betaManifest:runtimeInputManifestSha256, inventoryCount:manifest.files.length});
+  return {archive, activate, runtime, archiveSha256, manifestSha256:packageManifestSha256};
 }
 
 const activate = build => run(powershell, [...shellArgs, '-File', build.activate, '-Archive', build.archive,
@@ -197,7 +253,7 @@ $d = $task.Definition
 `;
 
 async function verifySchedulerAdoption(held) {
-  const runtime = path.join(held.archive.slice(0, -4), 'runtime');
+  const {runtime} = held;
   const installed = file => import(pathToFileURL(path.join(runtime, file)).href);
   const service = await installed('src/beta/windows-service.mjs');
   const files = await installed('src/beta/files.mjs');
@@ -275,12 +331,12 @@ async function verifySchedulerAdoption(held) {
 
 try {
   report.windows = JSON.parse(await ps('Get-CimInstance Win32_OperatingSystem | Select-Object Caption,Version,OSArchitecture | ConvertTo-Json -Compress'));
-  const [early, held] = await Promise.all(inputs.map((input, index) => buildCore(input, index === 0 ? 'Early' : 'Held')));
+  const [early, held] = await Promise.all([buildLegacyCore(legacyInput), verifyRetainedCore(targetInput)]);
   const results = await Promise.allSettled([verifyLegacyUpgrade(early, held), verifySchedulerAdoption(held)]);
   console.log(JSON.stringify(report, null, 2));
   if (process.env.GITHUB_STEP_SUMMARY) await appendFile(process.env.GITHUB_STEP_SUMMARY,
-    '### Held Windows follow-up evidence\n\n' + report.checks.map(check => '- ' + check).join('\n') +
+    '### Exact retained Windows Core upgrade\n\n' + report.checks.map(check => '- ' + check).join('\n') +
     '\n\n    ' + JSON.stringify(report, null, 2).replaceAll('\n', '\n    ') + '\n');
   const failed = results.filter(result => result.status === 'rejected');
-  if (failed.length) throw new AggregateError(failed.map(result => result.reason), 'Held Windows evidence failed');
+  if (failed.length) throw new AggregateError(failed.map(result => result.reason), 'Retained Windows Core evidence failed');
 } finally { await rm(scratch, {recursive:true, force:true, maxRetries:5}); }
