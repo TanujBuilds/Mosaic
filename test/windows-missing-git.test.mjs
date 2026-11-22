@@ -25,9 +25,10 @@ $functions = $ast.EndBlock.Statements | Where-Object {
 
 # Capture the hosted Git distribution before isolating this process's discovery
 # roots. All subsequent installation copies and configuration stay in $Root.
-$installed = (Get-Command git.exe -CommandType Application -ErrorAction Stop).Source
-$gitTree = Split-Path (Split-Path $installed -Parent) -Parent
-if (-not [IO.File]::Exists((Join-Path $gitTree 'cmd\git.exe'))) { throw 'Expected runner Git for Windows' }
+$local = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)
+$installed = Get-Git
+if (-not $installed) { throw 'Expected runner Git for Windows at a verified installation location' }
+$gitTree = [IO.Directory]::GetParent([IO.Path]::GetDirectoryName($installed)).FullName
 $stage = Join-Path $Root 'Staged genuine Git for Windows'
 $robocopy = Join-Path $env:SystemRoot 'System32\robocopy.exe'
 & $robocopy $gitTree $stage /E /XJ /R:1 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null
@@ -49,8 +50,6 @@ $env:ProgramFiles = $programRoots[0]
 [Environment]::SetEnvironmentVariable('ProgramFiles(x86)', $programRoots[1], 'Process')
 $env:ProgramW6432 = $programRoots[2]
 $env:LOCALAPPDATA = $local
-$env:USERPROFILE = $profileRoot
-$env:HOME = $profileRoot
 $processPath = (Join-Path $env:SystemRoot 'System32') + ';' + $env:SystemRoot
 $env:Path = $processPath
 $env:GIT_CONFIG_NOSYSTEM = '1'
