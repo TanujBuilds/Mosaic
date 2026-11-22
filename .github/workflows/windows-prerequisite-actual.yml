@@ -1,0 +1,67 @@
+name: Held Windows prerequisite vendor installations
+'on':
+  push:
+    branches: [codex/windows-prerequisites-actual]
+permissions:
+  contents: read
+  actions: read
+jobs:
+  install:
+    strategy:
+      fail-fast: false
+      matrix:
+        tool: [git, codex, claude-code]
+    runs-on: windows-2025
+    timeout-minutes: 22
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Obtain held Mosaic Beta .237 package
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh run watch 45061348810 --repo $env:GITHUB_REPOSITORY --interval 10 --exit-status
+          if ($LASTEXITCODE -ne 0) { throw 'Held build failed' }
+          $download = Join-Path $env:RUNNER_TEMP 'held package'
+          gh run download 45061348810 --repo $env:GITHUB_REPOSITORY --name mosaic-windows-isolated-js-held --dir $download
+          if ($LASTEXITCODE -ne 0) { throw 'Held artifact unavailable' }
+          $artifact = Get-Content (Join-Path $download 'candidate.json') -Raw | ConvertFrom-Json
+          if ($artifact.sourceCommit -ne '3bcb55b3fefea2d18bc8db15561bf3e0f502a8bf' -or $artifact.version -ne '0.1.0-beta.237') { throw 'Unexpected source or version' }
+          $archive = Join-Path $download $artifact.archiveName
+          if ((Get-FileHash $archive).Hash -ne $artifact.archiveSha256) { throw 'Archive checksum differs' }
+          $stage = Join-Path $env:PUBLIC ('Mosaic qualification ' + [guid]::NewGuid())
+          Expand-Archive -LiteralPath $archive -DestinationPath $stage
+          $manifest = Get-ChildItem $stage -Recurse -Filter package-manifest.json | Select-Object -First 1
+          if ((Get-FileHash $manifest.FullName).Hash -ne $artifact.packageManifestSha256) { throw 'Manifest checksum differs' }
+          "MOSAIC_TEST_PACKAGE=$($manifest.DirectoryName)" >> $env:GITHUB_ENV
+      - name: Run official installer as a new standard user
+        shell: powershell
+        env:
+          MOSAIC_TEST_TOOL: ${{ matrix.tool }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $stage = $env:MOSAIC_TEST_PACKAGE
+          $entry = Join-Path $stage 'distribution/onboarding/windows-host.mjs'
+          if ($env:MOSAIC_TEST_TOOL -ne 'git') {
+            $testEntry = Join-Path $stage 'distribution/onboarding/test-expose-installer.mjs'
+            [IO.File]::WriteAllText($testEntry, [IO.File]::ReadAllText($entry) + "`nexport {installCli};`n")
+          }
+          $user = 'MosaicVendorTrial'
+          $password = ConvertTo-SecureString (([guid]::NewGuid().ToString('N')) + 'xF8!') -AsPlainText -Force
+          New-LocalUser -Name $user -Password $password -AccountNeverExpires | Out-Null
+          $credential = [PSCredential]::new(('.\' + $user),$password)
+          $stdout = Join-Path $env:RUNNER_TEMP 'mosaic-real-install.stdout'
+          $stderr = Join-Path $env:RUNNER_TEMP 'mosaic-real-install.stderr'
+          $test = Join-Path $stage 'real-vendor-install.ps1'
+          Copy-Item -LiteralPath '.github/scripts/windows-prerequisite-actual.ps1' -Destination $test
+          try {
+            $ps = Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell/v1.0/powershell.exe'
+            $process = Start-Process -FilePath $ps -Credential $credential -LoadUserProfile -WorkingDirectory $stage -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr -ArgumentList @(
+              '-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', ('"' + $test + '"'), '-Tool', $env:MOSAIC_TEST_TOOL
+            )
+            if (-not $process.WaitForExit(900000)) { $process.Kill(); throw 'Vendor installation test timed out' }
+            Get-Content $stdout, $stderr
+            if ($process.ExitCode -ne 0 -or -not (Select-String -LiteralPath $stdout -Pattern 'PASS real per-user installer')) { throw 'Real installation did not pass' }
+          } finally { Remove-LocalUser -Name $user }
