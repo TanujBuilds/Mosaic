@@ -1,6 +1,7 @@
-import {mkdtemp, mkdir, rm} from 'node:fs/promises';
+import {mkdir, rm} from 'node:fs/promises';
 import path from 'node:path';
-import {windowsFile, windowsFileSync, windowsWrite} from '../../beta/windows-files.mjs';
+import {randomUUID} from 'node:crypto';
+import {windowsFile, windowsWrite} from '../../beta/windows-files.mjs';
 import {digest, matches, Pause} from '../contracts.mjs';
 import {gitBytes} from '../git.mjs';
 import {superviseWindowsCheck, windowsDependencyInventory, windowsRelativePath} from './windows-appcontainer.mjs';
@@ -13,7 +14,8 @@ for (const name of ['process','require','fetch','WebSocket','std','os']) {
 let denied = false;
 try { await import('node:fs'); } catch { denied = true; }
 if(!denied) throw 'Unexpected built-in';
-if ((await import('./approved.mjs')).fixture !== 42) throw 'Input mismatch';
+const approvedModule = './approved.mjs';
+if ((await import(approvedModule)).fixture !== 42) throw 'Input mismatch';
 `;
 const supported = /\.(?:js|mjs)$/u;
 const isolation = message => new Pause(message, 'isolation');
@@ -104,8 +106,9 @@ export class WindowsIsolatedJavaScriptCheckRunner {
     const {workspace, options} = this;
     const {runtime} = this.backendIdentity;
     this.verifyDependencies();
-    windowsFileSync('private-directory',workspace.journal.dir);
-    const stage = await mkdtemp(path.join(workspace.journal.dir,'windows-js-'));
+    const stage = path.join(workspace.journal.dir,'windows-js-'+randomUUID());
+    await windowsFile('mkdir',stage);
+    await windowsFile('private-directory',stage);
     let disposable = true;
     try {
       const stagedRuntime = path.join(stage,'runtime');
