@@ -53,7 +53,9 @@ jobs:
           if ($LASTEXITCODE -ne 0 -or (Get-Item -LiteralPath $installer).Length -ne [long]$env:EDITOR_BYTES -or (Get-FileHash -LiteralPath $installer).Hash -ine $env:EDITOR_SHA) { throw 'Editor installer did not match the frozen download' }
           $signature = Get-AuthenticodeSignature -LiteralPath $installer
           if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notlike ('*' + $env:EDITOR_PUBLISHER + '*')) { throw ('Unexpected installer signature ' + $signature.Status + ' ' + $signature.SignerCertificate.Subject) }
-          $setup = Start-Process -FilePath $installer -ArgumentList '/CURRENTUSER','/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/SP-' -Wait -PassThru
+          Write-Output 'Verified the frozen installer and its publisher.'
+          $setup = Start-Process -FilePath $installer -ArgumentList '/CURRENTUSER','/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/SP-' -PassThru
+          if (-not $setup.WaitForExit(180000)) { throw 'Per-user editor installation timed out' }
           if ($setup.ExitCode -ne 0) { throw ('Installer exit ' + $setup.ExitCode) }
           $exe = node .github/scripts/windows-editor-discovery.mjs after
           if ($LASTEXITCODE -ne 0 -or -not $exe) { throw 'Mosaic did not discover the installed editor' }
