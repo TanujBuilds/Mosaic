@@ -11,9 +11,11 @@ const probe = `
 for (const name of ['process','require','fetch','WebSocket','std','os']) {
   if (globalThis[name] !== undefined) throw 'Unexpected capability';
 }
-let denied = false;
-try { await import('node:fs'); } catch { denied = true; }
-if(!denied) throw 'Unexpected built-in';
+for (const name of ['node:fs','node:fs/promises','node:net','node:child_process']) {
+  let denied = false;
+  try { await import(name); } catch { denied = true; }
+  if (!denied) throw 'Unexpected built-in';
+}
 const approvedModule = './approved.mjs';
 if ((await import(approvedModule)).fixture !== 42) throw 'Input mismatch';
 `;
@@ -57,7 +59,7 @@ export class WindowsIsolatedJavaScriptCheckRunner {
     const argv = [this.backendIdentity.runtime.runtime.executable,'-e',probe];
     const result = await this.execute({entry,modules,argv,signal,timeoutMs:10000, revalidate:async () => modules});
     if (!result.passed) throw isolation('Windows isolated JavaScript enforcement probe failed');
-    return {readDenied:true,writeDenied:true,networkDenied:true,childProcessWorks:false,
+    return {filesystemApiAbsent:true,networkApiAbsent:true,processApiAbsent:true,
       backend:this.backendIdentity,quiescence:result.quiescence,provenance:result.provenance};
   }
 
@@ -87,9 +89,16 @@ export class WindowsIsolatedJavaScriptCheckRunner {
           if (total > 2 * 1024 * 1024) throw isolation('Approved JavaScript inputs exceed their byte limit');
           modules.push([file,source.content]);
         }
-        const checkSource = modules.find(([file]) => file === entry)?.[1];
-        if (checkSource === undefined || !Buffer.from(checkSource).equals(baseline))
+        const checkIndex = modules.findIndex(([file]) => file === entry);
+        const checkSource = modules[checkIndex]?.[1];
+        if (checkSource === undefined) throw isolation('Approved JavaScript check is missing');
+        const committed = new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(baseline);
+        if (checkSource !== committed &&
+            (committed.includes('\r') || checkSource.replaceAll('\r\n','\n') !== committed))
           throw isolation('Approved JavaScript check bytes differ from the committed baseline');
+        // A line-ending conversion may change checkout bytes. The actual guest
+        // always executes the immutable Git blob identified by the approval.
+        modules[checkIndex][1] = committed;
         return modules;
       };
       const modules = await revalidate();

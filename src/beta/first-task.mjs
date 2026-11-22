@@ -203,7 +203,9 @@ async function guidedTask(output, ask, {repo, settings, host, invoke, readPreset
   const question = async prompt => (await ask(prompt)).trim();
   const policy = settings.schema === 2 ? configuredPolicies(settings).providerPolicy : null;
   const workerConfigured = !!(policy ?? settings.worker);
-  const modeIds = workerConfigured ? Object.keys(workflows) : ['codex_only'];
+  const executionPolicy = settings.schema === 2 ? settings.execution : settings.executionPolicy;
+  const isolatedJavaScript = isWindowsJavaScriptPolicy(executionPolicy);
+  const modeIds = workerConfigured && !isolatedJavaScript ? Object.keys(workflows) : ['codex_only'];
   line(output, `Git project: ${display(repo)}`);
   let preset;
   try { preset = await readPreset?.(repo); }
@@ -211,7 +213,8 @@ async function guidedTask(output, ask, {repo, settings, host, invoke, readPreset
   if (preset?.mode && modeIds.includes(preset.mode)) line(output, `Saved workflow suggestion: ${workflowLabel(preset.mode, host)}`);
   const suggestedWorker = policy?.workers.find(worker => worker.id === preset?.workerId);
   if (suggestedWorker) line(output, `Saved worker suggestion: ${display(suggestedWorker.id)}`);
-  if (!workerConfigured) line(output, 'An API worker is needed for Collaborative, API-worker-only and Overnight review.');
+  if (isolatedJavaScript) line(output, 'This Windows candidate supports coding-app-only with host review.');
+  else if (!workerConfigured) line(output, 'An API worker is needed for Collaborative, API-worker-only and Overnight review.');
   for (const [index, mode] of modeIds.entries()) {
     line(output, `  ${index + 1}. ${workflowLabel(mode, host)} · ${modeHelp[mode]}`);
   }
@@ -236,9 +239,7 @@ async function guidedTask(output, ask, {repo, settings, host, invoke, readPreset
     line(output, `Saved protected check suggestions: ${savedChecks.map(check => display(check.id)).join(', ')}.`);
     line(output, 'Enter the commands to include in this draft.');
   }
-  const executionPolicy = settings.schema === 2 ? settings.execution : settings.executionPolicy;
   const nativeChecks = isNativeExecution({executionPolicy});
-  const isolatedJavaScript = isWindowsJavaScriptPolicy(executionPolicy);
   if (isolatedJavaScript) line(output, 'Windows checks support dependency-free JavaScript modules in the approved read scope. Use a committed check outside the edit scope.');
   const example = nativeChecks ? 'node checks/verify.mjs' : 'npm test';
   let checks = checkList(await question(`Protected check command, e.g. ${example}. Use JSON argument lists for spaces in an argument or multiple commands: `));
