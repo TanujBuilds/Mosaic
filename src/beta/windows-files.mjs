@@ -18,13 +18,14 @@ export function windowsFile(operation, file, {max = 1024 * 1024, optional = fals
 }
 export function windowsWrite(file, bytes) {
   return new Promise((resolve, reject) => {
-    const child = spawn(helper, ['write', file], {windowsHide: true, stdio: ['pipe', 'ignore', 'pipe']});
+    const payload = typeof bytes === 'string' ? Buffer.from(bytes, 'utf8') : Buffer.from(bytes);
+    const child = spawn(helper, ['write', file, String(payload.length)], {windowsHide: true, stdio: ['pipe', 'ignore', 'pipe']});
     let message = '';
     child.stderr.on('data', chunk => { if (message.length < 2048) message += chunk; });
     child.on('error', reject);
     child.stdin.on('error', reject);
     child.on('close', code => code === 0 ? resolve() : reject(new Error('Windows atomic write failed: ' + message.trim())));
-    child.stdin.end(bytes);
+    child.stdin.end(payload);
   });
 }
 

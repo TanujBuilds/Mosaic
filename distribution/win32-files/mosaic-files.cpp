@@ -129,7 +129,7 @@ static void streamFile(HANDLE h, unsigned long long max) {
     }
     require(total==static_cast<unsigned long long>(size.QuadPart),"File changed while reading");
 }
-static void atomicWrite(const wstring& dest, User& user) {
+static void atomicWrite(const wstring& dest, User& user, unsigned long long expected) {
     GUID id; require(CoCreateGuid(&id)==S_OK,"Cannot allocate temporary name"); wchar_t name[40]{};
     require(StringFromGUID2(id,name,40)>0,"Cannot format temporary name");
     wstring tmp=dest.substr(0,dest.rfind(L'\\')+1)+L".mosaic-beta-"+name;
@@ -137,8 +137,12 @@ static void atomicWrite(const wstring& dest, User& user) {
     auto tmpFile=openPath(tmp,GENERIC_WRITE|DELETE,0,CREATE_NEW,&user.attrs);
     try {
         char buf[32768]; size_t n; DWORD wrote;
-        while((n=fread(buf,1,sizeof buf,stdin))>0)
+        unsigned long long received=0;
+        while((n=fread(buf,1,sizeof buf,stdin))>0) {
+            received+=n; require(received<=expected,"Input exceeds declared size");
             require(WriteFile(tmpFile.h,buf,DWORD(n),&wrote,nullptr) && wrote==n,"Cannot write temporary file");
+        }
+        require(received==expected,"Incomplete input; prior destination retained");
         require(!ferror(stdin) && FlushFileBuffers(tmpFile.h),"Cannot flush temporary file");
         const size_t bytes=dest.size()*sizeof(wchar_t);
         std::vector<BYTE> mem(sizeof(FILE_RENAME_INFO)+bytes); auto rename=reinterpret_cast<FILE_RENAME_INFO*>(mem.data());
@@ -153,7 +157,9 @@ int wmain(int argc,wchar_t** argv) {
         auto pins=parents(file,op==L"mkdir",user);
         if(op==L"mkdir" && !CreateDirectoryW(file.c_str(),&user.attrs) && GetLastError()!=ERROR_ALREADY_EXISTS) throw Failure("Cannot create private directory");
         if(op==L"write"){
-            _setmode(_fileno(stdin),_O_BINARY);atomicWrite(file,user);return 0;
+            require(argc==4 && *argv[3] && !argv[3][wcsspn(argv[3],L"0123456789")],"A byte count is required");
+            wchar_t* end;auto expected=_wcstoui64(argv[3],&end,10);
+            _setmode(_fileno(stdin),_O_BINARY);atomicWrite(file,user,expected);return 0;
         }
         require(directory||op==L"read"||op==L"read-private"||op==L"private-file","Unsupported operation");
         bool read=op==L"read"||op==L"read-private";

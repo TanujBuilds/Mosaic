@@ -25,13 +25,15 @@ test('Windows file helper enforces private ACLs, bounded reads and safe replacem
   const dir=path.join(root,'private');
   run(['mkdir',dir]);run(['private-directory',dir]);
   const file=path.join(dir,'credentials.json');
-  run(['write',file],'initial');run(['write',file],'replacement');
+  run(['write',file,'7'],'initial');run(['write',file,'11'],'replacement');
+  assert.throws(()=>run(['write',file,'12'],'truncated'));
+  assert.throws(()=>run(['write',file,'2'],'overflow'));
   assert.equal(run(['read-private',file,'11']),'replacement');
   assert.throws(()=>run(['read',file,'10']));
   const alias=path.join(root,'alias');
   await symlink(dir,alias,'junction');
   assert.throws(()=>run(['read',path.join(alias,'credentials.json'),'11']));
-  assert.throws(()=>run(['write',path.join(alias,'credentials.json')],'changed'));
+  assert.throws(()=>run(['write',path.join(alias,'credentials.json'),'7'],'changed'));
   assert.equal(await readFile(file,'utf8'),'replacement');
   const second=path.join(dir,'also.json');await link(file,second);
   assert.throws(()=>run(['read-private',file,'11']));
