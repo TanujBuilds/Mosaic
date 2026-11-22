@@ -14,11 +14,11 @@ assert.equal(process.arch, 'x64');
 assert.equal(process.env.RUNNER_ENVIRONMENT, 'github-hosted');
 const directory = process.argv[2];
 const candidate = JSON.parse(await readFile(path.join(directory,'candidate.json'),'utf8'));
-const archived = process.env.GITHUB_REF === 'refs/heads/codex/windows-private-restart';
+const archived = process.env.GITHUB_REF === 'refs/heads/codex/windows-private-restart-235';
 if (archived) {
-  assert.equal(candidate.sourceCommit,'7cf176d1cdb3260182f5e1c1e7ac3a673c93af7b');
-  assert.equal(candidate.sourceTree,'17586a60fa4f26b5d7ed23d6314952071eb7be4b');
-  assert.equal(candidate.archiveSha256,'78f5ef24be34a7cfefd4cc4f0e07e5bda7181b71c5286c20c7606f42886fd311');
+  assert.equal(candidate.sourceCommit,'784766c5dd98ac8f8046182fa6a359952a9ad006');
+  assert.equal(candidate.sourceTree,'bd524ff96f52223ad2a71311e6e4ba3b8c3f70ce');
+  assert.equal(candidate.archiveSha256,'fb99b8a849d6cd42cd80a7a0ad07871f07b648ba5921a9e5cc5cee7d35c9f53b');
   assert.equal(candidate.javascriptFingerprint,'dcc13cfd0085e091f3ae444615c0e14eaee4d7368fdf8f6243b1ebab8337b84c');
 } else assert.equal(candidate.sourceCommit, process.env.GITHUB_SHA);
 assert.match(candidate.javascriptFingerprint, /^[a-f0-9]{64}$/);
