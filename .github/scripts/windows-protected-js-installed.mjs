@@ -58,6 +58,7 @@ try {
   await assert.rejects(check(tampered), error => error.stderr.includes('Isolated JavaScript artifact file changed'));
   const help = await exec(path.join(installRoot,'bin','mosaic.exe'),['--help'],{env,windowsHide:true,timeout:30000});
   assert.match(help.stdout,/Mosaic/);
+  await verifyGitConsent(installed);
   await reviewInvoice({runtime,node,artifact});
   await reviewInvoice({runtime,node,artifact,collaborative:true});
   console.log(JSON.stringify({source:candidate.sourceCommit, fingerprint:verified.fingerprint, verified:verified.files.length,
@@ -65,6 +66,56 @@ try {
 } finally {
   await rm(installRoot,{recursive:true,force:true,maxRetries:8,retryDelay:200});
   await rm(root,{recursive:true,force:true,maxRetries:8,retryDelay:200});
+}
+
+async function verifyGitConsent(installed) {
+  const guide = path.join(installed,'distribution','windows','guide.ps1');
+  const script = String.raw`
+    $ErrorActionPreference = 'Stop'
+    $tokens = $errors = $null
+    $program = [Management.Automation.Language.Parser]::ParseFile($env:MOSAIC_TEST_GUIDE,[ref]$tokens,[ref]$errors)
+    if ($errors.Count) { throw 'Bundled guide does not parse in Windows PowerShell 5.1' }
+    $function = $program.Find({param($node)
+        $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Require-Git'
+    }, $false)
+    . ([ScriptBlock]::Create($function.Extent.Text))
+    function Get-Git { if ($script:ready) { return 'C:\Program Files\Git\cmd\git.exe' } }
+    function Install-GitForWindows {
+        $script:installCalls++
+        $script:ready = $script:installSucceeds
+        return $script:ready
+    }
+    function Read-Host([string]$prompt) {
+        $script:prompts.Add($prompt)
+        if ($script:answers.Count -eq 0) { throw "Unexpected prompt: $prompt" }
+        $reply = $script:answers.Dequeue()
+        if ($reply -eq 'recheck') { $script:ready = $true }
+        return $reply
+    }
+    function Assert-Case($name, $initiallyReady, $installSucceeds, [string[]]$answers, $expectedCalls, $expectFound) {
+        $script:ready = $initiallyReady
+        $script:installSucceeds = $installSucceeds
+        $script:installCalls = 0
+        $script:prompts = [Collections.Generic.List[string]]::new()
+        $script:answers = [Collections.Generic.Queue[string]]::new()
+        foreach ($answer in $answers) { $script:answers.Enqueue($answer) }
+        $result = Require-Git
+        if ($script:answers.Count -or $script:installCalls -ne $expectedCalls -or [bool]$result -ne $expectFound) {
+            throw "Unexpected Git consent result: $name"
+        }
+        if (-not $initiallyReady -and $script:prompts[0] -notmatch '\[y/N\]$') { throw 'Consent must default to No' }
+        Write-Output "PASS Git prerequisite $name"
+    }
+    Assert-Case 'existing' $true $false @() 0 $true
+    Assert-Case 'auto install and rediscover' $false $true @('y') 1 $true
+    Assert-Case 'default no and manual recheck' $false $false @('', 'recheck') 0 $true
+    Assert-Case 'no and defer' $false $false @('n','later') 0 $false
+    Assert-Case 'failed auto and manual recheck' $false $false @('y','recheck') 1 $true
+  `;
+  const result = await exec(ps,['-NoLogo','-NoProfile','-NonInteractive','-Command',script],
+    {env:{...env,MOSAIC_TEST_GUIDE:guide}, windowsHide:true, timeout:30000});
+  assert.match(result.stdout,/PASS Git prerequisite failed auto and manual recheck/);
+  console.log(result.stdout);
 }
 
 async function reviewInvoice({runtime,node,artifact,collaborative=false}) {

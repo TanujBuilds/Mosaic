@@ -13,12 +13,12 @@ const serverName = 'mosaic-beta';
 const deferred = Symbol('later');
 const hosts = {
   codex: {
-    name: 'Codex', download: 'https://github.com/openai/codex#installing-and-running-codex-cli',
+    name: 'Codex', installer: 'https://chatgpt.com/codex/install.ps1', download: 'https://github.com/openai/codex#installing-and-running-codex-cli',
     status: ['login', 'status'], login: ['login'],
     refresh: 'Open a new Codex session in the same profile. Use /mcp in the CLI or MCP Servers in Settings.'
   },
   'claude-code': {
-    name: 'Claude Code', download: 'https://code.claude.com/docs/en/setup#install-on-native-windows',
+    name: 'Claude Code', installer: 'https://claude.ai/install.ps1', download: 'https://code.claude.com/docs/en/setup#install-on-native-windows',
     status: ['auth', 'status', '--text'], login: ['auth', 'login'],
     refresh: 'Start Claude Code in your intended project and open /mcp. Check the selected server and its command.'
   },
@@ -89,6 +89,17 @@ function interactive(file, args) {
   return spawnSync(file, args, {stdio: 'inherit'}).status === 0;
 }
 
+function windowsPowerShell() {
+  return path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+}
+
+function installCli(url) {
+  const result = spawnSync(windowsPowerShell(), ['-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command',
+    "$ErrorActionPreference = 'Stop'; Invoke-RestMethod -UseBasicParsing -Uri $env:MOSAIC_HOST_INSTALL_URL | Invoke-Expression"],
+  {env: {...process.env, MOSAIC_HOST_INSTALL_URL: url}, stdio: 'inherit'});
+  return result.status === 0;
+}
+
 async function openWindows(target, args = []) {
   if (path.isAbsolute(target)) {
     return new Promise(resolve => {
@@ -97,18 +108,34 @@ async function openWindows(target, args = []) {
       child.once('spawn', () => { child.unref(); resolve(true); });
     });
   }
-  const powershell = path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
   // Open the fixed vendor URL as data, without substituting it into a command.
-  const result = await capture(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command',
+  const result = await capture(windowsPowerShell(), ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command',
     'Start-Process -FilePath $env:MOSAIC_HOST_OPEN_TARGET -ErrorAction Stop'],
   {env: {...process.env, MOSAIC_HOST_OPEN_TARGET: target}, windowsHide: true});
   return result.status === 0;
 }
 
 async function findHost(context, host, io) {
+  let offerInstall = host.installer && !context.isolated;
   for (;;) {
     const executable = await io.installed(host, context);
     if (executable) return executable;
+    if (offerInstall) {
+      offerInstall = false;
+      io.say(host.name + ' CLI was not found. Mosaic can run the official Windows installer.');
+      let answer;
+      do {
+        answer = (await io.ask('Install ' + host.name + ' CLI now? [y/N] ')).trim().toLowerCase();
+      } while (!['y', 'yes', 'n', 'no', ''].includes(answer));
+      if (answer === 'y' || answer === 'yes') {
+        io.say('Installing ' + host.name + ' CLI…');
+        if (await io.install(host.installer)) {
+          const installed = await io.installed(host, context);
+          if (installed) return installed;
+        }
+        io.say('Could not finish installing ' + host.name + ' CLI. You can install it manually below.');
+      }
+    }
     io.say(host.name + ' was not found. Install the official Windows version. ' + host.download);
     const response = await choice(io, 'Open the official Windows setup page, enter an executable path, or recheck?',
       ['open', 'location', 'recheck']);
@@ -311,7 +338,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     }
     const detection = await import(pathToFileURL(path.resolve(bundledNode, '../src/beta/hosts/detection.mjs')).href);
     process.exitCode = await runHost(context, {
-      ask: terminalQuestion, say: text => console.log(text), capture, interactive, registerCodex,
+      ask: terminalQuestion, say: text => console.log(text), capture, interactive, registerCodex, install: installCli,
       installed: (_, selection) => detection.windowsHostExecutable(selection.id, selection),
       executablePath: detection.windowsExecutable, open: openWindows,
     });

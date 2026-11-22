@@ -2,7 +2,7 @@ name: Windows protected JavaScript feasibility
 
 'on':
   push:
-    branches: [codex/windows-protected-js-probe, codex/windows-protected-js-supervisor, codex/windows-protected-js-package, codex/windows-protected-js-coordinator, codex/windows-protected-js-onboarding, codex/windows-protected-js-guide, codex/windows-isolated-js-worker]
+    branches: [codex/windows-protected-js-probe, codex/windows-protected-js-supervisor, codex/windows-protected-js-package, codex/windows-protected-js-coordinator, codex/windows-protected-js-onboarding, codex/windows-protected-js-guide, codex/windows-isolated-js-worker, codex/windows-prerequisites]
   workflow_dispatch:
 
 permissions:
@@ -20,6 +20,13 @@ jobs:
         with:
           node-version: '24.22.3'
           package-manager-cache: false
+      - name: Check consent and fallback for Windows coding app installation
+        shell: pwsh
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node --test test/windows-host.test.mjs
+          exit $LASTEXITCODE
       - name: Find the x64 MSVC build tools
         shell: pwsh
         run: |
@@ -68,7 +75,7 @@ jobs:
         run: |
           call "%MOSAIC_DEV_CMD%" -arch=x64 -host_arch=x64
           if errorlevel 1 exit /b 1
-          node scripts\package-windows-beta.mjs --version 0.1.0-beta.235 --output "%RUNNER_TEMP%\Mosaic JavaScript candidate" --check-js-tgz "%MOSAIC_JS_TARBALL%"
+          node scripts\package-windows-beta.mjs --version 0.1.0-beta.236 --output "%RUNNER_TEMP%\Mosaic JavaScript candidate" --check-js-tgz "%MOSAIC_JS_TARBALL%"
           exit /b %ERRORLEVEL%
       - name: Verify the actual installed artifact and reject tampered runtime bytes
         shell: pwsh

@@ -73,7 +73,7 @@ function hostFixture(id, answers) {
 }
 
 test('a missing Windows Claude Code opens its native vendor setup only with consent', async () => {
-  const f = hostFixture('claude-code', ['open', 'recheck', 'add', 'check']);
+  const f = hostFixture('claude-code', ['', 'open', 'recheck', 'add', 'check']);
   let calls = 0;
   f.io.installed = async () => calls++ ? appPaths['claude-code'] : null;
   let receiptReads = 0;
@@ -84,6 +84,44 @@ test('a missing Windows Claude Code opens its native vendor setup only with cons
   assert.deepEqual(f.opened, [{target: 'https://code.claude.com/docs/en/setup#install-on-native-windows', args: undefined}]);
   assert.ok(f.calls.every(([file]) => file === appPaths['claude-code']));
   assert.match(f.messages.join('\n'), /fresh registry call/);
+});
+
+for (const [id, name, url] of [
+  ['codex', 'Codex CLI', 'https://chatgpt.com/codex/install.ps1'],
+  ['claude-code', 'Claude Code CLI', 'https://claude.ai/install.ps1'],
+]) {
+  test(`Windows offers to install missing ${name} and rechecks in the same session`, async () => {
+    const answers = ['y', 'later'];
+    const f = hostFixture(id, answers);
+    const prompts = [], installed = [];
+    let ready = false;
+    f.io.ask = async prompt => {
+      prompts.push(prompt);
+      assert.ok(answers.length, 'Unexpected prompt: ' + prompt);
+      return answers.shift();
+    };
+    f.io.installed = async () => ready ? appPaths[id] : null;
+    f.io.install = installer => { installed.push(installer); ready = true; return true; };
+    f.io.capture = async (file, args) => {
+      assert.equal(file, appPaths[id]);
+      assert.equal(args[0], id === 'codex' ? 'login' : 'auth');
+      return {status: 1};
+    };
+    assert.equal(await runHost(f.context, f.io), 2);
+    assert.match(prompts[0], new RegExp(name + '.*\\[y/N\\]'));
+    assert.match(prompts[1], /Start sign-in/);
+    assert.deepEqual(installed, [url]);
+    assert.deepEqual(f.opened, []);
+  });
+}
+
+test('Windows falls back to manual installation if an installer fails', async () => {
+  const f = hostFixture('codex', ['yes', 'later']);
+  f.io.installed = async () => null;
+  f.io.install = () => false;
+  assert.equal(await runHost(f.context, f.io), 2);
+  assert.match(f.messages.join('\n'), /Could not finish installing Codex CLI/);
+  assert.match(f.messages.join('\n'), /github\.com\/openai\/codex/);
 });
 
 test('Windows Cursor link passes the absolute executable as JSON data', async () => {

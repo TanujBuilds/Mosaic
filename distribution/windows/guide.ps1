@@ -44,17 +44,67 @@ function Get-Git {
     return $null
 }
 
+function Install-GitForWindows {
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    try {
+        $principal = [Security.Principal.WindowsPrincipal]::new($identity)
+        if ($principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+            Write-Host 'Open PowerShell as your normal user for automatic Git installation.'
+            return $false
+        }
+    } finally { $identity.Dispose() }
+
+    $url = 'https://github.com/git-for-windows/git/releases/download/v2.56.1.windows.1/Git-2.56.1-64-bit.exe'
+    $sha256 = 'c330c72e10b408cc39994bfefdb63542b0d93d21699325c3e0bd874af8a5a559'
+    $stage = Join-Path (Join-Path $local 'Mosaic Beta') ('git-setup-' + [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $stage | Out-Null
+    try {
+        $installer = Join-Path $stage 'Git-for-Windows.exe'
+        $destination = Join-Path $local 'Programs\Git'
+        $curl = Join-Path ([Environment]::SystemDirectory) 'curl.exe'
+        Write-Host 'Downloading the Git for Windows installer…'
+        & $curl -q --fail --show-error --location --proto '=https' --proto-redir '=https' --output $installer -- $url | Out-Host
+        if ($LASTEXITCODE -ne 0) { return $false }
+        if ((Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash -ne $sha256) {
+            Write-Host 'Git for Windows installer checksum did not match.'
+            return $false
+        }
+        Write-Host 'Installing Git for Windows for this user…'
+        $process = Start-Process -FilePath $installer -WorkingDirectory $stage -Wait -PassThru -ArgumentList @(
+            '/SILENT', '/SP-', '/SUPPRESSMSGBOXES', '/NORESTART', '/NOCLOSEAPPLICATIONS', ('/DIR="' + $destination + '"')
+        )
+        return $process.ExitCode -eq 0
+    } catch {
+        return $false
+    } finally {
+        Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
 function Require-Git {
     $installed = Get-Git
     if ($installed) { return $installed }
     Write-Host 'Mosaic uses Git for Windows to prepare a project and verify its changes.'
-    $winget = Join-Path $local 'Microsoft\WindowsApps\winget.exe'
-    if ([IO.File]::Exists($winget) -and (Read-Host 'Install Git for this user with Windows Package Manager? [y/N]') -match '^y(es)?$') {
-        & $winget install --id Git.Git --exact --source winget --scope user | Out-Host
-        $installed = Get-Git
-        if ($installed) { return $installed }
+    do {
+        $answer = (Read-Host 'Install Git for Windows for this user now? [y/N]').Trim()
+    } until ($answer -match '^(y(es)?|n(o)?)?$')
+    if ($answer -match '^y(es)?$') {
+        if (Install-GitForWindows) {
+            $installed = Get-Git
+            if ($installed) { return $installed }
+        }
+        Write-Host 'Automatic Git installation did not finish. You can install Git manually.'
     }
-    throw 'Install Git for Windows from https://git-scm.com/install/windows, then rerun this install command.'
+    Write-Host 'Git for Windows manual install: https://git-scm.com/install/windows'
+    while ($true) {
+        $answer = (Read-Host 'After installing Git, recheck here or continue setup without Git [recheck/later]').Trim()
+        if ($answer -eq 'later') { return $null }
+        if ($answer -eq 'recheck') {
+            $installed = Get-Git
+            if ($installed) { return $installed }
+            Write-Host 'Git is still missing. Choose the default installation folder in the Git installer.'
+        }
+    }
 }
 
 function Copy-PublicRepository([string] $Git, [string] $Uri, [string] $Destination) {
@@ -202,13 +252,15 @@ try {
         if ($setupState -eq 4) { Invoke-InteractiveStep $Launcher @('migrate') }
         if ($setupState -ne 0) { Invoke-InteractiveStep $Launcher @('setup') }
         Invoke-GuideStep $node @($lifecycle, 'ensure-ready') | Out-Null
+        $git = $null
+        if ((Invoke-GuideStep $node @($lifecycle, 'coding-status') @(0, 3)) -eq 0) {
+            $git = Require-Git
+        }
         Write-Host '2. Connect your coding app'
         Invoke-InteractiveStep $node @($hostGuide)
     } finally { Pop-Location }
 
-    $codingStatus = Invoke-GuideStep $node @($lifecycle, 'coding-status') @(0, 3)
-    if ($codingStatus -eq 3) { return }
-    $git = Require-Git
+    if (-not $git) { return }
     $gitDirectory = [IO.Path]::GetDirectoryName($git)
     if (($env:Path -split ';') -notcontains $gitDirectory) { $env:Path = $gitDirectory + ';' + $env:Path }
     Write-Host '3. Start a coding task'
