@@ -129,6 +129,8 @@ jobs:
     if: needs.package-inputs.outputs.available == 'true'
     runs-on: windows-2025
     timeout-minutes: 30
+    outputs:
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
     env:
       MOSAIC_PACKAGE_VERSION: '0.1.0-beta.229'
     steps:
@@ -149,7 +151,6 @@ jobs:
           if (-not (Test-Path -LiteralPath $devCmd -PathType Leaf)) { throw 'VsDevCmd.bat is unavailable.' }
           "MOSAIC_VS_DEV_CMD=$devCmd" >> $env:GITHUB_ENV
           "MOSAIC_PACKAGE_DIR=$(Join-Path $env:RUNNER_TEMP 'Mosaic Windows candidate')" >> $env:GITHUB_ENV
-          "MOSAIC_UPDATE_FIXTURE_DIR=$(Join-Path $env:RUNNER_TEMP 'Mosaic Windows update fixture')" >> $env:GITHUB_ENV
           "MOSAIC_PWSH=$((Get-Command pwsh.exe -CommandType Application).Source)" >> $env:GITHUB_ENV
           $os = Get-CimInstance Win32_OperatingSystem
           Write-Output "$($os.Caption) $($os.Version) $($os.OSArchitecture)"
@@ -162,20 +163,11 @@ jobs:
           if errorlevel 1 exit /b 1
           node.exe scripts\package-windows-beta.mjs --version "%MOSAIC_PACKAGE_VERSION%" --output "%MOSAIC_PACKAGE_DIR%"
           if errorlevel 1 exit /b 1
-          if not exist distribution\windows\maintenance.mjs exit /b 0
-          node.exe scripts\package-windows-beta.mjs --version 0.1.0-beta.230 --output "%MOSAIC_UPDATE_FIXTURE_DIR%"
-          if errorlevel 1 exit /b 1
       - name: Validate install, interruption, recovery and tamper rejection
         shell: pwsh
-        run: |
-          $arguments = @('.github/scripts/windows-package-smoke.mjs', $env:MOSAIC_PACKAGE_DIR, $env:MOSAIC_PWSH)
-          if (Test-Path -LiteralPath 'distribution/windows/maintenance.mjs' -PathType Leaf) {
-            $arguments += $env:MOSAIC_UPDATE_FIXTURE_DIR
-          } else {
-            'Installed update, rollback and uninstall: pending maintenance implementation.' >> $env:GITHUB_STEP_SUMMARY
-          }
-          node @arguments
+        run: node .github/scripts/windows-package-smoke.mjs "$env:MOSAIC_PACKAGE_DIR" "$env:MOSAIC_PWSH"
       - name: Upload verified local candidate bundle for staging
+        id: upload
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: mosaic-windows-x64-candidate-${{ github.run_attempt }}
@@ -187,9 +179,19 @@ jobs:
         shell: pwsh
         run: |
           @'
-          The exact local artifact passed installation and interrupted extraction recovery on Windows Server 2025 x64. The stable launcher found bundled Node with system tools only on PATH.
+          The exact local artifact passed basic installation and interrupted extraction recovery on Windows Server 2025 x64. The stable launcher found bundled Node with system tools only on PATH. Installed maintenance and standalone core have separate jobs.
           Anonymous HTTPS download, a clean Windows 11 client and real signed-in coding apps still require qualification before publishing a Windows install link.
           '@ >> $env:GITHUB_STEP_SUMMARY
+
+  windows-core:
+    name: Windows x64 standalone coding core
+    needs: package
+    runs-on: windows-2025
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Detect the separate Windows coding core
         id: core
         shell: pwsh
@@ -206,10 +208,74 @@ jobs:
             }
           }
           'available=true' >> $env:GITHUB_OUTPUT
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        if: steps.core.outputs.available == 'true'
+        with:
+          node-version: '24.22.3'
+          package-manager-cache: false
+      - name: Download the exact Beta build that passed basic installation
+        if: steps.core.outputs.available == 'true'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          artifact-ids: ${{ needs.package.outputs.artifact_id }}
+          merge-multiple: true
+          path: ${{ runner.temp }}/Mosaic Windows candidate
       - name: Independently build, install, and exercise the Windows coding core
         if: steps.core.outputs.available == 'true'
         shell: pwsh
-        run: node .github/scripts/windows-core-smoke.mjs "$env:MOSAIC_PACKAGE_DIR"
+        run: node .github/scripts/windows-core-smoke.mjs (Join-Path $env:RUNNER_TEMP 'Mosaic Windows candidate')
+
+  windows-maintenance:
+    name: Windows x64 installed maintenance
+    needs: package
+    runs-on: windows-2025
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Find maintenance and x64 build inputs
+        id: maintenance
+        shell: pwsh
+        run: |
+          if (-not (Test-Path -LiteralPath 'distribution/windows/maintenance.mjs' -PathType Leaf)) {
+            'Installed maintenance: pending source.' >> $env:GITHUB_STEP_SUMMARY
+            'available=false' >> $env:GITHUB_OUTPUT
+            exit 0
+          }
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
+          $visualStudio = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if ($LASTEXITCODE -ne 0 -or -not $visualStudio) { throw 'The x64 MSVC toolchain is unavailable.' }
+          $devCmd = Join-Path $visualStudio 'Common7/Tools/VsDevCmd.bat'
+          if (-not (Test-Path -LiteralPath $devCmd -PathType Leaf)) { throw 'VsDevCmd.bat is unavailable.' }
+          "MOSAIC_VS_DEV_CMD=$devCmd" >> $env:GITHUB_ENV
+          "MOSAIC_UPDATE_FIXTURE_DIR=$(Join-Path $env:RUNNER_TEMP 'Mosaic Windows update fixture')" >> $env:GITHUB_ENV
+          "MOSAIC_PWSH=$((Get-Command pwsh.exe -CommandType Application).Source)" >> $env:GITHUB_ENV
+          'available=true' >> $env:GITHUB_OUTPUT
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        if: steps.maintenance.outputs.available == 'true'
+        with:
+          node-version: '24.22.3'
+          package-manager-cache: false
+      - name: Download the exact Beta build that passed basic installation
+        if: steps.maintenance.outputs.available == 'true'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          artifact-ids: ${{ needs.package.outputs.artifact_id }}
+          merge-multiple: true
+          path: ${{ runner.temp }}/Mosaic Windows candidate
+      - name: Build the compatible test update
+        if: steps.maintenance.outputs.available == 'true'
+        shell: cmd
+        run: |
+          call "%MOSAIC_VS_DEV_CMD%" -arch=x64 -host_arch=x64
+          if errorlevel 1 exit /b 1
+          node.exe scripts\package-windows-beta.mjs --version 0.1.0-beta.230 --output "%MOSAIC_UPDATE_FIXTURE_DIR%"
+          if errorlevel 1 exit /b 1
+      - name: Run install, update, rollback, recovery, uninstall, and reinstall
+        if: steps.maintenance.outputs.available == 'true'
+        shell: pwsh
+        run: node .github/scripts/windows-package-smoke.mjs (Join-Path $env:RUNNER_TEMP 'Mosaic Windows candidate') "$env:MOSAIC_PWSH" "$env:MOSAIC_UPDATE_FIXTURE_DIR"
 
   windows-arm-diagnostics:
     name: Windows 11 ARM64 host capability diagnostics

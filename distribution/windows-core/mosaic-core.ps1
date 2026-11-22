@@ -1,5 +1,10 @@
 $ErrorActionPreference = 'Stop'
 $root = $PSScriptRoot
+$owner = $null
+if ($args.Count -ge 1 -and $args[0] -eq 'serve') {
+    $owner = [IO.File]::Open((Join-Path $root 'core-owner.lock'),'OpenOrCreate','ReadWrite','None')
+}
+try {
 $locator = Join-Path $root 'active-core.json'
 if ([IO.File]::GetAttributes($locator) -band [IO.FileAttributes]::ReparsePoint) { throw 'Unexpected core locator redirection' }
 $hash = ([IO.File]::ReadAllText($locator) | ConvertFrom-Json).archiveSha256
@@ -21,4 +26,5 @@ try {
     $env:NODE_OPTIONS = $options
     $env:NODE_PATH = $nodePath
 }
+} finally { if ($owner) { $owner.Dispose() } }
 exit $code

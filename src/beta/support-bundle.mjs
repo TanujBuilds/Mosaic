@@ -10,6 +10,7 @@ export const SUPPORT_BUNDLE_LIMITS=Object.freeze({
  metadataBytes:64*1024,connectionBytes:8192,viewerReplyBytes:8*1024*1024,outputBytes:256*1024
 });
 const L=SUPPORT_BUNDLE_LIMITS;
+const windows=process.platform==='win32'?await import('./windows-support.mjs'):null;
 const hosts=['codex','claude-code','cursor','antigravity'];
 const taskStates=['queued','codex_ready','suspended','running','uncertain','codex_active','awaiting_supervisor','awaiting_user','awaiting_review','awaiting_legacy_review','legacy_reviewing','blocked','ready_to_integrate','accepted','failed','partial','cancelled'];
 const eventTypes=new Set([
@@ -50,6 +51,7 @@ async function stat(file){try{return await lstat(file);}catch(cause){if(cause.co
 const inside=(parent,file)=>file===parent||file.startsWith(parent+path.sep);
 // Check each component rather than letting realpath silently accept an alias.
 async function directories(directory,{home,privateRoot}={}){
+ if(windows)return windows.supportDirectory(directory,{home,privateRoot});
  let current=path.parse(directory).root;
  for(const part of directory.slice(current.length).split(path.sep).filter(Boolean)){
   current=path.join(current,part);const info=await stat(current);
@@ -67,6 +69,7 @@ function same(a,b){return a.dev===b.dev&&a.ino===b.ino&&a.size===b.size&&a.mtime
 async function metadata(paths,name){
  const file=path.join(paths.configDir,name),guards={home:paths.home,privateRoot:paths.root};
  if(!await directories(path.dirname(file),guards))return null;
+ if(windows)return windows.supportMetadata(file,L.metadataBytes);
  const named=await stat(file);if(!named)return null;safeFile(named,L.metadataBytes);
  let handle;
  try{
@@ -88,7 +91,7 @@ async function localMetadata(paths,bundle){
    return {schema:raw.schema,host:choice(raw.host?.id,hosts),providerCount:Array.isArray(raw.providers)&&raw.providers.length<=16?raw.providers.length:null,
     capacityGroupCount:Array.isArray(raw.capacityGroups)&&raw.capacityGroups.length<=16?raw.capacityGroups.length:null,
     serviceConcurrency:integer(raw.serviceMaxConcurrentTasks,4)||null,
-    executionBackend:choice((raw.execution??raw.executionPolicy)?.backend,['darwin-seatbelt','codex-sandbox']),
+    executionBackend:choice((raw.execution??raw.executionPolicy)?.backend,['darwin-seatbelt','codex-sandbox','windows-appcontainer']),
     executionRevision:choice((raw.execution??raw.executionPolicy)?.backendRevision,[1,2]),reviewSource:choice(raw.defaults?.review?.source,['host','api'])};
   }],
   ['installation','installation.json','INSTALLATION',raw=>{
@@ -165,10 +168,15 @@ async function collectDirect(home,{invoke,viewerTimeoutMs,deadlineMs}){
  if(!invoke){
   try{
    if(!await directories(paths.state,{home,privateRoot:paths.root})){diagnostic(bundle,'VIEWER_ABSENT');return bundle;}
-   const connection=await stat(path.join(paths.state,'viewer-connection.json'));
-   if(!connection){diagnostic(bundle,'VIEWER_ABSENT');return bundle;}
-   // Token bytes are read only by the existing private viewer client.
-   safeFile(connection,L.connectionBytes);
+   const file=path.join(paths.state,'viewer-connection.json');
+   // Token bytes are read only by the private viewer client.
+   if(windows){
+    if(!await windows.supportViewerFile(file,L.connectionBytes)){diagnostic(bundle,'VIEWER_ABSENT');return bundle;}
+   }else{
+    const connection=await stat(file);
+    if(!connection){diagnostic(bundle,'VIEWER_ABSENT');return bundle;}
+    safeFile(connection,L.connectionBytes);
+   }
   }catch{diagnostic(bundle,'VIEWER_CONNECTION_UNSAFE');return bundle;}
   const {client}=await import('./client.mjs');invoke=client(paths,{viewer:true,timeoutMs:viewerTimeoutMs});
  }
@@ -215,6 +223,7 @@ export function formatSupportBundle(bundle){
  if(Buffer.byteLength(bytes)>L.outputBytes)throw error('OUTPUT_TOO_LARGE');return bytes;
 }
 async function writeBundle(file,bytes){
+ if(windows)return windows.writeSupportBundle(file,bytes);
  const directory=path.dirname(file);let temp;
  try{
   if(!await directories(directory))throw error('OUTPUT_UNSAFE');

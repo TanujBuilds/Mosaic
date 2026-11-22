@@ -21,6 +21,14 @@ export async function main(args) {
     await windowsFile('mkdir',directory);
     await windowsFile('private-directory',directory);
   }
+  if (args.length===1 && args[0]==='prepare-update') {
+    for(const suffix of ['','-wal','-shm','-journal']) {
+      await windowsFile('private-file',path.join(paths.state,'harness.sqlite3'+suffix),{optional:true});
+    }
+    const {assertMaintenanceIdle}=await load('src/beta/service.mjs');
+    await assertMaintenanceIdle(paths,{offline:true,settingsChange:true});
+    return;
+  }
   if (args.length===1 && args[0]==='connect') {
     const {installCoreSkills}=await import('./skills.mjs');
     const skills=await installCoreSkills({home:os.homedir(),version,read:file=>windowsFile('read',file,{max:1024*1024})});

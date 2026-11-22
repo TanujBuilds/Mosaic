@@ -38,6 +38,8 @@ function PlainFiles([string] $Directory) {
 }
 PrivateDirectory $root
 PrivateDirectory $versions
+$owner = [IO.File]::Open((Join-Path $root 'core-owner.lock'),'OpenOrCreate','ReadWrite','None')
+try {
 $blob = [IO.File]::Open([IO.Path]::GetFullPath($Archive),'Open','Read','Read')
 $hasher = [Security.Cryptography.SHA256]::Create()
 $stage = Join-Path $versions ('.incoming-' + [guid]::NewGuid().ToString('N'))
@@ -75,14 +77,31 @@ try {
             try { if ($expected -cne [BitConverter]::ToString($hasher.ComputeHash($copy))) { throw 'Retained core version changed' } } finally { $copy.Dispose() }
         }
     } else { [IO.Directory]::Move($stage,$final) }
+    $node = Join-Path $final 'runtime/bin/node.exe'
+    $core = Join-Path $final 'distribution/windows-core/core.mjs'
+    $options,$nodePath = $env:NODE_OPTIONS,$env:NODE_PATH
+    try {
+        $env:NODE_OPTIONS = $null
+        $env:NODE_PATH = $null
+        & $node $core prepare-update
+        if ($LASTEXITCODE -ne 0) { throw 'Resolve active or uncertain core ownership before switching versions' }
+    } finally { $env:NODE_OPTIONS=$options; $env:NODE_PATH=$nodePath }
     $stable = Join-Path $root 'mosaic-core.ps1'
     $template = Join-Path $final 'distribution/windows-core/mosaic-core.ps1'
     if ([IO.File]::Exists($stable)) {
-        if (([IO.File]::GetAttributes($stable) -band [IO.FileAttributes]::ReparsePoint) -or
-            [Convert]::ToBase64String([IO.File]::ReadAllBytes($stable)) -cne [Convert]::ToBase64String([IO.File]::ReadAllBytes($template))) { throw 'Existing core launcher differs. Preserve the existing binding.' }
+        if ([IO.File]::GetAttributes($stable) -band [IO.FileAttributes]::ReparsePoint) { throw 'Redirected core launcher' }
+        $currentBytes = [IO.File]::ReadAllBytes($stable)
+        $nextBytes = [IO.File]::ReadAllBytes($template)
+        if ([Convert]::ToBase64String($currentBytes) -cne [Convert]::ToBase64String($nextBytes)) {
+            if (([IO.File]::GetAttributes($locator) -band [IO.FileAttributes]::ReparsePoint) -or
+                ([IO.File]::ReadAllText($locator) | ConvertFrom-Json).launcherSha256 -cne [BitConverter]::ToString($hasher.ComputeHash($currentBytes)).Replace('-','').ToLowerInvariant()) { throw 'Existing core launcher differs from its installation receipt' }
+            $replacement = Join-Path $root ('.launcher-' + [guid]::NewGuid().ToString('N'))
+            [IO.File]::WriteAllBytes($replacement,$nextBytes)
+            [IO.File]::Replace($replacement,$stable,$null)
+        }
     } else { [IO.File]::Copy($template,$stable,$false) }
     $pointer = Join-Path $root ('.pointer-' + [guid]::NewGuid().ToString('N'))
-    [IO.File]::WriteAllText($pointer,(ConvertTo-Json @{archiveSha256=$actual}),$utf8)
+    [IO.File]::WriteAllText($pointer,(ConvertTo-Json @{archiveSha256=$actual;launcherSha256=[BitConverter]::ToString($hasher.ComputeHash([IO.File]::ReadAllBytes($template))).Replace('-','').ToLowerInvariant()}),$utf8)
     if ([IO.File]::Exists($locator)) { [IO.File]::Replace($pointer,$locator,$null) } else { [IO.File]::Move($pointer,$locator) }
     Write-Output "Core installed at $final"
     Write-Output "Core launcher: $stable"
@@ -92,3 +111,4 @@ try {
     $blob.Dispose()
     if ([IO.Directory]::Exists($stage)) { [IO.Directory]::Delete($stage,$true) }
 }
+} finally { $owner.Dispose() }
