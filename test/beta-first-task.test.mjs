@@ -9,6 +9,7 @@ import {recordHostConnection, hostConnectionIdentity} from '../src/beta/hosts/co
 import {locations, privateDirectories, saveJson} from '../src/beta/files.mjs';
 import {configuredPolicies} from '../src/beta/settings.mjs';
 import {Coordinator} from '../src/harness/coordinator.mjs';
+import {git} from '../src/project/process.mjs';
 import {Dispatcher} from '../src/harness/tools.mjs';
 import {ProviderRegistry} from '../src/harness/providers/registry.mjs';
 import {sourceClosure} from '../scripts/lib/beta-archive.mjs';
@@ -196,6 +197,9 @@ test('demo records real fixture checks, reviews and commits in its own store and
   assert.match(io.read(), /Integrated commit.*[0-9a-f]{40}/i);
   const match = /mosaic first-task result --goal (\S+) --demo-run (\S+)/.exec(io.read());
   assert.ok(match, io.read());
+  const integrated = /Integrated commit.*?([0-9a-f]{40})/i.exec(io.read())[1];
+  const demoRepo = path.join(f.root, 'mosaic-first-task-' + match[2], 'repo');
+  assert.equal(await git(demoRepo, 'show', '-s', '--format=%an <%ae>', integrated), 'Fixture <fixture@example.invalid>');
   const result = terminal();
   assert.equal(await runFirstTask(f.paths, ['result', '--goal', match[1], '--demo-run', match[2]], {
     ...result, demoParent: f.root, invoke: unexpected, loadSettings: unexpected,

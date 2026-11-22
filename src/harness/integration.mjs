@@ -332,6 +332,11 @@ export class Integration {
   await workspace.assertSnapshot(saved.snapshot);
   for(const [file,mode] of await checkedFileModes(workspace,saved.snapshot)){const entry=await git(workspace.root,'ls-tree','HEAD','--',file),expected=entry?entry.split(' ')[0]:'100644';if(mode!==expected)throw Error('Prior partial executable mode is uncertain');}
  }
+ integrationChecks(workspace,task,operationKey){
+  const context={goalId:task.goalId,taskId:task.id,operationKey};
+  if(task.native?.layout==='candidate_v1')context.integrationCandidate=task;
+  return this.checks(workspace,context);
+ }
  async combinedChecks(target,task,goal,checkSpecs){
   const current={goalId:goal.id,goalHash:goal.hash,project:goal.manifest.project,checkSpecs,overnightV2:isOvernightV2(goal.manifest)},contracts=new Map();
   // Contracts are saved by checked commits, independent of mutable goal records.
@@ -343,7 +348,7 @@ export class Integration {
    this.currentCandidate(task);
    const {overnightV2:ignored,...manifest}=target.workspace.manifest,workspace=new Workspace({...manifest,permissions:contract.project,...(contract.overnightV2?{overnightV2:true}:{})},target.journal);
    const snapshot=await workspace.snapshot(),modes=await readBehavioralFileModes(workspace,Object.keys(snapshot));
-   const runner=this.checks(workspace,{goalId:task.goalId,taskId:task.id,operationKey:'integration-proof:'+task.id});await runner.verify(this.signal);this.currentCandidate(task);const checks=await runner.run(contract.checkSpecs,`integrate-${task.id}-${contract.goalId}`,this.signal);
+   const runner=this.integrationChecks(workspace,task,'integration-proof:'+task.id);await runner.verify(this.signal);this.currentCandidate(task);const checks=await runner.run(contract.checkSpecs,`integrate-${task.id}-${contract.goalId}`,this.signal);
    await workspace.assertSnapshot(snapshot);const afterModes=await readBehavioralFileModes(workspace,Object.keys(snapshot));if(behavioralModeHash(modes)!==behavioralModeHash(afterModes))throw Error('Combined executable bit changed during protected checks');
    const behavioralEvidence=behavioralEvidenceFor(contract.project,contract.checkSpecs,checks,snapshot,modes);
    evidence.push({...contract,checks,...(behavioralEvidence?{behavioralEvidence}:{})});
@@ -421,7 +426,7 @@ export class Integration {
    const project=g.manifest.project,candidateSnapshot=project.behavioralChecks||g.manifest.reviewPolicy?await candidate.workspace.snapshot():null;
    const candidateModes=candidateSnapshot?await checkedFileModes(candidate.workspace,candidateSnapshot):null;
    const checkedSnapshot=candidateSnapshot?await this.checkedCandidateSnapshot(candidate,t,g,candidateSnapshot,candidateModes):null;
-   const checks=this.checks(candidate.workspace,{goalId:g.id,taskId:t.id,operationKey:'candidate-accept:'+t.id}),candidateCheckSpecs=candidate.manifest.permissions.checks;
+   const checks=this.integrationChecks(candidate.workspace,t,'candidate-accept:'+t.id),candidateCheckSpecs=candidate.manifest.permissions.checks;
    await checks.verify(this.signal);const candidateChecks=await checks.run(candidateCheckSpecs,`accept-${t.id}`,this.signal);
    if(candidateSnapshot){
     await candidate.workspace.assertSnapshot(candidateSnapshot);
@@ -472,7 +477,7 @@ export class Integration {
     const combinedModes=snapshotBeforeChecks?await checkedFileModes(target.workspace,snapshotBeforeChecks):null;
     let results,combinedEvidence,integrationContract;
     if(target.shared){const combined=await this.combinedChecks(target,t,g,checkSpecs);results=combined.results;combinedEvidence=combined.evidence;integrationContract=combined.contract;}
-    else {const runner=this.checks(target.workspace,{goalId:g.id,taskId:t.id,operationKey:'integration:'+t.id});await runner.verify(this.signal);results=await runner.run(checkSpecs,`integrate-${t.id}`,this.signal);}
+    else {const runner=this.integrationChecks(target.workspace,t,'integration:'+t.id);await runner.verify(this.signal);results=await runner.run(checkSpecs,`integrate-${t.id}`,this.signal);}
     const snapshot=await target.workspace.snapshot();
     if(snapshotBeforeChecks){
      if(digest(snapshot)!==digest(snapshotBeforeChecks))throw Error('Combined snapshot changed during protected checks');

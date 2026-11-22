@@ -63,6 +63,44 @@ test('exact quiescence restores pending integration state without inventing acce
  assert.equal(f.c.getTask(f.task.id).status,'uncertain');writeFileSync(h.receiptPath,JSON.stringify(receipt(h,f.binding)),{mode:0o600});f.manager.reconcile({force:true});
  const after=f.c.getTask(f.task.id);assert.equal(after.status,'ready_to_integrate');assert.deepEqual(after.spent,before.spent);assert.equal(after.deadline,before.deadline);assert.equal(after.integration,undefined);
 });
+function reviewedNativeCandidate(f) {
+ const spec={...f.task.spec,kind:'coding'};
+ const candidate = {...f.c.getTask(f.task.id),spec,hash:digest(spec), executionActor: 'codex', status: 'ready_to_integrate', owner: null,
+  native: {layout: 'candidate_v1', generationId: f.task.id, round: 2, status: 'awaiting_review', writerActive: false,
+   worktree: f.root, baseCommit: '1'.repeat(40), commit: '2'.repeat(40)},
+  reviewed: true, reviewAcceptance: {ticketId: 'reviewed-round-2'}, result: {summary: 'Checked round two'}};
+ f.c.store.put('task',candidate);
+ return candidate;
+}
+test('integration rechecks a finished native candidate after the writer releases it',async t=>{
+ const f=await fixture(t),candidate=reviewedNativeCandidate(f);
+ const h=f.manager.forContext({...f.context,integrationCandidate:candidate}).begin(f.binding);
+ h.prepared(prepared(h,f.binding));h.authorizeGo();
+ const good=receipt(h,f.binding);writeFileSync(h.receiptPath,JSON.stringify(good),{mode:0o600});h.complete(good);
+ assert.equal(f.c.store.get('execution_owner',h.requestId).status,'quiescent');
+ assert.equal(f.c.getTask(candidate.id).status,'ready_to_integrate');
+});
+for(const drift of ['generation','round','commit','result','review','writer'])test(`native integration refuses ${drift} drift before helper GO`,async t=>{
+ const f=await fixture(t),candidate=reviewedNativeCandidate(f);
+ const h=f.manager.forContext({...f.context,integrationCandidate:candidate}).begin(f.binding);
+ const changed=f.c.store.get('task',candidate.id);
+ if(drift==='generation')changed.native.generationId='other';
+ if(drift==='round')changed.native.round++;
+ if(drift==='commit')changed.native.commit='3'.repeat(40);
+ if(drift==='result')changed.result.summary='Different candidate';
+ if(drift==='review')changed.reviewAcceptance.ticketId='replacement';
+ if(drift==='writer'){changed.native.writerActive=true;changed.status='codex_active';}
+ f.c.store.put('task',changed);
+ assert.throws(()=>h.prepared(prepared(h,f.binding)),/identity|ownership|candidate/i);
+ assert.equal(f.c.store.get('execution_owner',h.requestId).status,'uncertain');
+});
+test('released candidate cannot authorize writer checks or a stale integration request',async t=>{
+ const f=await fixture(t),candidate=reviewedNativeCandidate(f);
+ const stale={...candidate,native:{...candidate.native,round:1}};
+ assert.throws(()=>f.manager.forContext({...f.context,integrationCandidate:stale}).begin(f.binding),/candidate|ownership|identity/i);
+ const h=f.manager.forContext(f.context).begin(f.binding);
+ assert.throws(()=>h.prepared(prepared(h,f.binding)),/writer|ownership/i);
+});
 test('current coordinator can explicitly resume a proven native check interruption without resetting its deadline',async t=>{
  const f=await fixture(t);f.c.acquireWorker('worker');const before=f.c.getTask(f.task.id),h=f.manager.forContext(f.context).begin(f.binding);h.prepared(prepared(h,f.binding));h.uncertain('lost callback');writeFileSync(h.receiptPath,JSON.stringify(receipt(h,f.binding)),{mode:0o600});f.manager.reconcile({force:true});
  const resumed=f.c.control({taskId:f.task.id,action:'resume'},'resume-proven');assert.equal(resumed.status,'queued');assert.equal(resumed.owner,null);assert.equal(resumed.deadline,before.deadline);assert.deepEqual(resumed.spent,before.spent);

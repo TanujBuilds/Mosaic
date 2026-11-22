@@ -16,8 +16,10 @@ export async function createOutcomeDemo(root, {firstTask = false} = {}) {
   await writeFile(path.join(repo, 'checks/verify.mjs'),
     "import {value} from " + "'../src/value.mjs'; if (value !== 42) process.exit(1);\n");
   await git(repo, 'init', '-q');
+  await git(repo, 'config', '--local', 'user.name', 'Fixture');
+  await git(repo, 'config', '--local', 'user.email', 'fixture@example.invalid');
   await git(repo, 'add', '.');
-  await git(repo, '-c', 'user.email=fixture@example.invalid', '-c', 'user.name=Fixture', 'commit', '-qm', 'Fixture baseline');
+  await git(repo, 'commit', '-qm', 'Fixture baseline');
   const c = new Coordinator({root: stateRoot});
   try {
     const goal = c.prepareGoal({
