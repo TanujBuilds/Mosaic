@@ -11,7 +11,7 @@ import {promisify} from 'node:util';
 import {crc32, deflateRawSync} from 'node:zlib';
 import {listFiles, sourceClosure} from './lib/beta-archive.mjs';
 import {digest} from '../src/harness/contracts.mjs';
-import {javascriptArtifactManifest, javascriptArtifactFiles, javascriptBootstrapFiles,
+import {javascriptArtifactDirectory, javascriptArtifactManifest, javascriptArtifactFiles, javascriptBootstrapFiles,
   quickJsPackageFiles, windowsJavaScriptBackend} from '../src/project/check-backends/windows-js-artifact.mjs';
 
 const exec = promisify(execFile);
@@ -189,7 +189,8 @@ async function compile(source, output, staging, libraries = []) {
     source, '/Fe:' + output, '/link', ...libraries], {cwd: staging, timeout: 120_000, maxBuffer: 512 * 1024});
 }
 
-async function packageIsolatedJavaScript(payload, artifact, staging, supplied) {
+async function packageIsolatedJavaScript(payload, nativeArtifact, staging, supplied) {
+  const artifact = `runtime/${javascriptArtifactDirectory}/`;
   const bytes = await lstat(supplied);
   const maxPackageBytes = 4 * 1024 * 1024;
   if (!bytes.isFile() || bytes.size > maxPackageBytes) throw Error('Invalid pinned QuickJS package input');
@@ -201,6 +202,8 @@ async function packageIsolatedJavaScript(payload, artifact, staging, supplied) {
   await writeFile(input, tarball, {flag:'wx'});
   const tar = path.join(process.env.SystemRoot,'System32','tar.exe');
   await exec(tar,['-xf',input,'-C',staging,...quickJsPackageFiles.map(file => 'package/' + file)],{timeout:20000});
+  for (const name of ['node.exe','mosaic-windows-supervisor.exe'])
+    await copyInto(path.join(payload,nativeArtifact,name), payload, artifact + name);
   for (const name of quickJsPackageFiles)
     await copyInto(path.join(staging,'package',name), payload, artifact + 'node_modules/quickjs-wasi/' + name);
   for (const name of javascriptBootstrapFiles)

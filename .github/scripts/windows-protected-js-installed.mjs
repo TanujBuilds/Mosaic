@@ -26,13 +26,16 @@ try {
     '-Archive',archive,'-ArchiveSha256',candidate.archiveSha256,'-Version',candidate.version,'-NoGuide'],
   {env, windowsHide:true, timeout:150000});
   const installed = path.join(root,'Mosaic Beta','versions',candidate.version);
-  const runtime = path.join(installed,'runtime'), artifact = path.join(runtime,'check-artifact');
+  const runtime = path.join(installed,'runtime'), artifact = path.join(runtime,'javascript-check-artifact');
   const metadata = await readFile(path.join(installed,'package-manifest.json'));
   assert.equal(digest(metadata), candidate.packageManifestSha256);
   assert.equal(JSON.parse(metadata).javascriptCheckArtifact.fingerprint, candidate.javascriptFingerprint);
   const node = path.join(runtime,'bin','node.exe');
   const verify = String.raw`
     import {validateWindowsJavaScriptArtifact} from ${JSON.stringify(pathToFileURL(path.join(runtime,'src','project','check-backends','windows-js-artifact.mjs')).href)};
+    import {readBundledNativeCheckRuntime} from ${JSON.stringify(pathToFileURL(path.join(runtime,'src','beta','package-contract.mjs')).href)};
+    const old = await readBundledNativeCheckRuntime();
+    if (old.artifactManifestSha256 !== ${JSON.stringify(candidate.nativeFingerprint)}) throw Error('Legacy runtime changed identity');
     const result = validateWindowsJavaScriptArtifact(JSON.parse(process.argv[1]));
     process.stdout.write(JSON.stringify(result));
   `;

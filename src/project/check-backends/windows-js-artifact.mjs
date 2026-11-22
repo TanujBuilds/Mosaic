@@ -3,6 +3,7 @@ import path from 'node:path';
 import {windowsFileSync} from '../../beta/windows-files.mjs';
 
 export const windowsJavaScriptBackend = Object.freeze({id:'windows-isolated-js', revision:1});
+export const javascriptArtifactDirectory = 'javascript-check-artifact';
 export const javascriptArtifactManifest = 'javascript-artifact.json';
 const quickJsRoot = 'node_modules/quickjs-wasi/';
 export const quickJsPackageFiles = Object.freeze([
@@ -21,7 +22,7 @@ export function validateWindowsJavaScriptArtifact(config) {
   if (process.platform !== 'win32' || process.arch !== 'x64')
     throw new Error('The isolated JavaScript artifact requires Windows x64');
   if (config?.schema !== 1 || !sha.test(config.artifactManifestSha256) ||
-      !path.isAbsolute(config.artifactManifestPath) ||
+      typeof config.artifactManifestPath !== 'string' || !path.isAbsolute(config.artifactManifestPath) ||
       path.basename(config.artifactManifestPath) !== javascriptArtifactManifest)
     throw new Error('Invalid isolated JavaScript artifact identity');
   const root = path.dirname(config.artifactManifestPath);

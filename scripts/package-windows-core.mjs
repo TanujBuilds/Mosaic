@@ -8,7 +8,7 @@ import {fileURLToPath} from 'node:url';
 import {packageHarness} from '../src/harness/package.mjs';
 import {isEntry} from '../src/harness/entry.mjs';
 import {digest} from '../src/harness/contracts.mjs';
-import {javascriptArtifactFiles, javascriptArtifactManifest} from '../src/project/check-backends/windows-js-artifact.mjs';
+import {javascriptArtifactDirectory, javascriptArtifactFiles, javascriptArtifactManifest} from '../src/project/check-backends/windows-js-artifact.mjs';
 import {validatePackagePaths, writeWindowsZip} from './package-windows-beta.mjs';
 
 const repository = fileURLToPath(new URL('../', import.meta.url));
@@ -42,8 +42,8 @@ export async function packageWindowsCore({payload, manifestHash, destination}) {
   const nativeFiles = new Set(platformFiles);
   if (inputs.javascriptCheckArtifact) {
     for (const file of [...javascriptArtifactFiles, javascriptArtifactManifest])
-      nativeFiles.add('runtime/check-artifact/' + file);
-    const javascriptManifest = await readFile(path.join(payload,'runtime','check-artifact',javascriptArtifactManifest));
+      nativeFiles.add(`runtime/${javascriptArtifactDirectory}/` + file);
+    const javascriptManifest = await readFile(path.join(payload,'runtime',javascriptArtifactDirectory,javascriptArtifactManifest));
     if (sha256(javascriptManifest) !== inputs.javascriptCheckArtifact.fingerprint)
       throw Error('Isolated JavaScript manifest differs from Beta input');
     core.javascriptCheckArtifact = inputs.javascriptCheckArtifact;
