@@ -16,6 +16,17 @@ const task={id:'task-1',goalId:goal.id,actor:'deepseek',kind:'coding',objective:
 const native={id:'task-2',goalId:goal.id,actor:'codex',objective:'Independent implementation',status:'codex_active',provenance:'reported',lastActivityAt:1000};
 const snapshot={goals:[goal],tasks:[task,native],agents:[{id:'a',goalId:goal.id,taskId:native.id,actor:'codex',role:'implementer',lastReport:{status:'running',at:1000}}],reviewers:[],cursor:101};
 
+test('the redirected idle observer names the selected host if known',async()=>{
+ for(const [id,label] of [['codex','Codex'],['claude-code','Claude Code'],['cursor','Cursor'],['antigravity','Antigravity'],[null,'your selected coding app']]){
+  const empty={...snapshot,source:'beta',goals:[],tasks:[],agents:[],connections:{host:id?{id}:null,worker:null}};
+  const invoke=async name=>name==='observer_snapshot'?empty:{events:[],cursor:101,hasMore:false};
+  let frame='';
+  const output={columns:100,isTTY:false,write:chunk=>{frame+=chunk;}};
+  await runObserver({once:true,invoke,output});
+  assert.ok(frame.includes('Start a Mosaic Beta goal in '+label+'.'),frame);
+ }
+});
+
 test('Connections separates saved configuration from historical evidence and stale data',()=>{
  const connections={host:{id:'cursor',lastConnection:null},worker:{displayName:'Local Worker',lastConnection:{kind:'worker_response',at:1000}}};
  const state={snapshot:{...snapshot,goals:[],connections},events:[]};

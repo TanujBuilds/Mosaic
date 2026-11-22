@@ -257,8 +257,8 @@ async function guidedTask(output, ask, {repo, settings, host, invoke, readPreset
       finalOnlyCheckIds: textList(await question('Final-only check IDs, or press Enter for none: ')),
     };
   }
-  // The portable review service spends both the goal and assignment caps.
-  const reviews = mode === 'deepseek_only' ? 0 : 1;
+  // Reserve one review for the initial candidate and one for a requested correction.
+  const reviews = mode === 'deepseek_only' ? 0 : 2;
   const limits = {
     hours: 1, maxTasks: 1, reviewAgentRuns: reviews,
     taskLimits: {coding: {seconds: 1800, attempts: 2, modelCalls: mode === 'codex_only' ? 1 : 4, reviews, questions: 1}},

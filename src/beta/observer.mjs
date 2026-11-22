@@ -436,7 +436,10 @@ export function renderTerminal(state,{width=80,height=36,color=false,selected=0,
   const detailLines=detail.split('\n').flatMap(line=>lines(line,width));
   out.push(...detailLines.slice(Math.min(detailOffset,Math.max(0,detailLines.length-1))));
  }else if(!goal){
-  if(!state.stale||state.snapshot)out.push(...lines('Idle · no saved goals. Start a Mosaic Beta goal in Codex.',width));
+  if(!state.stale||state.snapshot){
+   const hostName=hostNames.get(state.snapshot?.connections?.host?.id)??'your selected coding app';
+   out.push(...lines('Idle · no saved goals. Start a Mosaic Beta goal in '+hostName+'.',width));
+  }
  }else{
   const title=lines(`${status(goal.status)} · ${goal.objective}`,width);
   out.push(...(interactive?title.slice(0,2):title),...lines(`Goal ${goal.id} · ${goal.mode}`,width),'');

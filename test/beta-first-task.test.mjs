@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import {randomUUID} from 'node:crypto';
 import {access, mkdir, mkdtemp, readFile, realpath, rm, writeFile} from 'node:fs/promises';
 import {Readable} from 'node:stream';
 import os from 'node:os';
@@ -9,8 +10,9 @@ import {recordHostConnection, hostConnectionIdentity} from '../src/beta/hosts/co
 import {locations, privateDirectories, saveJson} from '../src/beta/files.mjs';
 import {configuredPolicies} from '../src/beta/settings.mjs';
 import {Coordinator} from '../src/harness/coordinator.mjs';
-import {git} from '../src/project/process.mjs';
+import {command, git} from '../src/project/process.mjs';
 import {Dispatcher} from '../src/harness/tools.mjs';
+import {Worker} from '../src/harness/worker.mjs';
 import {ProviderRegistry} from '../src/harness/providers/registry.mjs';
 import {sourceClosure} from '../scripts/lib/beta-archive.mjs';
 import {repository, repositoryBytes} from './fixtures/mosaic-assignment/repository.mjs';
@@ -23,7 +25,7 @@ const profile = id => ({
   maxContextTokens: null, maxOutputTokens: 4096, concurrency: 1, capacityGroup: 'shared', credentialRef: null, streaming: false,
 });
 
-async function fixture(t, providers = [], native) {
+async function fixture(t, providers = [], native, checksFactory) {
   const root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'mosaic-first-task-test-')));
   t.after(() => rm(root, {recursive: true, force: true}));
   const home = path.join(root, 'home');
@@ -45,14 +47,16 @@ async function fixture(t, providers = [], native) {
     ...(providers.length ? {providerRegistry: ProviderRegistry({profiles: providers}), configuredPolicies: configuredPolicies(settings)} : {}),
   });
   t.after(() => c.close());
-  const dispatcher = new Dispatcher({c, config: {beta: true}});
+  const config = {beta: true, ...c.executionConfig};
+  const worker = checksFactory ? new Worker({c, config, checksFactory}) : undefined;
+  const dispatcher = new Dispatcher({c, worker, config});
   const calls = [];
   const invoke = (name, input) => {
     calls.push(name);
     return dispatcher.invoke(name, input);
   };
   const env = {PATH: '/usr/bin:/bin', HOME: home, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null'};
-  return {root, env, paths, c, invoke, calls, settings};
+  return {root, env, paths, c, dispatcher, invoke, calls, settings};
 }
 
 const answers = () => ['codex-only', 'Add CSV export', 'Every row is exported', 'src/, checks/', 'src/', 'node checks/verify.mjs'];
@@ -124,8 +128,8 @@ test('guided task prepares an exact draft from the current Git project and print
   });
   assert.equal(goal.manifest.limits.hours, 1);
   assert.equal(goal.manifest.limits.maxTasks, 1);
-  assert.equal(goal.manifest.limits.reviewAgentRuns, 1);
-  assert.equal(goal.manifest.limits.taskLimits.coding.reviews, 1);
+  assert.equal(goal.manifest.limits.reviewAgentRuns, 2);
+  assert.equal(goal.manifest.limits.taskLimits.coding.reviews, 2);
   assert.match(io.read(), /Last bridge registry call/);
   assert.match(io.read(), /Cursor/);
   assert.match(io.read(), /goal_get/);
@@ -139,6 +143,69 @@ test('guided task prepares an exact draft from the current Git project and print
   assert.deepEqual(await repositoryBytes(repo.root), before);
   await assert.rejects(access(repo.marker), {code: 'ENOENT'});
 });
+
+test('one guided assignment can receive a revise verdict and then be accepted',
+  {skip: process.platform !== 'darwin' || process.arch !== 'arm64'}, async t => {
+    const native = await artifact();
+    t.after(() => rm(native.root, {recursive: true, force: true}));
+    // This source test exercises coordinator state; the installed walkthrough runs native containment.
+    const checksFactory = workspace => ({
+      backendIdentity: {id: 'darwin-seatbelt', revision: 2},
+      verify: async () => ({fixture: true}),
+      run: checks => Promise.all(checks.map(async check => {
+        const result = await command(check.argv, {cwd: workspace.root});
+        return {...result, id: check.id, argv: check.argv, passed: result.code === 0, screenshots: []};
+      })),
+    });
+    const f = await fixture(t, [], native, checksFactory);
+    const repo = await repository(f);
+    await writeFile(path.join(repo.root, 'checks/verify.mjs'),
+      "import {exportCsv} from '../src/export.mjs'; if (!exportCsv().includes('1,A')) process.exit(1);\n");
+    await repo.git('add', 'checks/verify.mjs');
+    await repo.git('commit', '-m', 'Verify the exported fixture row');
+    assert.equal(await runFirstTask(f.paths, [repo.root], {...terminal(answers()), invoke: f.invoke}), 0);
+    const [goal] = f.c.store.all('goal');
+    const mutate = (name, input) => f.invoke(name, {...input, idempotencyKey: randomUUID()});
+    const operation = async (name, input) => {
+      const started = await mutate(name, input);
+      await f.dispatcher.whenIdle();
+      const saved = await f.invoke('operation_get', {operationId: started.id});
+      assert.equal(saved.status, 'completed', saved.error);
+      return saved.result;
+    };
+    await mutate('goal_activate', {goalId: goal.id, hash: goal.hash});
+    const submitted = await mutate('task_submit', {goalId: goal.id, task: {
+      submissionId: 'guided-export', actor: 'codex', kind: 'coding',
+      objective: goal.manifest.objective, acceptance: goal.manifest.acceptance,
+    }});
+    const taskId = submitted.id;
+    const checkAndReview = async (source, decision, feedback) => {
+      const started = await operation('native_start', {taskId, layout: 'candidate_v1'});
+      await writeFile(path.join(started.native.worktree, 'src/export.mjs'), source);
+      const checked = await operation('native_finish', {taskId, summary: feedback});
+      assert.equal(checked.status, 'awaiting_review');
+      assert.equal(checked.result.checks.length, 1);
+      assert.equal(checked.result.checks[0].passed, true);
+      const inbox = await f.invoke('review_inbox', {goalId: goal.id});
+      const item = inbox.items.find(row => row.taskId === taskId);
+      assert.equal(item.reviewer.hostId, 'cursor');
+      const ticket = await mutate('review_reserve', item.binding);
+      const reviewed = await mutate('review_submit', {...item.binding, ticketId: ticket.ticketId,
+        verdict: {decision, feedback, findings: []}});
+      return {started, reviewed};
+    };
+    const first = await checkAndReview('export const exportCsv = () => "id,name\\n1,A";\n',
+      'revise', 'Add the missing final newline.');
+    assert.equal(first.reviewed.status, 'codex_ready');
+    const second = await checkAndReview('export const exportCsv = () => "id,name\\n1,A\\n";\n',
+      'accept', 'The exported row ends with a newline.');
+    assert.equal(second.started.id, taskId);
+    assert.equal(second.started.deadline, first.started.deadline);
+    assert.equal(second.reviewed.status, 'ready_to_integrate');
+    assert.equal(f.c.getTask(taskId).reviews, 2);
+    assert.equal(f.c.getGoal(goal.id).hash, goal.hash);
+    assert.equal(f.c.store.db.prepare('SELECT count(*) AS n FROM requests').get().n, 0);
+  });
 
 for (const kind of ['dirty', 'unborn']) {
   test(`guided task leaves a ${kind} explicit Git project intact`, async t => {
@@ -231,7 +298,7 @@ test('preset worker, literal checks and overnight preflight are recorded only in
   assert.equal(goal.manifest.mode.id, 'overnight_review');
   assert.equal(goal.manifest.mode.version, 2);
   assert.equal(goal.manifest.reviewPolicy.source, 'host');
-  assert.equal(goal.manifest.limits.reviewAgentRuns, 1);
+  assert.equal(goal.manifest.limits.reviewAgentRuns, 2);
   assert.equal(goal.manifest.providerPolicy.defaultWorkerId, 'project-worker');
   assert.equal(goal.manifest.providerPolicy.plannerWorkerId, 'default-worker');
   assert.equal(goal.manifest.routingPolicy.defaultWorkerId, 'project-worker');
@@ -263,7 +330,7 @@ test('the package source closure includes the scripted demo runner', async () =>
   assert.ok(sources.includes('src/harness/outcomes/demo.mjs'));
 });
 
-for (const [mode, reviewerRuns] of [['collaborative', 1], ['deepseek_only', 0]]) {
+for (const [mode, reviewerRuns] of [['collaborative', 2], ['deepseek_only', 0]]) {
   test(`guided ${mode} budgets match the saved review policy`, async t => {
     const f = await fixture(t, [profile('default-worker')]);
     const repo = await repository(f);
