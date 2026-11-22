@@ -30,6 +30,10 @@ export function executionFields(manifest){return manifest.executionPolicy===unde
 export function executionIdentity(manifest){return normalizeExecutionPolicy(manifest.executionPolicy)??{version:1,backend:'codex-sandbox',backendRevision:1};}
 export function sameExecutionBackend(a,b){const x=executionIdentity(a),y=executionIdentity(b);return x.backend===y.backend&&x.backendRevision===y.backendRevision&&x.runtimeFingerprint===y.runtimeFingerprint;}
 export function assertExecutionAvailable(manifest,config={}){
+ if(process.platform==='win32')throw new Pause('Windows protected coding is in development. No execution backend has passed Windows filesystem isolation qualification.','isolation');
+ return assertExecutionPrerequisites(manifest,config);
+}
+export function assertExecutionPrerequisites(manifest,config={}){
  const {codexPath='codex'}=config;
  const policy=normalizeExecutionPolicy(manifest.executionPolicy);
  // Native revision 1 has no safe arbitrary-process containment. This gate is

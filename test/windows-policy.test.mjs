@@ -119,3 +119,9 @@ test('Windows reboot recovery accepts only two different kernel boot session ide
   owner.bootId = 'win32:' + randomUUID();
   assert.equal(owner.resolve(row, 'new_boot').status, 'quiescent');
 });
+
+test('every protected Windows policy is held before a check can start', {skip:process.platform!=='win32'}, () => {
+  for(const policy of [undefined,windows,{version:1,backend:'codex-sandbox',backendRevision:1}]) {
+    assert.throws(()=>assertExecutionAvailable({executionPolicy:policy}), {code:'isolation',message:/filesystem isolation qualification/});
+  }
+});

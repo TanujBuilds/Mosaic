@@ -1,3 +1,6 @@
+import {execFile} from 'node:child_process';
+import {promisify} from 'node:util';
+import {windowsGitProcess} from '../src/project/windows-git.mjs';
 import path from 'node:path';
 import {createHash} from 'node:crypto';
 import {mkdir, readFile, writeFile} from 'node:fs/promises';
@@ -22,7 +25,12 @@ export async function packageWindowsCore({payload, manifestHash, destination}) {
   const inputs = JSON.parse(bytes);
   if (inputs.layout !== 'windows-beta-v1' || inputs.platform !== 'win32' || inputs.arch !== 'x64') throw Error('Invalid Windows runtime inputs');
   validatePackagePaths(inputs.files.map(entry => entry.path));
-  const core = await packageHarness({sourceRoot: repository, destination, dependencies: true});
+  const git = windowsGitProcess();
+  if (!git) throw Error('Build core with a trusted Git for Windows installation');
+  const exec = promisify(execFile);
+  const readGit = async (cwd,...args) => (await exec(git.executable,['-C',cwd,...args],
+    {cwd:git.cwd,env:git.env,timeout:30_000,windowsHide:true})).stdout.trim();
+  const core = await packageHarness({sourceRoot: repository, destination, dependencies: true, readGit});
   if (core.sourceDirty) throw Error('Build core from a clean committed checkout');
   async function add(relative, data) {
     const filename = path.join(destination, relative);

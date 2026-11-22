@@ -1,6 +1,6 @@
 import {normalizeSettings,readSettings,readSettingsSync,readCredentials,validateSettingsCredentials,validateSettingsCredentialsSync,configuredPolicies,assertMigrationStartupReady} from './settings.mjs';
 import {ProviderRegistry} from '../harness/providers/registry.mjs';
-import {normalizeExecutionPolicy,assertExecutionAvailable} from '../harness/execution.mjs';
+import {normalizeExecutionPolicy,assertExecutionPrerequisites} from '../harness/execution.mjs';
 import {hostRegistry,normalizeHostSettings} from './hosts/index.mjs';
 import {existsSync} from 'node:fs';
 import {canonical} from '../harness/contracts.mjs';
@@ -178,7 +178,7 @@ export async function serveBeta(paths,settings){
  const startupSettingsHash=hash(canonical(settings));
  const portablePolicies=settings.schema===2?configuredPolicies(settings):undefined;
  if(settings.schema===2)settings={...settings,executionPolicy:{version:1,...settings.execution}};
- assertExecutionAvailable(settings,{codexPath:settings.codexPath,nativeCheckRuntime:settings.nativeCheckRuntime});
+ assertExecutionPrerequisites(settings,{codexPath:settings.codexPath,nativeCheckRuntime:settings.nativeCheckRuntime});
  await privateDirectories(paths);
  process.umask(0o077);
  const expectedWorker=canonical(settings.schema===2?{providers:settings.providers,defaults:settings.defaults,capacityGroups:settings.capacityGroups,serviceMaxConcurrentTasks:settings.serviceMaxConcurrentTasks}:settings.worker??null),expectedExecution=configuredExecutionIdentity(settings);
@@ -194,6 +194,6 @@ export async function serveBeta(paths,settings){
   throw Error('Configured API worker, credentials, host or execution backend settings changed or are unsafe. Restart Mosaic Beta safely and obtain a new goal approval.');
  };
  const providerRegistry=settings.schema===2&&settings.providers.length?ProviderRegistry({profiles:settings.providers,credentialResolver:async ref=>(await validateSettingsCredentials(paths,settings)).entries[ref]}):undefined;
- return serve({root:paths.state,port:0,headless:true,startupGuard:work=>withLock(paths,async()=>{const current=await readSettings(paths);if(hash(canonical(current))!==startupSettingsHash)throw Error('Settings changed before startup; retry with the current private settings.');await assertBetaStartupReady(paths,current);assertExecutionAvailable(settings,{codexPath:settings.codexPath,nativeCheckRuntime:settings.nativeCheckRuntime});return work();}),canStop:c=>assertIdle(c.store.db),verifyCurrentWorker,
+ return serve({root:paths.state,port:0,headless:true,startupGuard:work=>withLock(paths,async()=>{const current=await readSettings(paths);if(hash(canonical(current))!==startupSettingsHash)throw Error('Settings changed before startup; retry with the current private settings.');await assertBetaStartupReady(paths,current);assertExecutionPrerequisites(settings,{codexPath:settings.codexPath,nativeCheckRuntime:settings.nativeCheckRuntime});return work();}),canStop:c=>assertIdle(c.store.db),verifyCurrentWorker,
   runtimeConfig:{beta:true,...(settings.schema===2?{providerRegistry,serviceMaxConcurrentTasks:settings.serviceMaxConcurrentTasks,configuredPolicies:portablePolicies}:{}),hostId:settings.host?.id??(settings.codexPath?'codex':undefined),hostRegistry,codexPath:settings.codexPath,nativeCheckRuntime:settings.nativeCheckRuntime,executionPolicy:settings.executionPolicy,workerProfile:settings.worker?.profile,workerApiKey:settings.worker?.apiKey}});
 }

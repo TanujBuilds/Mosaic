@@ -149,6 +149,7 @@ jobs:
           if (-not (Test-Path -LiteralPath $devCmd -PathType Leaf)) { throw 'VsDevCmd.bat is unavailable.' }
           "MOSAIC_VS_DEV_CMD=$devCmd" >> $env:GITHUB_ENV
           "MOSAIC_PACKAGE_DIR=$(Join-Path $env:RUNNER_TEMP 'Mosaic Windows candidate')" >> $env:GITHUB_ENV
+          "MOSAIC_UPDATE_FIXTURE_DIR=$(Join-Path $env:RUNNER_TEMP 'Mosaic Windows update fixture')" >> $env:GITHUB_ENV
           "MOSAIC_PWSH=$((Get-Command pwsh.exe -CommandType Application).Source)" >> $env:GITHUB_ENV
           $os = Get-CimInstance Win32_OperatingSystem
           Write-Output "$($os.Caption) $($os.Version) $($os.OSArchitecture)"
@@ -161,9 +162,19 @@ jobs:
           if errorlevel 1 exit /b 1
           node.exe scripts\package-windows-beta.mjs --version "%MOSAIC_PACKAGE_VERSION%" --output "%MOSAIC_PACKAGE_DIR%"
           if errorlevel 1 exit /b 1
+          if not exist distribution\windows\maintenance.mjs exit /b 0
+          node.exe scripts\package-windows-beta.mjs --version 0.1.0-beta.230 --output "%MOSAIC_UPDATE_FIXTURE_DIR%"
+          if errorlevel 1 exit /b 1
       - name: Validate install, interruption, recovery and tamper rejection
         shell: pwsh
-        run: node .github/scripts/windows-package-smoke.mjs "$env:MOSAIC_PACKAGE_DIR" "$env:MOSAIC_PWSH"
+        run: |
+          $arguments = @('.github/scripts/windows-package-smoke.mjs', $env:MOSAIC_PACKAGE_DIR, $env:MOSAIC_PWSH)
+          if (Test-Path -LiteralPath 'distribution/windows/maintenance.mjs' -PathType Leaf) {
+            $arguments += $env:MOSAIC_UPDATE_FIXTURE_DIR
+          } else {
+            'Installed update, rollback and uninstall: pending maintenance implementation.' >> $env:GITHUB_STEP_SUMMARY
+          }
+          node @arguments
       - name: Upload verified local candidate bundle for staging
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:

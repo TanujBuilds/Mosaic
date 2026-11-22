@@ -9,7 +9,7 @@ import {setTimeout as delay} from 'node:timers/promises';
 assert.equal(process.platform, 'win32');
 assert.equal(process.arch, 'x64');
 assert.equal(process.env.GITHUB_ACTIONS, 'true', 'Use a fresh GitHub-hosted Windows runner account');
-const [directory, pwsh] = process.argv.slice(2);
+const [directory, pwsh, updateDirectory] = process.argv.slice(2);
 const candidate = JSON.parse(await readFile(path.join(directory, 'candidate.json'), 'utf8'));
 assert.equal(candidate.kind, 'mosaic-windows-beta-candidate');
 assert.match(candidate.version, /^\d+\.\d+\.\d+-beta\.\d+$/);
@@ -73,10 +73,10 @@ async function done(run, expectation) {
 }
 
 const literal = text => "'" + text.replaceAll("'", "''") + "'";
-function install(shell, file, label) {
+function install(shell, file, label, release = candidate) {
   const source = '$ErrorActionPreference = \'Stop\'; & ([ScriptBlock]::Create([IO.File]::ReadAllText(' + literal(bootstrap) +
-    '))) -Version ' + literal(candidate.version) + ' -Archive ' + literal(file) +
-    ' -ArchiveSha256 ' + literal(candidate.archiveSha256) + ' -NoGuide';
+    '))) -Version ' + literal(release.version) + ' -Archive ' + literal(file) +
+    ' -ArchiveSha256 ' + literal(release.archiveSha256) + ' -NoGuide';
   return launch(shell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand',
     Buffer.from(source, 'utf16le').toString('base64')], label);
 }
@@ -150,3 +150,38 @@ try {
 } finally { await writeFile(sample, original); }
 await done(install(pwsh, archive, 'PowerShell 7 reopens the verified installed package'), 0);
 console.log('Verified local package install, extraction interruption, rerun, and tamper rejection in the hosted Windows profile.');
+
+if (updateDirectory) {
+  const update = JSON.parse(await readFile(path.join(updateDirectory, 'candidate.json'), 'utf8'));
+  const updateArchive = path.join(updateDirectory, update.archiveName);
+  assert.equal(update.sourceCommit, candidate.sourceCommit);
+  assert.equal(update.bootstrapSha256, candidate.bootstrapSha256);
+  assert.equal(update.nativeFingerprint, candidate.nativeFingerprint, 'The update fixture must share the check runtime identity');
+  assert.equal(await sha256(updateArchive), update.archiveSha256);
+  await done(install(pwsh, updateArchive, 'Install the compatible test update', update), 0);
+  assert.equal(await readFile(pointer, 'utf8'), update.version + '\n');
+  const updateReceipt = JSON.parse(await readFile(installReceipt, 'utf8'));
+  assert.equal(updateReceipt.launcherHash, receipt.launcherHash);
+
+  await done(launch(launcher, ['rollback', candidate.version], 'Rollback to the verified older release'), 0);
+  assert.deepEqual(JSON.parse(await readFile(installReceipt, 'utf8')), receipt);
+  assert.equal(await readFile(pointer, 'utf8'), candidate.version + '\n');
+  await done(install(pwsh, updateArchive, 'Reinstall the verified test update', update), 0);
+  assert.equal(await readFile(pointer, 'utf8'), update.version + '\n');
+  // Resume the exact durable state left after an authorized selection was recorded.
+  await writeFile(lock, JSON.stringify({schema: 1, operation: 'rollback', previous: updateReceipt, target: receipt}), {flag: 'wx'});
+  await done(launch(launcher, ['recover'], 'Recover the saved rollback selection'), 0);
+  assert.equal(await readFile(pointer, 'utf8'), candidate.version + '\n');
+  assert.equal(await exists(lock), false);
+
+  await done(launch(launcher, ['uninstall'], 'Deactivate the owned Windows installation'), 0);
+  assert.equal(await exists(pointer), false);
+  assert.equal(await exists(lock), false);
+  assert.ok(await exists(version), 'Uninstall must retain verified releases');
+  assert.deepEqual(JSON.parse(await readFile(path.join(root, 'config', 'installation-disabled.json'), 'utf8')), receipt);
+  await done(install(windowsPowerShell, archive, 'Reinstall the retained release after uninstall'), 0);
+  assert.equal(await readFile(pointer, 'utf8'), candidate.version + '\n');
+  assert.equal(await sha256(launcher), receipt.launcherHash);
+  assert.equal(await exists(path.join(root, 'config', 'installation-disabled.json')), false);
+  console.log('Verified compatible update, rollback, saved-intent recovery, uninstall, and retained release reinstall.');
+}

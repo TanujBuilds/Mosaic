@@ -1,7 +1,7 @@
 import path from 'node:path';
 import {rm} from 'node:fs/promises';
 import {canonical} from '../harness/contracts.mjs';
-import {assertExecutionAvailable} from '../harness/execution.mjs';
+import {assertExecutionPrerequisites} from '../harness/execution.mjs';
 import {ProviderRegistry} from '../harness/providers/registry.mjs';
 import {digest} from '../harness/contracts.mjs';
 import {normalizeSettings,readCredentials,readSettings,configuredPolicies,validateSettingsCredentials} from './settings.mjs';
@@ -17,7 +17,7 @@ const yes=value=>/^y(es)?$/i.test(value);
 const credentialFile=paths=>path.join(paths.configDir,'credentials.json');
 const receiptFile=paths=>path.join(paths.configDir,'portable-binding.json');
 const stagedCredentialsFile=paths=>path.join(paths.configDir,'setup-credentials.json');
-const checkExecution=settings=>assertExecutionAvailable({executionPolicy:{version:1,...settings.execution}},settings);
+const checkExecution=settings=>assertExecutionPrerequisites({executionPolicy:{version:1,...settings.execution}},settings);
 async function hostIo(paths,{codexRegistrations,codexPath}={}){
  const cli=codexRegistrations;
  return {async read(target){if(!paths.isolated)throw Error('Real host registration is manual; no conditional host mutation is available');return cli?{registration:await cli.get(codexPath)}:await jsonFile(target)??{};},
@@ -206,7 +206,7 @@ export async function setupPortable(paths,{ask,choose,output,settings:provided,e
    await assertCurrentSetup();
    return result;
   });
-  await (verifyExecution??(s=>assertExecutionAvailable({executionPolicy:{version:1,...s.execution}},s)))(settings);
+  await (verifyExecution??(s=>assertExecutionPrerequisites({executionPolicy:{version:1,...s.execution}},s)))(settings);
   const adapter=getHost(settings.host.id),manualHost=!paths.isolated,io=await hostIo(paths,{...(settings.host.id==='codex'?{codexRegistrations,codexPath:settings.codexPath}:{})}),existing=manualHost?{}:await io.read(adapter.previewRegistration({paths,launcher:paths.launcher}).target);
   let hostPreview;const existingReceipt=await io.readReceipt(path.join(paths.configDir,`host-${settings.host.id}-binding.json`));if(existingReceipt&&!manualHost){const selected=settings.host.id==='codex'?existing.registration:existing.mcpServers?.['mosaic-beta'];if(fingerprint(selected??null)!==existingReceipt.entryHash)throw Error('Owned host entry was customized; preserve it before setup');const clean=structuredClone(existing);if(settings.host.id==='codex')clean.registration=null;else {delete clean.mcpServers['mosaic-beta'];if(!existingReceipt.hadMcpServers&&!Object.keys(clean.mcpServers).length)delete clean.mcpServers;}hostPreview=adapter.previewRegistration({paths,launcher:paths.launcher,existing:clean});hostPreview.resumeOwned=true;delete hostPreview.resumeOwned;}else hostPreview=adapter.previewRegistration({paths,launcher:paths.launcher,existing});
   await withCurrentSetup(()=>output.write('\n'+formatPortableSetupSummary(settings,{manualHost,compact})+'\n'));
