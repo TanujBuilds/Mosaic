@@ -100,8 +100,8 @@ test('native Windows Git binds exact checked bytes and executable modes through 
   const {git, gitBytes, gitSync, windowsIndexModes} = await load('project/git.mjs');
   const {Workspace} = await load('project/workspace.mjs');
   const {Journal} = await load('project/journal.mjs');
-  const {readBehavioralFileModes} = await load('harness/behavioral-validation.mjs');
   const {Integration} = await load('harness/integration.mjs');
+  const {readBehavioralFileModes} = await load('harness/behavioral-validation.mjs');
   const repo = path.join(root, 'Mosaic Project');
   await mkdir(repo);
   assert.equal(await readiness.windowsGitReady(), true);

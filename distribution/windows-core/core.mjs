@@ -1,3 +1,4 @@
+import os from 'node:os';
 import path from 'node:path';
 import {fileURLToPath, pathToFileURL} from 'node:url';
 
@@ -19,6 +20,14 @@ export async function main(args) {
   for (const directory of [paths.root, paths.state]) {
     await windowsFile('mkdir',directory);
     await windowsFile('private-directory',directory);
+  }
+  if (args.length===1 && args[0]==='connect') {
+    const {installCoreSkills}=await import('./skills.mjs');
+    const skills=await installCoreSkills({home:os.homedir(),version,read:file=>windowsFile('read',file,{max:1024*1024})});
+    const server={command:path.join(process.env.SystemRoot,'System32/WindowsPowerShell/v1.0/powershell.exe'),
+      args:['-NoLogo','-NoProfile','-ExecutionPolicy','Bypass','-File',path.join(paths.root,'mosaic-core.ps1'),'mcp']};
+    process.stdout.write('Installed core skills in '+path.dirname(skills[0])+'.\nIn your app, inspect the existing frontier-harness MCP server. If the name is free, add this stdio configuration and invoke registry_list.\n'+JSON.stringify({mcpServers:{'frontier-harness':server}},null,2)+'\n');
+    return;
   }
   const {main,serve} = await load('src/harness/cli.mjs');
   if (args[0] === 'serve') {

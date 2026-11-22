@@ -44,7 +44,7 @@ export async function packageWindowsCore({payload, manifestHash, destination}) {
     if (expected?.sha256 !== sha256(data) || expected.bytes !== data.length) throw Error('Native input checksum differs: ' + relative);
     await add(relative, data);
   }
-  for (const relative of ['LICENSE', 'THIRD_PARTY_NOTICES.md','distribution/windows-core/core.mjs','distribution/windows-core/mosaic-core.ps1']) {
+  for (const relative of ['LICENSE', 'THIRD_PARTY_NOTICES.md','distribution/windows-core/core.mjs','distribution/windows-core/mosaic-core.ps1','distribution/windows-core/skills.mjs','distribution/windows-core/skill-entry.mjs']) {
     await add(relative, await readFile(path.join(repository, relative)));
   }
   core.platform = 'win32';
