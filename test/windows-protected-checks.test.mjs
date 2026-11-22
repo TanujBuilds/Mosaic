@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { randomUUID } from 'node:crypto';
-import { copyFile, lstat, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
@@ -86,7 +86,10 @@ async function fixture(t) {
     helper && path.isAbsolute(helper),
     'set MOSAIC_TEST_WINDOWS_SUPERVISOR to the compiled, absolute helper executable',
   );
-  const dir = await mkdtemp(path.join(os.tmpdir(), 'Mosaic protected checks '));
+  // Windows may expose TEMP through an 8.3 alias. Establish the physical
+  // test root before constructing the exact paths used for approvals.
+  const temporaryParent = await realpath(process.env.RUNNER_TEMP ?? os.tmpdir());
+  const dir = await mkdtemp(path.join(temporaryParent, 'Mosaic protected checks '));
   t.after(() => rm(dir, { recursive: true, force: true, maxRetries: 5 }));
   const artifacts = path.join(dir, 'artifact'),
     journal = path.join(dir, 'journal'),
