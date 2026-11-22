@@ -9,7 +9,7 @@ import { repairIntegration,assertPendingRepair } from './integration-repair.mjs'
 import { NativeCandidates } from './native-candidates.mjs';
 import { Journal } from '../project/journal.mjs';
 import { Workspace,inspectRepository } from '../project/workspace.mjs';
-import {approvedChecks,executionFields} from './execution.mjs';
+import {approvedChecks,assertExecutionAvailable,executionFields} from './execution.mjs';
 import { matches,protectedPath,relativePath,secretPath,digest as fileDigest,Pause } from '../project/contracts.mjs';
 import { git,gitBytes } from '../project/process.mjs';
 import { windowsIndexModes } from '../project/git.mjs';
@@ -533,6 +533,7 @@ export class Integration {
  async startNative(input,key){return this.effect(key,{op:'native.start',...input},()=>input.layout==='candidate_v1'?this.nativeCandidates.start(input.taskId,{},input.registration):this.beginNative(input.taskId));}
  async beginNative(taskId,extra={}){
   const t=this.c.getTask(taskId),g=this.c.store.get('goal',t.goalId);this.c.liveGoal(g);this.c.verifyCurrentWorker?.();
+  if(isWindows)assertExecutionAvailable(g.manifest,this.config);
   this.c.liveTask(t,{allowStopped:!!extra.takeoverReason});
   if(!g.manifest.mode.actors.includes('codex')||t.spec.kind!=='coding')throw Error('Mode prohibits native Codex execution');
   if(g.manifest.reviewPolicy)throw Error('Versioned review requires an isolated candidate_v1 native layout');
@@ -551,6 +552,7 @@ export class Integration {
   const t=this.c.getTask(input.taskId);text(input.reason,'takeover reason');
   if(t.owner||['running','uncertain'].includes(t.status))throw Error('Stop and verify worker quiescence before takeover');
   const g=this.c.store.get('goal',t.goalId);if(!g.manifest.mode.actors.includes('codex'))throw Error('Mode prohibits takeover');
+  if(isWindows)assertExecutionAvailable(g.manifest,this.config);
   const source=await this.candidate(t,{original:true}),release=await source.journal.lock();try{
    await source.workspace.recover();const frozen=await source.workspace.snapshot(),changes=await this.changes(source.workspace,source.manifest.baseCommit,t.spec.permissions.writePaths);
    const extra={workerWorktree:source.workspace.root,workerSnapshot:frozen,workerManifest:source.manifest,workerJournalRoot:source.journal.root,takeoverReason:input.reason};
