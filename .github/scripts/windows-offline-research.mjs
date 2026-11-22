@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import {execFile} from 'node:child_process';
 import {createHash, randomBytes, randomUUID} from 'node:crypto';
-import {appendFile, mkdir, mkdtemp, readFile, rm, symlink, writeFile} from 'node:fs/promises';
+import {appendFile, mkdtemp, readFile, rm, symlink, writeFile} from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
@@ -19,6 +19,7 @@ if (process.env.GITHUB_ACTIONS === 'true') {
 }
 const exec = promisify(execFile);
 const researchCli = fileURLToPath(new URL('../../scripts/mosaic-research-mission.mjs', import.meta.url));
+const pythonDriver = fileURLToPath(new URL('../../src/harness/research-missions/fixture-driver.py', import.meta.url));
 const recipeCli = fileURLToPath(new URL('../../scripts/mosaic-workflow-recipes.mjs', import.meta.url));
 const decode = async file => JSON.parse(await readFile(file, 'utf8'));
 const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -42,6 +43,19 @@ async function cli(script, ...args) {
 async function research() {
   const target = path.join(scratch, "worker's mission");
   const demo = output => cli(researchCli, 'demo', '--output', output);
+  if (windows) {
+    await assert.rejects(demo(target), /Windows protected coding is in development/);
+    await assert.rejects(demo(target), /must be a fresh directory/);
+    const link = path.join(scratch, 'alias');
+    await symlink(target, link, 'junction');
+    await assert.rejects(demo(path.join(link, 'another')), /Unsafe output parent or symlink/);
+    const c = new Coordinator({root:path.join(target, 'coordinator')});
+    try {
+      assert.deepEqual(c.store.all('goal').map(goal => goal.status), ['draft']);
+      assert.equal(c.store.all('task').length, 0);
+    } finally { c.close(); }
+    return {status:'held_at_goal_activation', tasks:0, freshOutputGuard:true, reparsePointGuard:true};
+  }
   const result = await demo(target);
   assert.equal(result.fixture, true);
   assert.deepEqual(result.statuses, ['awaiting_review', 'revision_needed', 'awaiting_review', 'accepted', 'partial']);
@@ -69,11 +83,74 @@ async function research() {
   assert.match(incomplete.collectionReason, /cannot repair/i);
   await assert.rejects(demo(target), /must be a fresh directory/);
   const link = path.join(scratch, 'alias');
-  await symlink(target, link, windows ? 'junction' : 'dir');
+  await symlink(target, link, 'dir');
   await assert.rejects(demo(path.join(link, 'another')), /Unsafe output parent or symlink/);
   return {statuses:result.statuses, checks:transcript.checks, sourceBasis:transcript.fixture.sourceBasis,
     reviewer:transcript.fixture.reviewer, liveValidation:transcript.fixture.liveValidation,
     transcriptSha256:sha256(await readFile(file)), sourceSha256:accepted.sourcesHash, reportSha256:accepted.reportHash};
+}
+
+async function pythonArtifacts() {
+  const root = path.join(scratch, 'Python artifact fixture');
+  const python = process.env.FRONTIER_TEST_PYTHON ?? (windows ? 'python.exe' : 'python3');
+  async function drive(args, packet) {
+    const child = exec(python, ['-ISB', '-X', 'utf8', pythonDriver, root, ...args], {
+      cwd:scratch, timeout:15000, maxBuffer:1024 * 1024, windowsHide:true,
+    });
+    child.child.stdin.on('error', () => {});
+    child.child.stdin.end(packet === undefined ? undefined : JSON.stringify(packet));
+    return JSON.parse((await child).stdout);
+  }
+  const rpc = packet => drive(['rpc'], packet);
+  const manifest = {mode:'fixture', schema:2, submission_id:'windows-offline-python',
+    question:'How do the invented queues recover after process restart?',
+    not_after:Math.floor(Date.now() / 1000) + 120, collaboration:{supervisor:'codex', max_questions:0},
+    scope:{include_domains:['fixture.invalid']},
+    limits:{seconds:120, model_calls:4, searches:1, downloads:1},
+    research_policy:{version:3, finish:'selectors_only', discovery:'search_required',
+      repairContextVersion:1, correctionStrategy:'targeted_v1',
+      review:{version:1, role:'independent_operator', maxRounds:2, maxRevisions:1,
+        maxCorrectionModelCalls:2, rubricSha256:'b'.repeat(64)}}};
+  const prepared = await rpc({command:'prepare_manifest', manifest});
+  const job = await rpc({command:'submit', manifest:prepared.manifest, approved_hash:prepared.hash});
+  const request = (command, input) => rpc({command, job:job.id, ...input});
+  const initial = await drive(['initial', job.id]);
+  assert.equal(initial.status, 'awaiting_semantic_review');
+  const first = (await request('proposal_export')).descriptor;
+  const decide = async (candidate, label, decision, findings) => {
+    const binding = {candidateHash:candidate.candidateHash, rubricHash:candidate.rubricSha256};
+    const key = {...binding, idempotency_key:'reserve-' + label};
+    const ticket = await request('review_reserve', key);
+    assert.deepEqual(await request('review_reserve', key), {...ticket, dispatchRequired:false});
+    const verdict = {...binding, decision, findings, ticketId:ticket.id, coverage:candidate.units,
+      idempotency_key:'submit-' + label};
+    const accepted = await request('review_submit', verdict);
+    assert.deepEqual(await request('review_submit', verdict), accepted);
+  };
+  await decide(first, 'initial', 'revise', [{unit:'claims:C1', code:'lost_condition',
+    message:'Recovery requires a valid lease.', evidence:[]}]);
+  assert.equal((await drive(['correct', job.id])).status, 'awaiting_semantic_review');
+  const revised = (await request('proposal_export')).descriptor;
+  assert.equal(revised.assembly.baseCandidateHash, first.candidateHash);
+  assert.equal(revised.sourcesSha256, first.sourcesSha256);
+  assert.notEqual(revised.reportSha256, first.reportSha256);
+  await decide(revised, 'corrected', 'accept', []);
+  assert.equal((await drive(['finalize', job.id])).status, 'completed');
+  const packet = await request('export');
+  const collected = await drive(['collect'], packet);
+  assert.equal(collected.checksums_verified, true);
+  const hashes = {};
+  for (const [name, bytes] of Object.entries(packet.files)) {
+    const content = await readFile(path.join(collected.directory, name));
+    assert.deepEqual(content, Buffer.from(bytes, 'base64'));
+    hashes[name] = sha256(content);
+  }
+  const receipt = await decode(path.join(collected.directory, 'receipt.json'));
+  assert.equal(receipt.mode, 'fixture');
+  assert.equal(receipt.quality.accepted_candidate_hash, revised.candidateHash);
+  for (const [name, hash] of Object.entries(receipt.artifacts)) assert.equal(hashes[name], hash);
+  return {status:collected.status, modelSource:'scripted_fixture', reviewer:'simulated_independent_reviewer',
+    candidateSha256:revised.candidateHash, hashes};
 }
 
 async function preview() {
@@ -86,7 +163,8 @@ async function preview() {
     const goal = coordinator.prepareLegacyGoal({submissionId:'windows-offline-preview', environment:'fixture',
       mode:'collaborative', objective:'Preview invented fixture comparison',
       acceptance:['Keep research parked']}, 'fixture-prepare');
-    coordinator.activateGoal({goalId:goal.id, hash:goal.hash}, 'fixture-activate');
+    if (windows) assert.throws(() => coordinator.activateGoal({goalId:goal.id, hash:goal.hash}, 'fixture-activate'),
+      /Windows protected coding is in development/);
     const token = randomBytes(32).toString('hex');
     api = await startApi({dispatcher, token, headless:true});
     const connection = path.join(root, 'connection.json');
@@ -106,6 +184,8 @@ async function preview() {
     assert.equal(result.goalHash, goal.hash);
     assert.deepEqual(result.resolvedDefinition.tasks.map(task => task.kind), ['research']);
     assert.ok(result.diagnostics.some(row => row.code === 'research_parked'));
+    assert.ok(result.diagnostics.some(row => row.code === 'goal_inactive'));
+    assert.equal(coordinator.getGoal(goal.id).status, 'draft');
     assert.equal(coordinator.store.revision(), revision);
     assert.equal(coordinator.store.all('task').length, 0);
     const requests = coordinator.store.db.prepare('SELECT COUNT(*) AS count FROM requests').get().count;
@@ -119,7 +199,7 @@ async function preview() {
 }
 
 try {
-  const checks = {research, preview};
+  const checks = {research, preview, pythonArtifacts};
   const results = await Promise.allSettled(Object.values(checks).map(check => check()));
   const report = Object.fromEntries(Object.keys(checks).map((name, index) => {
     const result = results[index];
