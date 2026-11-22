@@ -27,7 +27,7 @@ function Get-PlainItem([string] $Path, [switch] $Directory) {
 }
 
 function Get-PlainDirectory([string] $Path) {
-    if (-not (Get-PlainItem $Path -Directory)) { [IO.Directory]::CreateDirectory($Path) | Out-Null }
+    Initialize-Root $Path
     return Get-PlainItem $Path -Directory
 }
 
@@ -39,7 +39,9 @@ function Assert-LocalPath([string] $Path) {
 }
 
 function Assert-PrivateRoot([string] $Path) {
-    $acl = Get-Acl -LiteralPath $Path
+    $directory = New-Object IO.DirectoryInfo($Path)
+    $acl = if ($PSVersionTable.PSEdition -eq 'Core') { [IO.FileSystemAclExtensions]::GetAccessControl($directory) }
+        else { $directory.GetAccessControl() }
     $owner = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
     if ($owner -ne $currentSid.Value) { throw 'Mosaic installation is owned by a different user.' }
     foreach ($rule in $acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])) {
@@ -59,7 +61,9 @@ function Initialize-Root([string] $Path) {
             $rule = New-Object Security.AccessControl.FileSystemAccessRule($sid, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
             $acl.AddAccessRule($rule)
         }
-        Set-Acl -LiteralPath $Path -AclObject $acl
+        $directory = New-Object IO.DirectoryInfo($Path)
+        if ($PSVersionTable.PSEdition -eq 'Core') { [IO.FileSystemAclExtensions]::SetAccessControl($directory, $acl) }
+        else { $directory.SetAccessControl($acl) }
     }
     Assert-PrivateRoot $Path
 }
@@ -324,7 +328,6 @@ try {
     $versions = (Get-PlainDirectory (Join-Path $root 'versions')).FullName
     $config = (Get-PlainDirectory (Join-Path $root 'config')).FullName
     $cache = (Get-PlainDirectory (Join-Path $root 'downloads')).FullName
-    foreach ($directory in @($bin, $versions, $config, $cache)) { Assert-PrivateRoot $directory }
     $target = Join-Path $versions $Version
     $launcher = Join-Path $bin 'mosaic.exe'
     $receiptPath = Join-Path $config 'installation.json'
