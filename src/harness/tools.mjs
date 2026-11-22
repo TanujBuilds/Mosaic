@@ -104,11 +104,13 @@ export class Dispatcher {
    ['native_release','releaseNative','Main host confirms native editing stopped and preserves partial files; reported stop alone is insufficient.',{reason:str},['reason']]
   ])add(name,description,{taskId:str,...extra},['taskId',...required],true,(i,k)=>{
    if(config.beta&&name==='task_integrate'&&!/^[a-f0-9]{64}$/.test(i.expectedIntegrationBinding??'')){
-    // Let an exact operation from an older release recover under its saved
-    // command. Store.command still verifies the original key and complete input.
     const saved=c.store.db.prepare('SELECT hash FROM commands WHERE key=?').get(k);
-    if(saved?.hash!==digest({op:'operation.launch',name,input:i}))throw Error('Exact owner integration binding is required. Refresh the owner action context.');
+    if(i.expectedIntegrationBinding!==undefined||saved?.hash!==digest({op:'operation.launch',name,input:i}))
+     throw Error('Exact owner integration binding is required. Refresh the owner action context.');
+    return this.launch(name,i,k,operationId=>this.worker.integration.accept(i,`effect-${k}`,{operationId,legacy:true}));
    }
+   if(config.beta&&name==='task_integrate')
+    return this.launch(name,i,k,operationId=>this.worker.integration.accept(i,`effect-${k}`,{operationId}));
    return this.launch(name,i,k,()=>this.worker.integration[method](i,`effect-${k}`));
   });
   if(!config.beta){
@@ -178,6 +180,6 @@ export class Dispatcher {
  launch(name,input,key,action){
   const operation=this.c.store.command(key,{op:'operation.launch',name,input},()=>{const record={id:randomUUID(),name,input,key,status:'pending',taskId:input.taskId??null,createdAt:this.c.now()};this.c.store.put('operation',record);return record;});
   const current=this.c.store.get('operation',operation.id);if(!['pending','retryable'].includes(current.status)||this.running.has(current.id))return current;
-  this.running.add(current.id);const run=Promise.resolve().then(action).then(result=>this.c.store.tx(()=>{this.c.store.put('operation',{...current,status:'completed',result,finishedAt:this.c.now()});}),error=>this.c.store.tx(()=>{this.c.store.put('operation',{...current,status:error.executionOutcome==='unknown'?'uncertain':error.retryable?'retryable':'failed',error:error.message,finishedAt:this.c.now()});})).finally(()=>{this.running.delete(current.id);this.promises.delete(current.id);});this.promises.set(current.id,run);return current;
+  this.running.add(current.id);const run=Promise.resolve().then(()=>action(current.id)).then(result=>this.c.store.tx(()=>{this.c.store.put('operation',{...current,status:'completed',result,finishedAt:this.c.now()});}),error=>this.c.store.tx(()=>{this.c.store.put('operation',{...current,status:error.executionOutcome==='unknown'?'uncertain':error.retryable?'retryable':'failed',error:error.message,finishedAt:this.c.now()});})).finally(()=>{this.running.delete(current.id);this.promises.delete(current.id);});this.promises.set(current.id,run);return current;
  }
 }

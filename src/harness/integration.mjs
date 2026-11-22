@@ -191,12 +191,12 @@ async function assertCheckedCommit(workspace,checkpoint,snapshot,modes){
 
 export class Integration {
  constructor({c,checksFactory,config={},signal}){this.signal=signal;this.c=c;this.checksFactory=checksFactory;this.config=config;this.inflight=new Map();this.repositoryTurns=new Map();this.executionContext=new AsyncLocalStorage();this.nativeCandidates=new NativeCandidates(this);}
- async effect(key,input,action){
+ async effect(key,input,action,operationId){
   identifier(key,'idempotencyKey');const hash=digest(input),old=this.c.store.maybe('effect',key);
   if(old&&old.hash!==hash)throw Error('Idempotency key conflict');if(old?.status==='completed')return old.result;
   if(this.inflight.has(key))return this.inflight.get(key);
   if(!old)this.c.store.tx(()=>this.c.store.put('effect',{id:key,hash,status:'pending',input,at:this.c.now()}));
-  const run=(async()=>{const operation=this.c.store.all('operation').find(row=>row.key===key||'effect-'+row.key===key);const result=await this.executionContext.run({operationKey:key,...(operation?{operationId:operation.id}:{})},action);this.c.store.tx(()=>this.c.store.put('effect',{id:key,hash,status:'completed',result,at:this.c.now()}));return result;})();
+  const run=(async()=>{const id=operationId??this.c.store.all('operation').find(row=>row.key===key||'effect-'+row.key===key)?.id;const result=await this.executionContext.run({operationKey:key,...(id?{operationId:id}:{})},action);this.c.store.tx(()=>this.c.store.put('effect',{id:key,hash,status:'completed',result,at:this.c.now()}));return result;})();
   this.inflight.set(key,run);try{return await run;}catch(error){if(error.code==='locked')error.retryable=true;throw error;}finally{this.inflight.delete(key);}
  }
  repositoryId(g){return repositoryLockId(g);}
@@ -436,11 +436,27 @@ export class Integration {
   }
   return scoped;
  }
- async accept(input,key){return this.effect(key,{op:'integration.accept',...input},async()=>{
+ async accept(input,key,{operationId,legacy=false}={}){return this.effect(key,{op:'integration.accept',...input},async()=>{
   let t=this.c.getTask(input.taskId),g=this.c.store.get('goal',t.goalId);
+  let expectedBinding=input.expectedIntegrationBinding;
+  if(legacy && t.status==='accepted'&&t.integration && t.integration.operationId!==operationId)
+   throw Error('This task already has an integration receipt without a matching original operation identity. Inspect the saved task result.');
+  if(legacy && !(t.status==='accepted'&&t.integration)){
+   // Older Beta commands name only the task. Native check reservations can
+   // supply the original operation's candidate identity across a restart.
+   const rows=this.c.store.all('execution_owner').filter(row=>row.operationId===operationId&&
+    row.operationKey===key&&row.taskId===t.id&&row.integrationCandidateBinding);
+   if(rows.some(row=>row.status!=='quiescent'))
+    throw Error('Verify quiescence of the previous native integration before recovery.');
+   const current=integrationBinding(g,t);
+   if(!current||!rows.length||rows.some(row=>row.goalId!==g.id||row.goalVersion!==g.version||
+    row.goalHash!==g.hash||row.taskHash!==t.hash||row.integrationCandidateBinding!==current))
+    throw Error('The previous integration has no matching saved candidate binding. Refresh owner_action_context and confirm the current reviewed candidate with a new command key.');
+   expectedBinding=current;
+  }
   const verifyBinding=current=>{
    const binding=current.status==='accepted'?current.integration?.ownerActionBinding:integrationBinding(this.c.store.get('goal',current.goalId),current);
-   if(input.expectedIntegrationBinding!==undefined&&input.expectedIntegrationBinding!==binding)
+   if(expectedBinding!==undefined&&expectedBinding!==binding)
     throw Error('Reviewed candidate or goal changed. Refresh the inbox.');
   };
   verifyBinding(t);
@@ -525,11 +541,11 @@ export class Integration {
     const stage=`task-${t.id}-${checkpoint.commit}`,imported=await target.journal.memo(`${stage}/checkpoint`,()=>target.workspace.checkpoint({id:stage,writePaths:t.spec.permissions.writePaths}));
     if(bindTargetSnapshot)await assertCheckedCommit(target.workspace,imported,snapshot,combinedModes);
     if(!target.journal.events.some(e=>e.type==='stage.accepted'&&e.data.stageId===stage))await target.journal.append('stage.accepted',{stageId:stage,...imported,...(integrationContract?{integrationContract}: {})});
-    this.c.store.tx(()=>{const current=this.currentCandidate(t);verifyBinding(current);current.status='accepted';if(current.native?.layout==='candidate_v1')current.native.status='integrated';current.integration={commit:imported.commit,candidateCommit:checkpoint.commit,worktree:target.workspace.root,checks:results,...(input.expectedIntegrationBinding!==undefined?{ownerActionBinding:input.expectedIntegrationBinding}:{}),...(combinedEvidence?{combinedEvidence}:{}),review:g.manifest.reviewPolicy?(g.manifest.reviewPolicy.source==='host'?'host_review':'api_review'):g.manifest.mode.review==='checks'?'none':g.manifest.mode.review==='legacy'?'codex_legacy':'codex_operator',...(g.manifest.reviewPolicy?{reviewAcceptance:current.reviewAcceptance}:{}),...(behavioralEvidence?{candidateBehavioralEvidence,behavioralEvidence}:{})};this.c.store.put('task',current);const goal=this.c.store.get('goal',g.id);goal.integrationPending=null;this.c.store.put('goal',goal);this.c.emit('task.integrated',g.id,t.id,current.integration);});
+    this.c.store.tx(()=>{const current=this.currentCandidate(t);verifyBinding(current);current.status='accepted';if(current.native?.layout==='candidate_v1')current.native.status='integrated';current.integration={...(operationId?{operationId}:{}),commit:imported.commit,candidateCommit:checkpoint.commit,worktree:target.workspace.root,checks:results,...(input.expectedIntegrationBinding!==undefined?{ownerActionBinding:input.expectedIntegrationBinding}:{}),...(combinedEvidence?{combinedEvidence}:{}),review:g.manifest.reviewPolicy?(g.manifest.reviewPolicy.source==='host'?'host_review':'api_review'):g.manifest.mode.review==='checks'?'none':g.manifest.mode.review==='legacy'?'codex_legacy':'codex_operator',...(g.manifest.reviewPolicy?{reviewAcceptance:current.reviewAcceptance}:{}),...(behavioralEvidence?{candidateBehavioralEvidence,behavioralEvidence}:{})};this.c.store.put('task',current);const goal=this.c.store.get('goal',g.id);goal.integrationPending=null;this.c.store.put('goal',goal);this.c.emit('task.integrated',g.id,t.id,current.integration);});
     return this.c.getTask(t.id);
    }finally{await release();}
   }finally{await releaseCandidate();}
- });}
+ },operationId);}
  async repair(input,key){return this.effect(key,{op:'integration.repair',...input},()=>repairIntegration(this,input,key));}
  async startNative(input,key){return this.effect(key,{op:'native.start',...input},()=>input.layout==='candidate_v1'?this.nativeCandidates.start(input.taskId,{},input.registration):this.beginNative(input.taskId));}
  async beginNative(taskId,extra={}){
