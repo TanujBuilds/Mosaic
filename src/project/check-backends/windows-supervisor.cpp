@@ -87,13 +87,47 @@ static wstring sidString(PSID sid) {
   Local allocation{reinterpret_cast<HLOCAL>(text)};
   return text;
 }
+// libuv initializes Winsock at Node startup even for offline file checks.
+// registryRead allows the system catalog read; no network capability is added.
+struct SidArray {
+  PSID *list = nullptr;
+  DWORD count = 0;
+  ~SidArray() {
+    if (list) {
+      for (DWORD i = 0; i < count; i++)
+        LocalFree(list[i]);
+      LocalFree(list);
+    }
+  }
+};
+struct RegistryReadCapability {
+  SidArray groups, sids;
+  SID_AND_ATTRIBUTES value{};
+  RegistryReadCapability() {
+    using Derive = BOOL(WINAPI *)(LPCWSTR, PSID **, DWORD *, PSID **, DWORD *);
+    HMODULE base = GetModuleHandleW(L"kernelbase.dll");
+    require(base != nullptr, "locate system registry capability API");
+    FARPROC symbol = GetProcAddress(base, "DeriveCapabilitySidsFromName");
+    require(symbol != nullptr, "locate capability SID derivation");
+    Derive derive = nullptr;
+    static_assert(sizeof(derive) == sizeof(symbol));
+    std::memcpy(&derive, &symbol, sizeof(derive));
+    require(derive(L"registryRead", &groups.list, &groups.count, &sids.list,
+                   &sids.count) &&
+                sids.count == 1 && IsValidSid(sids.list[0]),
+            "derive exact registryRead SID");
+    value.Sid = sids.list[0];
+    value.Attributes = SE_GROUP_ENABLED;
+  }
+};
 struct Profile {
   wstring name;
   PSID sid = nullptr;
-  explicit Profile(const wstring &request) : name(L"Mosaic.Check." + request) {
-    const HRESULT status =
-        CreateAppContainerProfile(name.c_str(), name.c_str(),
-                                  L"Mosaic protected check", nullptr, 0, &sid);
+  Profile(const wstring &request, SID_AND_ATTRIBUTES *registryRead)
+      : name(L"Mosaic.Check." + request) {
+    const HRESULT status = CreateAppContainerProfile(name.c_str(), name.c_str(),
+                                                     L"Mosaic protected check",
+                                                     registryRead, 1, &sid);
     if (FAILED(status))
       throw std::runtime_error(
           "CreateAppContainerProfile failed (" +
@@ -351,7 +385,8 @@ static bool grantsRead(HANDLE token, const wstring &user,
           "evaluate LPAC access probe");
   return allowed && (granted & FILE_READ_DATA) != 0;
 }
-static void verifyProcess(HANDLE process, HANDLE job, PSID expectedSid) {
+static void verifyProcess(HANDLE process, HANDLE job, PSID expectedSid,
+                          PSID registryRead) {
   BOOL assigned = FALSE;
   require(IsProcessInJob(process, job, &assigned) && assigned,
           "check Job membership");
@@ -380,10 +415,12 @@ static void verifyProcess(HANDLE process, HANDLE job, PSID expectedSid) {
                        ->TokenAppContainer,
                    expectedSid) != 0,
           "verify package SID");
-  require(
-      reinterpret_cast<const TOKEN_GROUPS *>(capabilities.data())->GroupCount ==
-          0,
-      "unexpected AppContainer capabilities");
+  const auto *grants =
+      reinterpret_cast<const TOKEN_GROUPS *>(capabilities.data());
+  require(grants->GroupCount == 1 &&
+              EqualSid(grants->Groups[0].Sid, registryRead) &&
+              (grants->Groups[0].Attributes & SE_GROUP_ENABLED),
+          "protected check has unexpected capabilities");
 }
 static DWORD active(HANDLE job) {
   JOBOBJECT_BASIC_ACCOUNTING_INFORMATION state{};
@@ -418,7 +455,8 @@ static int run(int argc, wchar_t **argv) {
   require(stage.is_absolute() && receipt.is_absolute() &&
               receipt.filename() == L"completion.json",
           "invalid supervisor paths");
-  Profile profile(argv[1]);
+  RegistryReadCapability registryRead;
+  Profile profile(argv[1], &registryRead.value);
   protectStage(stage, profile.sid);
   const fs::path executable = stage / L"runtime" / L"node.exe",
                  cwd = stage / L"work";
@@ -437,6 +475,8 @@ static int run(int argc, wchar_t **argv) {
           "configure Job Object limits");
   SECURITY_CAPABILITIES security{};
   security.AppContainerSid = profile.sid;
+  security.Capabilities = &registryRead.value;
+  security.CapabilityCount = 1;
   DWORD optOut = PROCESS_CREATION_ALL_APPLICATION_PACKAGES_OPT_OUT;
   Pipe output, error;
   SECURITY_ATTRIBUTES sa{sizeof(sa), nullptr, TRUE};
@@ -471,7 +511,7 @@ static int run(int argc, wchar_t **argv) {
   output.write.reset();
   error.write.reset();
   input.reset();
-  verifyProcess(leader.h, job.h, profile.sid);
+  verifyProcess(leader.h, job.h, profile.sid, registryRead.value.Sid);
   const string ids =
       ",\"requestId\":\"" + request + "\",\"bindingHash\":\"" + binding +
       "\",\"helperPid\":" + std::to_string(GetCurrentProcessId()) +

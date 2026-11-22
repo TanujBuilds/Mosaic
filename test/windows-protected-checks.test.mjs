@@ -15,6 +15,7 @@ import {
   WINDOWS_BACKEND,
 } from '../src/project/check-backends/windows-appcontainer.mjs';
 import { digest } from '../src/project/contracts.mjs';
+import { windowsExternalCanary } from '../src/project/check-backends/windows-check-runner.mjs';
 
 const requestId = randomUUID(),
   bindingHash = digest('binding');
@@ -79,13 +80,17 @@ test(
 );
 
 const native = { skip: process.platform !== 'win32', timeout: 180000 };
-test('the trusted supervisor reports the same kernel boot GUID across independent invocations', native, () => {
-  const helper = process.env.MOSAIC_TEST_WINDOWS_SUPERVISOR;
-  const read = () => execFileSync(helper, ['--boot-id'], {encoding: 'utf8', timeout: 5000}).trim();
-  const first = read();
-  assert.match(first, /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/);
-  assert.equal(read(), first);
-});
+test(
+  'the trusted supervisor reports the same kernel boot GUID across independent invocations',
+  native,
+  () => {
+    const helper = process.env.MOSAIC_TEST_WINDOWS_SUPERVISOR;
+    const read = () => execFileSync(helper, ['--boot-id'], { encoding: 'utf8', timeout: 5000 }).trim();
+    const first = read();
+    assert.match(first, /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/);
+    assert.equal(read(), first);
+  },
+);
 
 async function fixture(t) {
   assert.equal(process.arch, 'x64');
@@ -278,3 +283,21 @@ test('changed pinned artifact stops before acquiring the execution owner', nativ
   await assert.rejects(f.run('console.log(1)'), /manifest bytes changed/);
   assert.deepEqual(f.history, []);
 });
+
+test(
+  'external low-integrity file granting ALL RESTRICTED APPLICATION PACKAGES modify remains outside the approved scope',
+  native,
+  async (t) => {
+    const f = await fixture(t),
+      file = await windowsExternalCanary(f.journal);
+    const out = await f.run(`const fs=require('node:fs');const file=${JSON.stringify(file)};const result={};
+  for(const [name,action] of [['read',()=>fs.readFileSync(file)],['write',()=>fs.appendFileSync(file,'x')]]){try{action();result[name]='granted';}catch(e){result[name]=e.code;}}console.log(JSON.stringify(result));`);
+    assert.equal(out.code, 0, out.stderr);
+    const access = JSON.parse(out.stdout);
+    assert.ok(
+      ['EPERM', 'EACCES'].includes(access.read) && ['EPERM', 'EACCES'].includes(access.write),
+      'external ARAP file access: ' + JSON.stringify(access),
+    );
+    assert.equal(await readFile(file, 'utf8'), 'outside-approved-tree');
+  },
+);

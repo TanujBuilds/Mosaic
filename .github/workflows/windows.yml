@@ -1,4 +1,4 @@
-name: Windows source and protected checks
+name: Windows source, protected checks, and installer
 
 'on':
   push:
@@ -91,4 +91,91 @@ jobs:
           @'
           Runner: Windows Server 2025 x64. See the individual steps for source and native results.
           Anonymous package install and recovery, clean Windows 11 x64 onboarding, and signed-in coding apps require separate candidate qualification.
+          '@ >> $env:GITHUB_STEP_SUMMARY
+
+  package-inputs:
+    name: Check Windows packaging inputs
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      available: ${{ steps.detect.outputs.available }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Detect Windows package sources
+        id: detect
+        shell: bash
+        run: |
+          if [[ ! -f install.ps1 && ! -f scripts/package-windows-beta.mjs ]]; then
+            echo 'available=false' >> "$GITHUB_OUTPUT"
+            echo 'Windows package build pending. The packager and bootstrap are absent.' >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          for file in install.ps1 scripts/package-windows-beta.mjs \
+            distribution/windows/launcher.cpp distribution/windows/guide.ps1 distribution/windows/lifecycle.mjs \
+            distribution/onboarding/windows-host.mjs distribution/win32-files/mosaic-files.cpp \
+            src/project/check-backends/windows-supervisor.cpp test/windows-package.test.mjs; do
+            if [[ ! -f "$file" ]]; then
+              echo "::error::Required Windows package input missing: $file"
+              exit 1
+            fi
+          done
+          echo 'available=true' >> "$GITHUB_OUTPUT"
+
+  package:
+    name: Windows x64 build and installed package smoke
+    needs: package-inputs
+    if: needs.package-inputs.outputs.available == 'true'
+    runs-on: windows-2025
+    timeout-minutes: 30
+    env:
+      MOSAIC_PACKAGE_VERSION: '0.1.0-beta.229'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24.22.3'
+          package-manager-cache: false
+      - name: Locate x64 MSVC and PowerShell 7
+        shell: pwsh
+        run: |
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
+          $visualStudio = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if ($LASTEXITCODE -ne 0 -or -not $visualStudio) { throw 'The x64 MSVC toolchain is unavailable.' }
+          $devCmd = Join-Path $visualStudio 'Common7/Tools/VsDevCmd.bat'
+          if (-not (Test-Path -LiteralPath $devCmd -PathType Leaf)) { throw 'VsDevCmd.bat is unavailable.' }
+          "MOSAIC_VS_DEV_CMD=$devCmd" >> $env:GITHUB_ENV
+          "MOSAIC_PACKAGE_DIR=$(Join-Path $env:RUNNER_TEMP 'Mosaic Windows candidate')" >> $env:GITHUB_ENV
+          "MOSAIC_PWSH=$((Get-Command pwsh.exe -CommandType Application).Source)" >> $env:GITHUB_ENV
+          $os = Get-CimInstance Win32_OperatingSystem
+          Write-Output "$($os.Caption) $($os.Version) $($os.OSArchitecture)"
+          Write-Output "PowerShell $($PSVersionTable.PSVersion)"
+          git --version
+      - name: Build the Windows candidate
+        shell: cmd
+        run: |
+          call "%MOSAIC_VS_DEV_CMD%" -arch=x64 -host_arch=x64
+          if errorlevel 1 exit /b 1
+          node.exe scripts\package-windows-beta.mjs --version "%MOSAIC_PACKAGE_VERSION%" --output "%MOSAIC_PACKAGE_DIR%"
+          if errorlevel 1 exit /b 1
+      - name: Validate install, interruption, recovery and tamper rejection
+        shell: pwsh
+        run: node .github/scripts/windows-package-smoke.mjs "$env:MOSAIC_PACKAGE_DIR" "$env:MOSAIC_PWSH"
+      - name: Upload verified local candidate bundle for staging
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: mosaic-windows-x64-candidate-${{ github.run_attempt }}
+          path: ${{ env.MOSAIC_PACKAGE_DIR }}/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+      - name: Record the qualification scope
+        shell: pwsh
+        run: |
+          @'
+          The exact local artifact passed installation and interrupted extraction recovery on Windows Server 2025 x64. The stable launcher found bundled Node with system tools only on PATH.
+          Anonymous HTTPS download, a clean Windows 11 client and real signed-in coding apps still require qualification before publishing a Windows install link.
           '@ >> $env:GITHUB_STEP_SUMMARY
