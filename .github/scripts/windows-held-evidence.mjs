@@ -15,7 +15,8 @@ assert.equal(process.env.GITHUB_REF, 'refs/heads/codex/windows-ci-followups');
 assert.equal(process.argv.length, 6);
 const [earlySource, heldSource, earlyInput, heldInput] = process.argv.slice(2).map(value => path.resolve(value));
 const inputs = [
-  {source: earlySource, directory: earlyInput, commit: '2f938fd74dd3920e11d4f33de636e1cc8cde388e', run: 44988516524, artifact: 14740862102},
+  {source: earlySource, directory: earlyInput, commit: '2f938fd74dd3920e11d4f33de636e1cc8cde388e', run: 44988516524, artifact: 14740862102,
+    archiveSha256: 'f6c26fbe21d3b3023b27cd62150fb7cb8c6243e476343c1aea0b9a6191e99d5a'},
   {source: heldSource, directory: heldInput, commit: 'a1b18fe835d633bee4d313e25e013f3d1d6c4d94', run: 44990711044, artifact: 14742095178,
     archiveSha256: 'bfcaf46c70228dea09b80746455233b89a6c3667c8e5549b24a8666d0cc4ddaf'},
 ];
@@ -51,7 +52,7 @@ async function run(filename, args, {cwd = scratch, inputEnv = env} = {}) {
 }
 
 function ps(source, fields = {}) {
-  const encoded = Buffer.from("$ErrorActionPreference = 'Stop'\n" + source, 'utf16le').toString('base64');
+  const encoded = Buffer.from("$ErrorActionPreference = 'Stop'\n$ProgressPreference = 'SilentlyContinue'\n" + source, 'utf16le').toString('base64');
   return run(powershell, [...shellArgs, '-EncodedCommand', encoded], {inputEnv: {...env, ...fields}});
 }
 
@@ -67,7 +68,7 @@ async function buildCore(input, label) {
   assert.equal(candidate.sourceTree, await git('rev-parse', 'HEAD^{tree}'));
   assert.equal(candidate.archiveName, 'mosaic-beta-' + candidate.version + '-win-x64.zip');
   assert.match(candidate.archiveSha256, /^[a-f0-9]{64}$/);
-  if (input.archiveSha256) assert.equal(candidate.archiveSha256, input.archiveSha256);
+  assert.equal(candidate.archiveSha256, input.archiveSha256);
   const archive = path.join(directory, candidate.archiveName);
   assert.equal(await digestFile(archive), candidate.archiveSha256);
   const payload = path.join(scratch, label + ' extracted Beta');
@@ -155,8 +156,21 @@ async function verifyLegacyUpgrade(early, held) {
   assert.equal((await service.registration({core:true, configDir:root, state, launcher})).registered, false);
 }
 
-const localAccounts = String.raw`
-Import-Module (Join-Path $PSHOME 'Modules\Microsoft.PowerShell.LocalAccounts\Microsoft.PowerShell.LocalAccounts.psd1')
+const createAccount = String.raw`
+$net = Join-Path $env:SystemRoot 'System32\net.exe'
+& $net user $env:MOSAIC_TEST_ACCOUNT $env:MOSAIC_TEST_PASSWORD /add ("/comment:" + $env:MOSAIC_TEST_ACCOUNT_DESCRIPTION) | Out-Null
+if ($LASTEXITCODE -ne 0) { throw "Could not create disposable account (net.exe status $LASTEXITCODE)" }
+$account = [Security.Principal.NTAccount]::new([Environment]::MachineName,$env:MOSAIC_TEST_ACCOUNT)
+[Console]::Write($account.Translate([Security.Principal.SecurityIdentifier]).Value)
+`;
+const removeAccount = String.raw`
+$computer = [ADSI]('WinNT://' + [Environment]::MachineName + ',computer')
+$user = @($computer.psbase.Children | Where-Object { $_.psbase.SchemaClassName -eq 'User' -and $_.psbase.Name -ieq $env:MOSAIC_TEST_ACCOUNT }) | Select-Object -First 1
+if (!$user) { exit 0 }
+if ($user.psbase.Properties['Description'].Value -cne $env:MOSAIC_TEST_ACCOUNT_DESCRIPTION) { throw 'Refuse to remove a non-fixture account' }
+$net = Join-Path $env:SystemRoot 'System32\net.exe'
+& $net user $env:MOSAIC_TEST_ACCOUNT /delete | Out-Null
+if ($LASTEXITCODE -ne 0) { throw "Could not remove disposable account (net.exe status $LASTEXITCODE)" }
 `;
 const taskControls = String.raw`
 $scheduler = New-Object -ComObject Schedule.Service
@@ -191,13 +205,12 @@ async function verifySchedulerAdoption(held) {
   const sid = await ps('[Console]::Write([Security.Principal.WindowsIdentity]::GetCurrent().User.Value)');
   assert.match(sid, /^S-[0-9-]+$/);
   const account = 'MosaicQa' + randomBytes(5).toString('hex');
-  const description = 'Mosaic held evidence ' + randomUUID();
+  const description = 'MosaicHeldEvidence-' + randomUUID();
   const accountFields = {MOSAIC_TEST_ACCOUNT: account, MOSAIC_TEST_ACCOUNT_DESCRIPTION: description};
   const cleanups = [];
+  const errors = [];
   try {
-    const other = await ps(localAccounts + "$password=ConvertTo-SecureString $env:MOSAIC_TEST_PASSWORD -AsPlainText -Force\n" +
-      '$user=New-LocalUser -Name $env:MOSAIC_TEST_ACCOUNT -Password $password -Description $env:MOSAIC_TEST_ACCOUNT_DESCRIPTION\n' +
-      '[Console]::Write($user.SID.Value)', {...accountFields, MOSAIC_TEST_PASSWORD: 'Qa!' + randomBytes(16).toString('hex') + 'Z7'});
+    const other = await ps(createAccount, {...accountFields, MOSAIC_TEST_PASSWORD: 'Qa!' + randomBytes(16).toString('hex') + 'Z7'});
     assert.match(other, /^S-[0-9-]+$/);
     assert.notEqual(other, sid);
     const unrelated = {configDir: path.join(scratch, 'Unrelated fixture'), state: path.join(scratch, 'Unrelated fixture', 'state'),
@@ -242,21 +255,14 @@ async function verifySchedulerAdoption(held) {
     const failed = results.filter(result => result.status === 'rejected');
     if (failed.length) throw new AggregateError(failed.map(result => result.reason), 'Task Scheduler ownership evidence failed');
     report.checks.push('Native scheduler refused both mismatched SID definitions, adopted the genuine definition, and preserved an unrelated registration');
+  } catch (error) {
+    errors.push(error);
   } finally {
-    try {
-      const results = await Promise.allSettled(cleanups.map(cleanup => cleanup()));
-      const failures = results.filter(result => result.status === 'rejected');
-      if (failures.length) throw new AggregateError(failures.map(result => result.reason), 'Disposable Task Scheduler cleanup failed');
-    } finally {
-      await ps(localAccounts + String.raw`
-$user=Get-LocalUser -Name $env:MOSAIC_TEST_ACCOUNT -ErrorAction SilentlyContinue
-if ($user) {
-  if ($user.Description -cne $env:MOSAIC_TEST_ACCOUNT_DESCRIPTION) { throw 'Refuse to remove a non-fixture account' }
-  Remove-LocalUser -SID $user.SID
-}
-`, accountFields);
-    }
+    const cleaned = await Promise.allSettled(cleanups.map(cleanup => cleanup()));
+    errors.push(...cleaned.filter(result => result.status === 'rejected').map(result => result.reason));
+    await ps(removeAccount, accountFields).catch(error => errors.push(error));
   }
+  if (errors.length) throw new AggregateError(errors, 'Scheduler evidence or fixture cleanup failed');
 }
 
 try {
