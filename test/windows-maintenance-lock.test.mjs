@@ -17,7 +17,7 @@ test('Windows maintenance creates its own private lock and rejects a linked SQLi
     windowsVerbatimArguments:true,env:{...process.env,MOSAIC_BUILD:path.join(source,'distribution/win32-files/build.cmd'),
       MOSAIC_OUTPUT:path.join(runtime,'bin/mosaic-files.exe')}});
   const {locations,withLock}=await import(pathToFileURL(path.join(runtime,'src/beta/files.mjs')));
-  const paths=locations(root);
+  const paths=locations(root,true);
   assert.equal(await withLock(paths,()=>123),123);
   const outside=path.join(root,'preserve.txt');await writeFile(outside,'keep');
   await link(outside,path.join(paths.configDir,'maintenance.sqlite3-journal'));

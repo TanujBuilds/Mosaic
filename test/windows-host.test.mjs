@@ -154,6 +154,13 @@ test('first-task menu and saved draft name Claude Code while retaining codex_onl
         mode: {id: submitted.mode, version: 1}, reviewPolicy: settings.defaults.review}};
   };
   const location = {home: process.cwd(), configDir: process.cwd(), config: 'unused', isolated: true};
+  if(process.platform==='win32'){
+    assert.equal(await runFirstTask(location,[process.cwd()],{invoke,loadSettings:async()=>settings,
+      output:{write:text=>{output+=text;}},ask:async()=>assert.fail('A held task must not request project setup')}),1);
+    assert.match(output,/qualified Windows filesystem boundary/);
+    assert.equal(submitted,undefined);
+    return;
+  }
   assert.equal(await runFirstTask(location, [process.cwd()], {invoke, loadSettings: async () => settings,
     output: {write: text => { output += text; }}, ask: async () => answers.shift()}), 0);
   assert.equal(submitted.mode, 'codex_only');
