@@ -2,7 +2,7 @@ name: Windows protected JavaScript feasibility
 
 'on':
   push:
-    branches: [codex/windows-protected-js-probe, codex/windows-protected-js-supervisor]
+    branches: [codex/windows-protected-js-probe, codex/windows-protected-js-supervisor, codex/windows-protected-js-package]
   workflow_dispatch:
 
 permissions:
@@ -11,7 +11,7 @@ permissions:
 jobs:
   bounded-javascript:
     runs-on: windows-2025
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -44,6 +44,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $artifact = Join-Path $env:RUNNER_TEMP 'quickjs-wasi-3.7.0.tgz'
+          "MOSAIC_JS_TARBALL=$artifact" >> $env:GITHUB_ENV
           $integrity = '6nOShBtCglrQL6yH+hptIfEdA1WlSmvY/Mm5Ypn9IvtsaDsrYIg8x+xoIXQt02w66a0f1eLTAj1lhfgAbJ4WVw=='
           curl.exe -q --fail --silent --show-error --max-time 60 --max-filesize 4194304 --output $artifact -- 'https://registry.npmjs.org/quickjs-wasi/-/quickjs-wasi-3.7.0.tgz'
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -62,3 +63,21 @@ jobs:
           git --version
           node --test test/windows-protected-js.test.mjs
           exit $LASTEXITCODE
+      - name: Package the contained runtime with the existing Windows installer
+        shell: cmd
+        run: |
+          call "%MOSAIC_DEV_CMD%" -arch=x64 -host_arch=x64
+          if errorlevel 1 exit /b 1
+          node scripts\package-windows-beta.mjs --version 0.1.0-beta.234 --output "%RUNNER_TEMP%\Mosaic JavaScript candidate" --check-js-tgz "%MOSAIC_JS_TARBALL%"
+          exit /b %ERRORLEVEL%
+      - name: Verify the actual installed artifact and reject tampered runtime bytes
+        shell: pwsh
+        run: node .github/scripts/windows-protected-js-installed.mjs (Join-Path $env:RUNNER_TEMP 'Mosaic JavaScript candidate')
+      - name: Retain the held package for further qualification
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: mosaic-windows-isolated-js-held
+          path: ${{ runner.temp }}/Mosaic JavaScript candidate/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14

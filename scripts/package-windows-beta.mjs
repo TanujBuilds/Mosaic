@@ -11,6 +11,8 @@ import {promisify} from 'node:util';
 import {crc32, deflateRawSync} from 'node:zlib';
 import {listFiles, sourceClosure} from './lib/beta-archive.mjs';
 import {digest} from '../src/harness/contracts.mjs';
+import {javascriptArtifactManifest, javascriptArtifactFiles, javascriptBootstrapFiles,
+  quickJsPackageFiles, windowsJavaScriptBackend} from '../src/project/check-backends/windows-js-artifact.mjs';
 
 const exec = promisify(execFile);
 const repository = fileURLToPath(new URL('../', import.meta.url));
@@ -187,6 +189,35 @@ async function compile(source, output, staging, libraries = []) {
     source, '/Fe:' + output, '/link', ...libraries], {cwd: staging, timeout: 120_000, maxBuffer: 512 * 1024});
 }
 
+async function packageIsolatedJavaScript(payload, artifact, staging, supplied) {
+  const bytes = await lstat(supplied);
+  const maxPackageBytes = 4 * 1024 * 1024;
+  if (!bytes.isFile() || bytes.size > maxPackageBytes) throw Error('Invalid pinned QuickJS package input');
+  const tarball = await readFile(supplied);
+  const integrity = '6nOShBtCglrQL6yH+hptIfEdA1WlSmvY/Mm5Ypn9IvtsaDsrYIg8x+xoIXQt02w66a0f1eLTAj1lhfgAbJ4WVw==';
+  if (tarball.length !== bytes.size || createHash('sha512').update(tarball).digest('base64') !== integrity)
+    throw Error('Pinned QuickJS package checksum mismatch');
+  const input = path.join(staging, 'quickjs-wasi.tgz');
+  await writeFile(input, tarball, {flag:'wx'});
+  const tar = path.join(process.env.SystemRoot,'System32','tar.exe');
+  await exec(tar,['-xf',input,'-C',staging,...quickJsPackageFiles.map(file => 'package/' + file)],{timeout:20000});
+  for (const name of quickJsPackageFiles)
+    await copyInto(path.join(staging,'package',name), payload, artifact + 'node_modules/quickjs-wasi/' + name);
+  for (const name of javascriptBootstrapFiles)
+    await copyInto(path.join(repository,'src/project/check-backends',name), payload, artifact + name);
+  const relative = 'src/project/check-backends/windows-js-artifact.mjs';
+  if (!await access(path.join(payload,'runtime',relative)).then(() => true, () => false))
+    await copyInto(path.join(repository,relative), payload, 'runtime/' + relative);
+  const files = await Promise.all(javascriptArtifactFiles.map(async name => {
+    const file = path.join(payload,artifact,name);
+    return {path:name, bytes:(await lstat(file)).size, sha256:await hashFile(file)};
+  }));
+  const manifest = Buffer.from(JSON.stringify({schema:1, platform:'win32', arch:'x64',
+    backend:windowsJavaScriptBackend, nodeVersion, files}) + '\n');
+  await writeFile(path.join(payload,artifact,javascriptArtifactManifest), manifest, {flag:'wx'});
+  return hash(manifest);
+}
+
 async function enumerate(payload) {
   const result = [];
   for (const relative of await listFiles(payload)) {
@@ -251,13 +282,18 @@ async function build(options) {
     const artifactManifest = Buffer.from(JSON.stringify({schema: 1, platform: 'win32', arch: 'x64', backend,
       nodeVersion, files: artifactFiles, supervisorSourceSha256: await hashFile(path.join(payload, 'runtime', supervisorSource))}) + '\n');
     await writeFile(path.join(payload, artifact, 'artifact-manifest.json'), artifactManifest);
+    const javascriptFingerprint = options['check-js-tgz']
+      ? await packageIsolatedJavaScript(payload, artifact, staging, path.resolve(options['check-js-tgz']))
+      : null;
     const npm = path.resolve(options['npm-cli'] ?? path.join(path.dirname(process.execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js'));
     await access(npm);
     await exec(process.execPath, [npm, 'ci', '--omit=dev', '--ignore-scripts', '--bin-links=false', '--no-audit', '--no-fund'],
       {cwd: path.join(payload, 'runtime'), timeout: 120_000, maxBuffer: 1024 * 1024});
     const files = await enumerate(payload);
     const manifest = Buffer.from(JSON.stringify({schema: 1, platform: 'win32', arch: 'x64', layout: 'windows-beta-v1',
-      version: options.version, nodeVersion, nativeCheckArtifact: {backend, fingerprint: hash(artifactManifest)}, contentHash: digest(files), files}) + '\n');
+      version: options.version, nodeVersion, nativeCheckArtifact: {backend, fingerprint: hash(artifactManifest)},
+      ...(javascriptFingerprint ? {javascriptCheckArtifact:{backend:windowsJavaScriptBackend, fingerprint:javascriptFingerprint}} : {}),
+      contentHash: digest(files), files}) + '\n');
     const manifestPath = path.join(payload, 'package-manifest.json');
     await writeFile(manifestPath, manifest);
     const archivePath = path.join(staging, archiveName);
@@ -267,7 +303,7 @@ async function build(options) {
     const candidate = {schema: 1, kind: 'mosaic-windows-beta-candidate', version: options.version, platform: 'win32-x64',
       sourceCommit, sourceTree, archiveName, archiveSha256: await hashFile(archivePath), archiveBytes: (await lstat(archivePath)).size,
       bootstrapSha256: hash(bootstrap), packageManifestSha256: hash(manifest), nodeZipSha256: nodeZipHash, nodeExeSha256: nodeExeHash,
-      nativeFingerprint: hash(artifactManifest)};
+      nativeFingerprint: hash(artifactManifest), ...(javascriptFingerprint ? {javascriptFingerprint} : {})};
     await writeFile(path.join(staging, archiveName + '.sha256'), candidate.archiveSha256 + '  ' + archiveName + '\n');
     await writeFile(path.join(staging, 'install.ps1'), bootstrap);
     await writeFile(path.join(staging, 'candidate.json'), JSON.stringify(candidate, null, 2) + '\n');
@@ -285,7 +321,7 @@ async function build(options) {
 
 function options(argv) {
   const result = {};
-  const supported = new Set(['version', 'output', 'node-zip', 'npm-cli', 'candidate', 'bootstrap-uri', 'archive-uri']);
+  const supported = new Set(['version', 'output', 'node-zip', 'npm-cli', 'check-js-tgz', 'candidate', 'bootstrap-uri', 'archive-uri']);
   for (let index = 0; index < argv.length; index += 2) {
     const name = argv[index].slice(2), value = argv[index + 1];
     if (!argv[index].startsWith('--') || !supported.has(name) || !value || value.startsWith('--') || Object.hasOwn(result, name)) throw Error('Invalid Windows package option');
@@ -297,7 +333,7 @@ function options(argv) {
 
 async function main(argv) {
   if (argv.length === 1 && argv[0] === '--help') {
-    console.log('Build: node scripts/package-windows-beta.mjs --version VERSION --output DIRECTORY [--node-zip ZIP] [--npm-cli FILE]');
+    console.log('Build: node scripts/package-windows-beta.mjs --version VERSION --output DIRECTORY [--node-zip ZIP] [--npm-cli FILE] [--check-js-tgz TGZ]');
     console.log('Stage: node scripts/package-windows-beta.mjs --candidate candidate.json --bootstrap-uri HTTPS_URL --archive-uri HTTPS_URL');
     return;
   }

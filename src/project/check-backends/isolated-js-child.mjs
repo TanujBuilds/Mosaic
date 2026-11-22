@@ -11,12 +11,23 @@ if (createHash('sha256').update(data).digest('hex') !== sha256)
 const {entry, modules, timeoutMs} = workerData;
 const inventory = new Map(modules);
 const deadline = performance.now() + timeoutMs;
-let unhandled = false;
+const pendingRejections = new Map();
+let rejectionLimitExceeded = false;
 const vm = await QuickJS.create({
   wasm:data,
   memoryLimit:32 * 1024 * 1024,
   interruptHandler:() => performance.now() >= deadline,
-  onUnhandledRejection:(_promise, _reason, isHandled) => { if (!isHandled) unhandled = true; },
+  onUnhandledRejection(promise, _reason, isHandled) {
+    const id = promise.identity;
+    const retained = pendingRejections.get(id);
+    if (isHandled) {
+      retained?.dispose();
+      pendingRejections.delete(id);
+    } else if (!retained) {
+      if (pendingRejections.size >= 1024) rejectionLimitExceeded = true;
+      else pendingRejections.set(id, promise.dup());
+    }
+  },
   wasi:() => ({fd_write:() => 8}),
   moduleLoader:{
     normalize(base, specifier) {
@@ -38,7 +49,7 @@ try {
     const result = await Promise.race([completion, new Promise(resolve => setImmediate(resolve, null))]);
     if (result && 'value' in result) {
       result.value.dispose();
-      status = unhandled ? 'failed' : 'passed';
+      status = rejectionLimitExceeded || pendingRejections.size ? 'failed' : 'passed';
     } else {
       result?.error.dispose();
     }
@@ -49,6 +60,7 @@ try {
   if (!(error instanceof JSException)) throw error;
   error.handle.dispose();
 } finally {
+  for (const promise of pendingRejections.values()) promise.dispose();
   vm.dispose();
 }
 parentPort.postMessage(status);

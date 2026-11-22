@@ -14,34 +14,41 @@ import {runIsolatedJavaScript} from '../src/project/check-backends/isolated-js.m
 
 const qualified = process.env.MOSAIC_ISOLATED_JS_PROBE === '1';
 const entry = 'checks/verify.mjs';
+const source = 'src/total.mjs';
 const check = `import {invoiceTotal} from '../src/total.mjs';
 if (invoiceTotal(1250, 250) !== 1500) throw 'include shipping';
-if (invoiceTotal(1250, 0) !== 1250) throw 'preserve zero shipping';`;
+if (invoiceTotal(1250, 0) !== 1250) throw 'preserve zero shipping';
+`;
 
 test('the same approved check fails on the original Git commit and passes on the corrected commit', {skip:!qualified}, async t => {
   const repo = await mkdtemp(path.join(await realpath(os.tmpdir()), 'Mosaic invoice with spaces '));
   t.after(() => rm(repo, {recursive:true, force:true, maxRetries:5}));
-  const git = (...args) => execFileSync('git', ['-C', repo, ...args], {
-    encoding:'utf8', windowsHide:true, env:{...process.env, GIT_CONFIG_NOSYSTEM:'1',
+  const gitBytes = (...args) => execFileSync('git', ['-C', repo, ...args], {
+    windowsHide:true, env:{...process.env, GIT_CONFIG_NOSYSTEM:'1',
       GIT_CONFIG_GLOBAL:path.join(repo, 'test-global-config')},
-  }).trimEnd();
-  const evaluate = (commit) => runIsolatedJavaScript(entry, [
-    [entry, git('show', commit + ':verify.mjs')],
-    ['src/total.mjs', git('show', commit + ':total.mjs')],
-  ]);
-  await writeFile(path.join(repo,'verify.mjs'), check);
-  await writeFile(path.join(repo,'total.mjs'), 'export function invoiceTotal(subtotal) { return subtotal; }\n');
+  });
+  const git = (...args) => gitBytes(...args).toString('utf8').trimEnd();
+  const read = (commit, file) => gitBytes('show', commit + ':' + file);
+  const evaluate = (commit) => runIsolatedJavaScript(entry, [entry,source].map(file =>
+    [file, new TextDecoder('utf-8', {fatal:true}).decode(read(commit,file))]));
+  await mkdir(path.join(repo,'checks'));
+  await mkdir(path.join(repo,'src'));
+  await writeFile(path.join(repo,'.gitattributes'), '* text eol=lf\n');
+  await writeFile(path.join(repo,entry), check);
+  await writeFile(path.join(repo,source), 'export function invoiceTotal(subtotal) { return subtotal; }\n');
   git('init','-q','--template=');
   git('add','--','.');
   git('-c','user.name=Fixture','-c','user.email=fixture@example.invalid','commit','-qm','Original');
   const base = git('rev-parse','HEAD');
+  assert.deepEqual(read(base,entry), Buffer.from(check));
   assert.equal(await evaluate(base), 'failed');
-  await writeFile(path.join(repo,'total.mjs'), 'export function invoiceTotal(subtotal, shipping) { return subtotal + shipping; }\n');
-  git('add','--','total.mjs');
+  await writeFile(path.join(repo,source), 'export function invoiceTotal(subtotal, shipping) { return subtotal + shipping; }\n');
+  git('add','--',source);
   git('-c','user.name=Fixture','-c','user.email=fixture@example.invalid','commit','-qm','Include shipping');
   const fixed = git('rev-parse','HEAD');
   assert.equal(git('rev-list','--parents','-1','HEAD'), fixed+' '+base);
-  assert.equal(git('diff','--name-only',base,fixed), 'total.mjs');
+  assert.equal(git('diff','--name-only',base,fixed), source);
+  assert.deepEqual(read(fixed,entry), read(base,entry));
   assert.equal(await evaluate(fixed), 'passed');
 });
 
@@ -78,6 +85,21 @@ test('nonterminating work has a deadline and cancellation awaits termination', {
   controller.abort();
   assert.equal(await running, 'cancelled');
   assert.equal(await runIsolatedJavaScript(entry, [[entry,'export {};']]), 'passed');
+});
+
+test('asynchronous assertions and syntax errors cannot report a false pass', {skip:!qualified}, async () => {
+  const run = source => runIsolatedJavaScript(entry, [[entry, source]]);
+  assert.equal(await run("Promise.resolve(1).then(value => { if (value !== 2) throw 'wrong'; });"), 'failed');
+  assert.equal(await run("if (await Promise.resolve(2) !== 2) throw 'wrong';"), 'passed');
+  assert.equal(await run('await new Promise(() => {});'), 'failed');
+  assert.equal(await run('const = 1;'), 'failed');
+});
+
+test('a check can prove expected promise rejection without hiding a later failure', {skip:!qualified}, async () => {
+  const run = source => runIsolatedJavaScript(entry, [[entry, source]]);
+  assert.equal(await run("if (await Promise.reject('expected').catch(() => 42) !== 42) throw 'wrong';"), 'passed');
+  assert.equal(await run("let ok; try { await Promise.reject('expected'); } catch (reason) { ok = reason === 'expected'; } if (!ok) throw 'wrong';"), 'passed');
+  assert.equal(await run("await Promise.reject('expected').catch(() => {}); Promise.reject('unexpected');"), 'failed');
 });
 
 test('module inventory rejects duplicate, invalid and oversized entries before starting', {skip:!qualified}, async () => {
