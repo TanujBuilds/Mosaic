@@ -137,11 +137,33 @@ function respond(response, code, body, type) {
   response.end(body);
 }
 
+function dashboardUrl(request) {
+  const { localPort, remoteAddress } = request.socket;
+  const headers = request.headersDistinct;
+  if (!localPort || !['127.0.0.1', '::ffff:127.0.0.1', '::1'].includes(remoteAddress) ||
+      headers.host?.length !== 1 || headers.origin?.length > 1 ||
+      Object.keys(headers).some(name => name === 'forwarded' || name === 'x-real-ip' || name.startsWith('x-forwarded-'))) {
+    return null;
+  }
+
+  const authority = headers.host[0].toLowerCase();
+  const hostname = ['127.0.0.1', 'localhost'].find(name =>
+    authority === name + ':' + localPort || localPort === 80 && authority === name);
+  if (!hostname) return null;
+
+  const origin = 'http://' + hostname + (localPort === 80 ? '' : ':' + localPort);
+  if ((headers.origin && headers.origin[0] !== origin) ||
+      !request.url?.startsWith('/') || request.url.startsWith('//')) return null;
+  const url = URL.parse(request.url, origin);
+  return url?.origin === origin ? url : null;
+}
+
 export function createDashboardServer({ dataDir = path.resolve('.data') } = {}) {
-  return createServer(async (request, response) => {
+  return createServer({ requireHostHeader: false }, async (request, response) => {
     try {
+      const url = dashboardUrl(request);
+      if (!url) return respond(response, 403, 'Forbidden', 'text/plain; charset=utf-8');
       if (request.method !== 'GET') return respond(response, 405, 'Method not allowed', 'text/plain; charset=utf-8');
-      const url = new URL(request.url, 'http://127.0.0.1');
       if (url.pathname === '/api/jobs') {
         const dir = path.join(dataDir, 'jobs');
         let names;
