@@ -5,7 +5,7 @@ import {setupPortable,portableSetupComplete,removePortableBindings} from './port
 import {assertExecutionAvailable} from '../harness/execution.mjs';
 import {execFile} from 'node:child_process';
 import {access,mkdir,readdir,realpath,rm,rmdir} from 'node:fs/promises';
-import {constants} from 'node:fs';
+import {constants,existsSync} from 'node:fs';
 import {createInterface} from 'node:readline';
 import {randomUUID} from 'node:crypto';
 import {Writable} from 'node:stream';
@@ -486,7 +486,14 @@ export async function doctor(paths,output=process.stdout,options={}){
  const nextAction=failed?(failed.name==='Installation'?'Reinstall Mosaic Beta from a verified archive, then run mosaic doctor.':failed.name==='Setup'||failed.name==='Settings'||failed.name.startsWith('Codex')||failed.name==='Isolated MCP fixture'||failed.name==='Coordinator'?failed.detail:`Resolve the ${failed.name} issue above, then rerun mosaic doctor${options.providers===true?' --providers':''}.`):undefined;
  const connection=settings?await readHostConnection(paths).catch(()=>null):null;
  const readiness=formatHostReadiness(selectedHost,{configuration:settings?'saved':'not configured',instructions,registration,connection,nextAction});
- const publish=()=>{for(const {name,ok,detail} of checks)output.write(`${ok?'OK':'CHECK'}  ${name} · ${detail}\n`);output.write(readiness);};
+ const publish=()=>{
+  for(const {name,ok,detail} of checks)output.write(`${ok?'OK':'CHECK'}  ${name} · ${detail}\n`);
+  const dispatch=existsSync(paths.disabled)
+   ?'Mosaic is off. New dispatch is blocked. Run mosaic on to resume.'
+   :'Mosaic is on. Existing approval and execution guards still apply.';
+  output.write(`INFO  Dispatch · ${dispatch}\n`);
+  output.write(readiness);
+ };
  if(settings?.schema===2)await withLock(paths,async()=>{await assertDoctorSnapshot();publish();});else publish();
  return checks.every(item=>item.ok);
 }

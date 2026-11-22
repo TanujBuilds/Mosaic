@@ -110,6 +110,32 @@ test('missing Apple Git tools appear before host selection and allow setup to fi
  assert.match(report.text(),/CHECK  Git for coding tasks.*xcode-select --install/);
 });
 
+test('doctor shows the saved dispatch switch without changing a healthy result',async t=>{
+ const paths=await fixture(t),{url,requests}=await loopback(t),io=streams(['n','n','y']);
+ const settings={schema:2,host:{id:'cursor',options:{}},providers:[],
+  defaults:{workerId:null,plannerWorkerId:null,review:{source:'host',hostId:'cursor'}},
+  execution:{backend:'codex-sandbox',backendRevision:1},codexPath:process.execPath,
+  serviceMaxConcurrentTasks:1,capacityGroups:[]};
+ assert.equal(await setup(paths,{...io,portable:true,settings,verifyExecution:()=>{}}),true);
+ await saveJson(path.join(paths.state,'viewer-connection.json'),{
+  url:new URL(url).origin,role:'viewer',token:'a'.repeat(64),
+ });
+ async function report(){
+  const out=streams([]);
+  assert.equal(await doctor(paths,out.output,{gitReady:async()=>true}),true);
+  assert.match(out.text(),/^OK  Coordinator · Authenticated viewer connection ready\.$/m);
+  return out.text();
+ }
+ assert.match(await report(),/^INFO  Dispatch · Mosaic is on\./m);
+ await saveJson(paths.disabled,{schema:1,disabled:true});
+ const saved=await readFile(paths.disabled);
+ assert.match(await report(),/^INFO  Dispatch · Mosaic is off\. New dispatch is blocked.*mosaic on/m);
+ assert.deepEqual(await readFile(paths.disabled),saved);
+ await rm(paths.disabled);
+ assert.match(await report(),/^INFO  Dispatch · Mosaic is on\./m);
+ assert.deepEqual(requests.map(request=>JSON.parse(request.body)),Array(3).fill({name:'tools_list',input:{}}));
+});
+
 test('Apple Git readiness inspects executable tools without running the Git shim',async t=>{
  const {macGitReady}=await import('../src/beta/git-readiness.mjs');
  const paths=await fixture(t),bin=path.join(paths.home,'usr/bin');
