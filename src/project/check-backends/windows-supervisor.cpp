@@ -463,7 +463,7 @@ static int run(int argc, wchar_t **argv, bool isolatedJavaScript = false) {
     tail = nullptr;
     const DWORD controllerPid = wcstoul(argv[6], &tail, 10);
     require(controllerPid > 0 && tail && !*tail, "invalid JavaScript controller PID");
-    controller.reset(OpenProcess(SYNCHRONIZE, FALSE, controllerPid));
+    controller.h = OpenProcess(SYNCHRONIZE, FALSE, controllerPid);
     require(controller.h != nullptr, "open live JavaScript controller handle");
     require(WaitForSingleObject(controller.h, 0) == WAIT_TIMEOUT,
             "JavaScript controller already exited");
