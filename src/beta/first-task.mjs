@@ -31,6 +31,8 @@ const modeHelp = {
   codex_only: 'Your coding app plans and implements without your API worker.',
   overnight_review: 'The API worker plans and implements. Review follows passing protected checks.',
 };
+const workflowLabel = (mode, host) => mode === 'codex_only' && host.id !== 'codex'
+  ? `${host.displayName} only` : workflows[mode];
 const statuses = {
   draft: 'Prepared draft', active: 'Active', completed: 'Complete',
   ready_to_integrate: 'Ready to integrate', awaiting_review: 'Waiting for review',
@@ -130,7 +132,7 @@ function showConnection(output, host, connection) {
   }
 }
 
-function showDraft(output, goal, summary) {
+function showDraft(output, goal, summary, host) {
   const {manifest} = goal;
   const {project} = manifest;
   const {limits} = summary;
@@ -138,7 +140,7 @@ function showDraft(output, goal, summary) {
   line(output, 'Review your saved draft');
   line(output, `Outcome: ${display(manifest.objective)}`);
   for (const criterion of manifest.acceptance) line(output, `  Acceptance: ${display(criterion)}`);
-  line(output, `Workflow: ${workflows[manifest.mode.id]} (v${manifest.mode.version})`);
+  line(output, `Workflow: ${workflowLabel(manifest.mode.id, host)} (v${manifest.mode.version})`);
   if (manifest.reviewPolicy?.source === 'api') {
     line(output, `Review: API reviewer ${display(manifest.reviewPolicy.reviewer.id)} at ${display(manifest.reviewPolicy.reviewer.baseUrl)} after protected checks pass.`);
   } else if (manifest.reviewPolicy?.source === 'host') {
@@ -206,19 +208,21 @@ async function guidedTask(output, ask, {repo, settings, host, invoke, readPreset
   let preset;
   try { preset = await readPreset?.(repo); }
   catch { line(output, 'Saved project suggestions are unavailable. Choose fresh settings for this draft.'); }
-  if (preset?.mode && modeIds.includes(preset.mode)) line(output, `Saved workflow suggestion: ${workflows[preset.mode]}`);
+  if (preset?.mode && modeIds.includes(preset.mode)) line(output, `Saved workflow suggestion: ${workflowLabel(preset.mode, host)}`);
   const suggestedWorker = policy?.workers.find(worker => worker.id === preset?.workerId);
   if (suggestedWorker) line(output, `Saved worker suggestion: ${display(suggestedWorker.id)}`);
   if (!workerConfigured) line(output, 'An API worker is needed for Collaborative, API-worker-only and Overnight review.');
   for (const [index, mode] of modeIds.entries()) {
-    line(output, `  ${index + 1}. ${workflows[mode]} · ${modeHelp[mode]}`);
+    line(output, `  ${index + 1}. ${workflowLabel(mode, host)} · ${modeHelp[mode]}`);
   }
   const modeChoice = await question('Choose a workflow, or type setup to return to worker setup: ');
   if (modeChoice.toLowerCase() === 'setup') {
     line(output, 'Run mosaic setup to configure an API worker, then return to mosaic first-task.');
     return 0;
   }
-  const mode = modeIds[Number(modeChoice) - 1] ?? modeChoice.toLowerCase().replaceAll('-', '_');
+  const mode = modeIds[Number(modeChoice) - 1]
+    ?? modeIds.find(id => workflowLabel(id, host).toLowerCase() === modeChoice.toLowerCase())
+    ?? modeChoice.toLowerCase().replaceAll('-', '_');
   if (!modeIds.includes(mode)) {
     line(output, 'Choose a listed workflow explicitly and run mosaic first-task again.');
     return 1;
@@ -289,7 +293,7 @@ async function guidedTask(output, ask, {repo, settings, host, invoke, readPreset
     line(output, `The saved goal changed after preparation. Inspect it with mosaic first-task result --goal ${goal.id}.`);
     return 1;
   }
-  showDraft(output, goal, prepared.summary);
+  showDraft(output, goal, prepared.summary, host);
   line(output, 'Saved as a draft. No work was started.');
   handoff(output, goal, host);
   return 0;

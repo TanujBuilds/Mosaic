@@ -4,6 +4,7 @@ import {lstat,mkdir,open,realpath,rename,rm,writeFile} from 'node:fs/promises';
 import {constants} from 'node:fs';
 import {constants as bufferConstants} from 'node:buffer';
 import os from 'node:os';
+import {windowsFile,windowsWrite} from './windows-files.mjs';
 import path from 'node:path';
 
 export const label='com.mosaic.beta';
@@ -13,11 +14,14 @@ export const currentHome=()=>os.homedir();
 
 export function locations(home,isolated=false){
  if(!path.isAbsolute(home)||/[\x00-\x1f]/u.test(home))throw Error('Home must be an absolute local directory');
- const root=path.join(home,'Library','Application Support','Mosaic Beta');
+ const windows=process.platform==='win32';
+ const localAppData=isolated?path.join(home,'AppData','Local'):(process.env.LOCALAPPDATA||path.join(home,'AppData','Local'));
+ if(windows&&!path.isAbsolute(localAppData))throw Error('LOCALAPPDATA must be an absolute directory');
+ const root=windows?path.join(localAppData,'Mosaic Beta'):path.join(home,'Library','Application Support','Mosaic Beta');
  const configDir=path.join(root,'config');
  const codexHome=!isolated&&process.env.CODEX_HOME?path.resolve(process.env.CODEX_HOME):path.join(home,'.codex');
  return {home,root,isolated,codexHome,configDir,versions:path.join(root,'versions'),state:path.join(root,'state'),
-  launcher:path.join(home,'.local','bin','mosaic'),config:path.join(configDir,'settings.json'),
+  launcher:windows?path.join(root,'bin','mosaic.exe'):path.join(home,'.local','bin','mosaic'),config:path.join(configDir,'settings.json'),
   ownership:path.join(configDir,'bindings.json'),installation:path.join(configDir,'installation.json'),
   setupIntent:path.join(configDir,'setup-intent.json'),credentials:path.join(configDir,'credentials.json'),disabled:path.join(configDir,'disabled.json'),isolatedMcp:path.join(configDir,'isolated-mcp.json'),
   plist:path.join(home,'Library','LaunchAgents',label+'.plist'),
@@ -30,6 +34,7 @@ export async function entry(file){
 
 export async function fileBytes(file,{max=1024*1024,privateFile=false}={}){
  if(!Number.isSafeInteger(max)||max<0||max>=bufferConstants.MAX_LENGTH)throw RangeError('File byte limit must be a supported nonnegative finite integer');
+ if(process.platform==='win32')return windowsFile(privateFile?'read-private':'read',file,{max,optional:true});
  const unsafe=()=>Error('Unsafe file permissions or type at '+file);
  if(!Number.isInteger(constants.O_NOFOLLOW)||!constants.O_NOFOLLOW||!Number.isInteger(constants.O_NONBLOCK)||!constants.O_NONBLOCK)
   throw Error('Safe file reads are unavailable on this platform');
@@ -62,6 +67,7 @@ export async function jsonFile(file,options){
 }
 
 export async function atomic(file,bytes,{mode=0o600}={}){
+ if(process.platform==='win32')return windowsWrite(file,bytes);
  const tmp=path.join(path.dirname(file),'.mosaic-beta-'+randomUUID());
  try{
   await writeFile(tmp,bytes,{flag:'wx',mode,flush:true});
@@ -72,6 +78,11 @@ export async function atomic(file,bytes,{mode=0o600}={}){
 export const saveJson=(file,value)=>atomic(file,JSON.stringify(value,null,2)+'\n');
 
 export async function localDirectory(paths,directory,{create=true}={}){
+ if(process.platform==='win32'){
+  const relative=path.relative(paths.home,directory);
+  if(paths.isolated&&(path.isAbsolute(relative)||relative==='..'||relative.startsWith('..'+path.sep)))throw Error('Fixture paths must stay within the isolated home');
+  await windowsFile(create?'mkdir':'directory',directory,{optional:!create});return;
+ }
  if(!paths.isolated){
   if(create)await mkdir(directory,{recursive:true,mode:0o700});
   return;
@@ -92,6 +103,7 @@ export async function localDirectory(paths,directory,{create=true}={}){
 export async function privateDirectories(paths){
  for(const directory of [paths.root,paths.configDir,paths.state,paths.versions]){
   await localDirectory(paths,directory);
+  if(process.platform==='win32'){await windowsFile('private-directory',directory);continue;}
   const info=await lstat(directory);
   if(!info.isDirectory()||info.mode&0o077||info.uid!==process.getuid()||await realpath(directory)!==path.join(await realpath(paths.home),path.relative(paths.home,directory)))
    throw Error('Use an owned private directory (0700) at '+directory);
@@ -117,8 +129,11 @@ export async function withLock(paths,work){
  const file=path.join(paths.configDir,'maintenance.sqlite3');
  try{const handle=await open(file,'wx',0o600);await handle.close();}
  catch(error){if(error.code!=='EEXIST')throw error;}
- const info=await lstat(file);
- if(!info.isFile()||info.mode&0o077||info.uid!==process.getuid())throw Error('Unsafe Mosaic Beta maintenance lock');
+ if(process.platform==='win32')await windowsFile('private-file',file);
+ else{
+  const info=await lstat(file);
+  if(!info.isFile()||info.mode&0o077||info.uid!==process.getuid())throw Error('Unsafe Mosaic Beta maintenance lock');
+ }
  const lock=new DatabaseSync(file);
  try{
   // SQLite releases the operating-system lock when a process exits, including SIGKILL.

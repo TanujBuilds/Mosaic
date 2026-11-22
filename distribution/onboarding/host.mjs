@@ -36,23 +36,31 @@ const hosts = {
     refresh: 'Open Customizations → Installed → MCP Servers and refresh mosaic-beta. In the IDE, use the agent panel’s MCP Servers manager.'
   }
 };
+const windowsDownloads = {
+  codex: 'https://github.com/openai/codex#installing-and-running-codex-cli',
+  'claude-code': 'https://code.claude.com/docs/en/setup#install-on-native-windows',
+  cursor: 'https://cursor.com/download',
+  antigravity: 'https://antigravity.google/download',
+};
+const mosaicCommand = platform => platform === 'win32' ? 'mosaic' : '~/.local/bin/mosaic';
 
-async function loadMosaic() {
+async function loadMosaic(home) {
   const beta = path.resolve(path.dirname(process.execPath), '../src/beta');
   const load = file => import(pathToFileURL(path.join(beta, file)).href);
   const [{locations}, {readSettings}, {getHost}, {hostConnectionIdentity, readHostConnection}] = await Promise.all([
     load('files.mjs'), load('settings.mjs'), load('hosts/index.mjs'), load('hosts/connection-evidence.mjs')
   ]);
-  const paths = locations(os.homedir());
+  const platform = process.platform;
+  const paths = locations(home ?? os.homedir(), home !== undefined);
   const settings = await readSettings(paths);
   if (settings?.schema !== 2 || !Object.hasOwn(hosts, settings.host?.id ?? '')) {
-    throw Error('Run ~/.local/bin/mosaic setup to save your coding app first.');
+    throw Error('Run ' + mosaicCommand(platform) + ' setup to save your coding app first.');
   }
   const id = settings.host.id;
   const preview = getHost(id).previewRegistration({paths, launcher: paths.launcher});
   const identity = hostConnectionIdentity(settings);
   return {
-    id, preview, home: paths.home, codexPath: settings.codexPath,
+    id, preview, home: paths.home, codexPath: settings.codexPath, platform, isolated: paths.isolated,
     checkSettings: async () => {
       if (hostConnectionIdentity(await readSettings(paths))?.settingsHash !== identity.settingsHash) {
         throw Error('Mosaic setup changed. Restart the guide to use the newly saved settings.');
@@ -125,6 +133,22 @@ function interactive(file, args) {
   return spawnSync(file, args, {stdio: 'inherit'}).status === 0;
 }
 
+async function openWindows(target, args = []) {
+  if (path.isAbsolute(target)) {
+    return new Promise(resolve => {
+      const child = spawn(target, args, {stdio: 'ignore', detached: true, windowsHide: true});
+      child.once('error', () => resolve(false));
+      child.once('spawn', () => { child.unref(); resolve(true); });
+    });
+  }
+  const powershell = path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+  // Open the fixed vendor URL as data, without substituting it into a command.
+  const result = await capture(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command',
+    'Start-Process -FilePath $env:MOSAIC_HOST_OPEN_TARGET -ErrorAction Stop'],
+  {env: {...process.env, MOSAIC_HOST_OPEN_TARGET: target}, windowsHide: true});
+  return result.status === 0;
+}
+
 async function install(host) {
   if (host.download) return interactive('/usr/bin/open', [host.download]);
   const dir = await mkdtemp(path.join(os.tmpdir(), 'mosaic-host-'));
@@ -140,19 +164,23 @@ async function install(host) {
 }
 
 async function findHost(context, host, io) {
+  const windows = context.platform === 'win32';
   for (;;) {
     const executable = await io.installed(host, context);
     if (executable) return executable;
-    io.say(host.name + ' was not found. ' + (host.download
+    io.say(host.name + ' was not found. ' + (windows
+      ? 'Install the official Windows version. ' + host.download
+      : host.download
       ? 'Download the Apple Silicon app and move it to Applications. ' + host.download
       : 'The vendor provides a standalone installer. ' + host.documentation));
     const action = host.download ? 'open' : 'install';
-    const response = await choice(io, host.download ? 'Open the official download page, or recheck after installing?' :
+    const response = await choice(io, windows ? 'Open the official Windows setup page, enter an executable path, or recheck?' :
+      host.download ? 'Open the official download page, or recheck after installing?' :
       'Run the official installer, enter a custom CLI location, or recheck after installing?',
-      host.download ? [action, 'recheck'] : [action, 'location', 'recheck']);
+      windows || !host.download ? [action, 'location', 'recheck'] : [action, 'recheck']);
     if (response === 'location') {
-      const requested = (await io.ask('Absolute path to your installed ' + host.name + ' CLI: ')).trim();
-      const target = await executablePath(requested);
+      const requested = (await io.ask('Absolute path to your installed ' + host.name + (windows ? ' executable: ' : ' CLI: '))).trim();
+      const target = await (windows ? io.executablePath(requested) : executablePath(requested));
       if (!target || [target, requested].some(file => file.includes('/node_modules/.bin/'))) {
         io.say('Choose an installed CLI executable outside a project’s node_modules/.bin.');
         continue;
@@ -162,17 +190,21 @@ async function findHost(context, host, io) {
       continue;
     }
     if (response === action) {
-      if (!await io.install(host)) io.say('The installer or download page could not be opened. Use the vendor address above.');
-      if (host.download) await choice(io, 'After moving the app to Applications, recheck here.', ['recheck']);
+      const opened = await (windows ? io.open(host.download) : io.install(host));
+      if (!opened) io.say('The installer or download page could not be opened. Use the vendor address above.');
+      if (host.download) await choice(io, windows ? 'After the Windows installation finishes, recheck here.' :
+        'After moving the app to Applications, recheck here.', ['recheck']);
     }
   }
 }
 
-async function signIn(host, executable, io) {
+async function signIn(context, host, executable, io) {
   if (host.app) {
     io.say('Open ' + host.name + ' and complete sign-in there if prompted.');
     if (await choice(io, 'Open the app now, or continue if it is open?', ['open', 'continue']) === 'open') {
-      if (!io.interactive('/usr/bin/open', [executable])) io.say('Open ' + host.name + ' from Applications.');
+      if (context.platform === 'win32') {
+        if (!await io.open(executable)) io.say('Open ' + host.name + ' from the Windows Start menu.');
+      } else if (!io.interactive('/usr/bin/open', [executable])) io.say('Open ' + host.name + ' from Applications.');
     }
     return;
   }
@@ -319,7 +351,9 @@ async function register(context, host, executable, io) {
       const url = new URL('cursor://anysphere.cursor-deeplink/mcp/install');
       url.searchParams.set('name', serverName);
       url.searchParams.set('config', Buffer.from(JSON.stringify({command: launcher, args: ['mcp']})).toString('base64'));
-      if (io.interactive('/usr/bin/open', ['-a', executable, url.href])) {
+      const opened = context.platform === 'win32' ? await io.open(executable, ['--open-url', '--', url.href]) :
+        io.interactive('/usr/bin/open', ['-a', executable, url.href]);
+      if (opened) {
         io.say('Review the entry in Cursor and choose Install. If the name is now in use, cancel and preserve the existing entry.');
         await choice(io, 'After Cursor shows the matching entry, confirm here.', ['confirmed']);
         io.say('You confirmed the saved entry in Cursor.');
@@ -349,10 +383,10 @@ async function register(context, host, executable, io) {
 
 export async function runHost(context, io) {
   try {
-    const host = hosts[context.id];
+    const host = context.platform === 'win32' ? {...hosts[context.id], download: windowsDownloads[context.id]} : hosts[context.id];
     io.say('\nConnect ' + host.name + ' to Mosaic');
     const executable = await findHost(context, host, io);
-    await signIn(host, executable, io);
+    await signIn(context, host, executable, io);
     await context.checkSettings();
     await register(context, host, executable, io);
     const baseline = (await context.receipt())?.at ?? 0;
@@ -374,26 +408,50 @@ export async function runHost(context, io) {
     }
   } catch (error) {
     if (error !== deferred) throw error;
-    io.say('Coding-app connection deferred. Re-run the installer to resume, or see ~/.local/bin/mosaic connect.');
+    io.say('Coding-app connection deferred. Re-run the installer to resume, or see ' + mosaicCommand(context.platform) + ' connect.');
     return 2;
   }
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  const platform = process.platform;
+  const command = mosaicCommand(platform);
   try {
     if (!process.stdin.isTTY) throw Error('Use an interactive Terminal window to connect the coding app.');
+    const args = process.argv.slice(2);
+    if (args.length && (platform !== 'win32' || args.length !== 2 || args[0] !== '--home' || !path.isAbsolute(args[1]))) {
+      throw Error('Invalid Mosaic onboarding arguments.');
+    }
+    const context = await loadMosaic(args[1]);
     // Installers and sign-in helpers may launch subprocesses. Keep the calling
     // project's PATH out of that process tree, even after changing directory.
-    process.env.PATH = [path.dirname(process.execPath), path.join(os.homedir(), '.local/bin'),
-      '/opt/homebrew/bin', '/usr/local/bin', '/usr/bin', '/bin', '/usr/sbin', '/sbin'].join(path.delimiter);
-    process.exitCode = await runHost(await loadMosaic(), {
-      ask: terminalQuestion, say: text => console.log(text), installed, capture, interactive, install, registerCodex
-    });
+    const bundledNode = path.dirname(process.execPath);
+    const io = {ask: terminalQuestion, say: text => console.log(text), installed, capture, interactive, install, registerCodex};
+    if (platform === 'win32') {
+      const system = process.env.SystemRoot ?? 'C:\\Windows';
+      process.env.PATH = [bundledNode, path.join(system, 'System32'), system].join(path.delimiter);
+      process.chdir(context.home);
+      if (context.isolated) {
+        process.env.HOME = process.env.USERPROFILE = context.home;
+        process.env.APPDATA = path.join(context.home, 'AppData', 'Roaming');
+        process.env.LOCALAPPDATA = path.join(context.home, 'AppData', 'Local');
+        process.env.CODEX_HOME = path.join(context.home, '.codex');
+        process.env.CLAUDE_CONFIG_DIR = path.join(context.home, '.claude');
+      }
+      const detection = await import(pathToFileURL(path.resolve(bundledNode, '../src/beta/hosts/detection.mjs')).href);
+      io.installed = (_, selection) => detection.windowsHostExecutable(selection.id, selection);
+      io.executablePath = detection.windowsExecutable;
+      io.open = openWindows;
+    } else {
+      process.env.PATH = [bundledNode, path.join(os.homedir(), '.local/bin'),
+        '/opt/homebrew/bin', '/usr/local/bin', '/usr/bin', '/bin', '/usr/sbin', '/sbin'].join(path.delimiter);
+    }
+    process.exitCode = await runHost(context, io);
   } catch (error) {
     console.error(error?.code === 'ERR_MODULE_NOT_FOUND' ? 'Run this guide with Mosaic’s bundled Node runtime.' :
-      'Coding-app setup stopped. ' + (error.message.startsWith('Mosaic setup changed') || error.message.startsWith('Run ~/.local/bin') ||
+      'Coding-app setup stopped. ' + (error.message.startsWith('Mosaic setup changed') || error.message.startsWith('Run ' + command) ||
       error.message.startsWith('Use an interactive') || error.message.startsWith('Terminal closed') ? error.message :
-      'Check the saved setup with ~/.local/bin/mosaic connect and run the guide again.'));
+      'Check the saved setup with ' + command + ' connect and run the guide again.'));
     process.exitCode = 1;
   }
 }

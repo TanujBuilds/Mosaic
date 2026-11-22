@@ -2,7 +2,7 @@ import {codex} from './codex.mjs';
 import {claudeCode} from './claude-code.mjs';
 import {cursor} from './cursor.mjs';
 import {antigravity} from './antigravity.mjs';
-import {shellQuote} from '../files.mjs';
+import {formatHostCommand} from './shared.mjs';
 const adapters=new Map([codex,claudeCode,cursor,antigravity].map(adapter=>[adapter.id,adapter]));
 export const HOST_IDS=Object.freeze([...adapters.keys()]);
 export function getHost(id){const adapter=adapters.get(id);if(!adapter)throw Error('Unsupported Mosaic host');return adapter;}
@@ -14,10 +14,10 @@ export function normalizeHostSettings(raw){
 }
 export const hostRegistry=Object.freeze({get(id){const {schema,id:hostId,displayName,transport,reviewDelivery,capabilities,documentation}=getHost(id);return structuredClone({schema,id:hostId,displayName,transport,reviewDelivery,capabilities,documentation});},list(){return HOST_IDS.map(id=>this.get(id));}});
 
-export function formatHostRegistrationGuide(preview){
+export function formatHostRegistrationGuide(preview,{platform=process.platform}={}){
  const {displayName,connectionHelp}=getHost(preview.hostId);
  const entry=preview.command
-  ?'If the name is available, run this command in your terminal:\n'+[preview.command,...preview.argv].map(shellQuote).join(' ')
+  ?'If the name is available, run this command in your terminal:\n'+formatHostCommand(preview.command,preview.argv,platform)
   :'If the file is empty or missing, use the JSON below. In an existing file, add only the mosaic-beta member inside mcpServers. If that object is missing, add it while keeping the other settings.\n'+JSON.stringify({mcpServers:{'mosaic-beta':preview.entry}},null,2);
  return [
   `Connect ${displayName} · user MCP configuration`,

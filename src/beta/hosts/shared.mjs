@@ -6,6 +6,12 @@ const name='mosaic-beta';
 const fingerprint=value=>createHash('sha256').update(canonical(value)).digest('hex');
 const copy=value=>structuredClone(value);
 const object=value=>value!==null&&typeof value==='object'&&!Array.isArray(value)&&Object.getPrototypeOf(value)===Object.prototype;
+export function formatHostCommand(command, argv, platform = process.platform) {
+ const words = [command, ...argv];
+ return platform === 'win32'
+  ? '& ' + words.map(word => "'" + word.replaceAll("'", "''") + "'").join(' ')
+  : words.map(shellQuote).join(' ');
+}
 function absolute(value,label){if(typeof value!=='string'||!path.isAbsolute(value)||value.length>4096||/[\x00-\x1f\x7f]/u.test(value))throw Error(`Invalid ${label}`);return value;}
 function config(value,cli){
  if(value===undefined||value===null)return cli?{registration:null}:{};
@@ -44,7 +50,7 @@ export function createHostAdapter({id,displayName,relativeConfig,cliCommand,cliA
    if(select(before,cli)!==null)throw Error('Existing mosaic-beta entry is foreign; use its original ownership receipt to remove or preserve it');
    const after=set(before,ownedEntry,cli,!!before.mcpServers);
    const command=cliCommand??null,argv=cliArgs?cliArgs(launcher):null;
-   const instructions=`Manual configuration for ${displayName}: review this ${name} entry and preserve other settings. ${connectionHelp.locate} If the name already exists, keep an exact match and preserve a differing entry. ${command?`If the name is available, run the reviewed argv as ${[command,...argv].map(shellQuote).join(' ')}. `:`Add only the new entry inside mcpServers. `}${connectionHelp.refresh} Pull review_inbox from the main conversation, inspect bounded evidence, then use review_reserve and review_submit with exact binding hashes. An inactive or closed host is not guaranteed to wake; disconnected review remains durably waiting. API review is separately authenticated and explicitly selected. Protected checks require an explicitly configured available backend; native revision2 uses the separately fingerprinted bundled check artifact. This registration preview alone does not prove host sign-in, model identity or sandbox enforcement.`;
+   const instructions=`Manual configuration for ${displayName}: review this ${name} entry and preserve other settings. ${connectionHelp.locate} If the name already exists, keep an exact match and preserve a differing entry. ${command?`If the name is available, run the reviewed argv as ${formatHostCommand(command, argv)}. `:`Add only the new entry inside mcpServers. `}${connectionHelp.refresh} Pull review_inbox from the main conversation, inspect bounded evidence, then use review_reserve and review_submit with exact binding hashes. An inactive or closed host is not guaranteed to wake; disconnected review remains durably waiting. API review is separately authenticated and explicitly selected. Protected checks require an explicitly configured available backend; native revision2 uses the separately fingerprinted bundled check artifact. This registration preview alone does not prove host sign-in, model identity or sandbox enforcement.`;
    const value={schema:1,hostId:id,transport:'stdio',reviewDelivery:'pull',evidenceLevel:'fixture-tested',target,receiptFile:path.join(configDir,`host-${id}-binding.json`),launcher,entry,ownedEntry,command,argv,
     expectedConfigHash:fingerprint(before),appliedConfigHash:fingerprint(after),hadMcpServers:!!before.mcpServers,instructions};
    return {...value,previewHash:fingerprint(value)};
