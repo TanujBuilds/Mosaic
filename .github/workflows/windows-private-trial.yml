@@ -2,7 +2,7 @@ name: Private Windows trial transport
 
 'on':
   push:
-    branches: [codex/windows-private-trial]
+    branches: [codex/windows-private-trial-235]
 
 permissions:
   actions: read
