@@ -116,12 +116,12 @@ try {
             } elseif ($old.launcherSha256 -cne $stableHash) { throw 'Existing core launcher differs from its installation receipt' }
             $replacement = Join-Path $root ('.launcher-' + [guid]::NewGuid().ToString('N'))
             [IO.File]::WriteAllBytes($replacement,$nextBytes)
-            [IO.File]::Replace($replacement,$stable,$null)
+            [IO.File]::Replace($replacement,$stable,[NullString]::Value)
         }
     } else { [IO.File]::Copy($template,$stable,$false) }
     $pointer = Join-Path $root ('.pointer-' + [guid]::NewGuid().ToString('N'))
     [IO.File]::WriteAllText($pointer,(ConvertTo-Json @{archiveSha256=$actual;launcherSha256=[BitConverter]::ToString($hasher.ComputeHash([IO.File]::ReadAllBytes($template))).Replace('-','').ToLowerInvariant()}),$utf8)
-    if ([IO.File]::Exists($locator)) { [IO.File]::Replace($pointer,$locator,$null) } else { [IO.File]::Move($pointer,$locator) }
+    if ([IO.File]::Exists($locator)) { [IO.File]::Replace($pointer,$locator,[NullString]::Value) } else { [IO.File]::Move($pointer,$locator) }
     Write-Output "Core installed at $final"
     Write-Output "Core launcher: $stable"
     Write-Output "Coding-app skills directory: $final\skills"
