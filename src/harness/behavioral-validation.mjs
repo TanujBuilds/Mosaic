@@ -1,5 +1,7 @@
 import {lstat} from 'node:fs/promises';
 import {digest, keys, text} from './contracts.mjs';
+import {windowsIndexModes} from '../project/git.mjs';
+import {windowsGitFileMode} from '../project/windows-git.mjs';
 
 const MAX_CRITERIA = 32;
 const MAX_CHECKS_PER_CRITERION = 16;
@@ -51,15 +53,17 @@ export function normalizeBehavioralChecks(raw, checks) {
   });
 }
 
-// Git records only the owner executable bit for regular file modes.
+// POSIX checkouts record the owner executable bit on disk. On Windows Git
+// keeps that bit in the index and treats an untracked regular file as 100644.
 export async function readBehavioralFileModes(workspace, files) {
   const paths = [...files];
+  const index = process.platform === 'win32' ? await windowsIndexModes(workspace.root, paths) : null;
   const modes = new Map();
   for (let start = 0; start < paths.length; start += FILE_MODE_BATCH) {
     const entries = await Promise.all(paths.slice(start, start + FILE_MODE_BATCH).map(async file => {
       const stat = await lstat(await workspace.file(file));
       if (!stat.isFile()) throw Error('Expected a regular file in the behavioral snapshot: ' + file);
-      return [file, stat.mode & 0o100 ? '100755' : '100644'];
+      return [file, index ? windowsGitFileMode(index.get(file)) : stat.mode & 0o100 ? '100755' : '100644'];
     }));
     for (const [file, mode] of entries) modes.set(file, mode);
   }

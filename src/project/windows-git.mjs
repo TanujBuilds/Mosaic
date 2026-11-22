@@ -1,5 +1,6 @@
 import {lstatSync, realpathSync} from 'node:fs';
 import {win32 as paths} from 'node:path';
+import {createHash} from 'node:crypto';
 
 export function isLocalWindowsPath(value) {
   return typeof value === 'string' && /^[a-z]:[\\/]/i.test(value) && !/[\x00-\x1f\x7f:]/u.test(value.slice(2));
@@ -62,13 +63,42 @@ export function windowsGitRecords(bytes) {
   return text ? text.slice(0, -1).split('\0') : [];
 }
 
-export function parseWindowsIndexModes(bytes) {
-  const modes = new Map();
+export function parseWindowsIndexEntries(bytes) {
+  const entries = new Map();
   for (const record of windowsGitRecords(bytes)) {
-    const match = /^(100644|100755|120000|160000) [a-f0-9]{40} 0\t(.+)$/su.exec(record);
-    if (!match || modes.has(match[2])) throw Error('Unsupported Windows Git index entry');
-    modes.set(match[2], match[1]);
+    const match = /^(100644|100755|120000|160000) ([a-f0-9]{40}) 0\t(.+)$/su.exec(record);
+    if (!match || entries.has(match[3])) throw Error('Unsupported Windows Git index entry');
+    entries.set(match[3], {mode: match[1], blob: match[2]});
   }
-  assertWindowsGitPaths(modes.keys());
-  return modes;
+  assertWindowsGitPaths(entries.keys());
+  return entries;
+}
+
+export function parseWindowsIndexModes(bytes) {
+  return new Map(Array.from(parseWindowsIndexEntries(bytes), ([file, entry]) => [file, entry.mode]));
+}
+
+export function windowsGitFileMode(mode = '100644') {
+  if (mode !== '100644' && mode !== '100755') throw Error('Windows Git worktrees require regular files');
+  return mode;
+}
+
+export function windowsGitBlobId(bytes) {
+  return createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex');
+}
+
+export function parseWindowsCommitChanges(bytes) {
+  const records = windowsGitRecords(bytes);
+  const changes = new Map();
+  if (records.length % 2) throw Error('Invalid Windows checkpoint diff');
+  for (let index = 0; index < records.length; index += 2) {
+    const match = /^:(000000|100644|100755) (000000|100644|100755) [a-f0-9]{40} ([a-f0-9]{40}) ([AMD])$/u.exec(records[index]);
+    const file = records[index + 1];
+    if (!match || changes.has(file) || (match[2] === '000000') !== (match[4] === 'D')) {
+      throw Error('Unsupported Windows checkpoint change');
+    }
+    changes.set(file, match[2] === '000000' ? null : {mode: match[2], blob: match[3]});
+  }
+  assertWindowsGitPaths(changes.keys());
+  return changes;
 }

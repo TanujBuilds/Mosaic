@@ -67,7 +67,21 @@ test('Windows index modes preserve the committed Git executable bit and reject a
   assert.throws(() => windowsGit.parseWindowsIndexModes(Buffer.from(indexRecord('src/missing-end').slice(0, -1))), /Git index/);
 });
 
-test('native Windows Git binds exact checked bytes, works through a linked checkout, and denies an executable candidate', {
+test('the Windows checkpoint compares exact staged blob IDs and committed regular-file modes', () => {
+  const blob = 'a'.repeat(40);
+  const zero = '0'.repeat(40);
+  assert.equal(typeof windowsGit.parseWindowsIndexEntries, 'function');
+  assert.deepEqual(windowsGit.parseWindowsIndexEntries(Buffer.from(indexRecord('run', '100755'))),
+    new Map([['run', {mode: '100755', blob}]]));
+  const record = Buffer.from(`:100644 100755 ${blob} ${blob} M\0run\0:100644 000000 ${blob} ${zero} D\0old\0`);
+  assert.deepEqual(windowsGit.parseWindowsCommitChanges(record), new Map([
+    ['run', {mode: '100755', blob}], ['old', null],
+  ]));
+  assert.throws(() => windowsGit.parseWindowsCommitChanges(Buffer.from(`:100644 120000 ${blob} ${blob} T\0run\0`)),
+    /unsupported Windows checkpoint/i);
+});
+
+test('native Windows Git binds exact checked bytes and executable modes through linked worktrees and recovery', {
   skip: process.platform !== 'win32',
 }, async t => {
   const root = await realpath(await mkdtemp(path.join(tmpdir(), 'Mosaic Git QA ')));
@@ -84,6 +98,9 @@ test('native Windows Git binds exact checked bytes, works through a linked check
   });
   const load = name => import(pathToFileURL(path.join(runtime, 'src', name)).href);
   const {git, gitBytes, gitSync, windowsIndexModes} = await load('project/git.mjs');
+  const {Workspace} = await load('project/workspace.mjs');
+  const {Journal} = await load('project/journal.mjs');
+  const {readBehavioralFileModes} = await load('harness/behavioral-validation.mjs');
   const {Integration} = await load('harness/integration.mjs');
   const repo = path.join(root, 'Mosaic Project');
   await mkdir(repo);
@@ -111,7 +128,8 @@ test('native Windows Git binds exact checked bytes, works through a linked check
   const original = Buffer.from('export const result = 0;\n');
   const updated = Buffer.from('export const result = 1; // Δ\n\n');
   await writeFile(path.join(repo, target), original);
-  await git(repo, 'add', '--', target);
+  await writeFile(path.join(repo, '.gitattributes'), '*.mjs text eol=lf\n');
+  await git(repo, 'add', '--', target, '.gitattributes');
   await git(repo, 'commit', '-m', 'Approved base');
   await assert.rejects(access(marker), {code: 'ENOENT'});
   assert.equal(rawGit(repo, 'config', 'core.autocrlf'), 'true');
@@ -133,7 +151,55 @@ test('native Windows Git binds exact checked bytes, works through a linked check
   }]);
   rawGit(tree, 'update-index', '--chmod=+x', '--', target);
   assert.deepEqual(await windowsIndexModes(tree, [target]), new Map([[target, '100755']]));
-  await assert.rejects(integration.changes(workspace, base, [target]), /regular non-executable Git files/);
+  const [modeChange] = await integration.changes(workspace, base, [target]);
+  assert.equal(modeChange.afterMode, '100755');
+
+  const extra = 'added script.mjs';
+  const targets = [target, extra];
+  const journal = await new Journal(path.join(root, 'Journal'), '00000000-0000-4000-8000-000000000001').load();
+  const imported = new Workspace({repo, baseCommit: base, permissions: {readPaths: targets, writePaths: targets}}, journal);
+  await imported.initialize();
+  const stage = {id: 'checked', writePaths: targets};
+  await integration.applyChanges(imported, [modeChange], 'import', targets);
+  assert.equal(await imported.fileMode(target), '100755');
+
+  const source = '// completed before interruption\n';
+  const intent = {key: 'interrupted-write', snapshotBefore: await imported.snapshot(),
+    changes: [{path: extra, before: null, after: hash(source), content: source, beforeMode: null, afterMode: '100755'}]};
+  await journal.append('edits.intent', intent);
+  await writeFile(path.join(imported.root, extra), source);
+  await imported.recover();
+  assert.equal(await imported.fileMode(extra), '100755');
+  assert.deepEqual(await readBehavioralFileModes(imported, targets), new Map(targets.map(file => [file, '100755'])));
+
+  const append = journal.append.bind(journal);
+  journal.append = async (type, data) => {
+    const event = await append(type, data);
+    if (type === 'workspace.windows_checkpoint.intent') throw Error('Interrupted after recording checkpoint intent');
+    return event;
+  };
+  await assert.rejects(imported.checkpoint(stage), /Interrupted after recording/);
+  assert.equal(await git(imported.root, 'rev-parse', 'HEAD'), base);
+  journal.append = append;
+  const result = await imported.checkpoint(stage);
+  assert.equal(await git(imported.root, 'rev-parse', 'HEAD^'), base);
+  assert.deepEqual(await gitBytes(imported.root, 'cat-file', 'blob', `${result.commit}:${target}`), updated);
+  assert.match(await git(imported.root, 'ls-tree', result.commit, '--', target), /^100755 blob /u);
+  assert.match(await git(imported.root, 'ls-tree', result.commit, '--', extra), /^100755 blob /u);
+  assert.deepEqual(await imported.checkpoint(stage), result);
+
+  rawGit(imported.root, 'update-index', '--chmod=-x', '--', target);
+  await assert.rejects(imported.checkpoint(stage), /executable modes differ/);
+  assert.equal(await git(imported.root, 'rev-parse', 'HEAD'), result.commit);
+
+  const normalizedJournal = await new Journal(path.join(root, 'Journal'), '00000000-0000-4000-8000-000000000002').load();
+  const normalized = new Workspace(imported.manifest, normalizedJournal);
+  await normalized.initialize();
+  await normalized.apply('text-change', stage, [
+    {path: target, action: 'write', content: original.toString().replaceAll('\n', '\r\n'), baseHash: hash(original)},
+  ]);
+  await assert.rejects(normalized.checkpoint(stage), /staged bytes or executable mode/);
+  assert.equal(await git(normalized.root, 'rev-parse', 'HEAD'), base);
 
   const aliased = path.join(root, 'foreign-config');
   await link(path.join(repo, '.git', 'config'), aliased);

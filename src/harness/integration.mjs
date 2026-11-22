@@ -13,6 +13,7 @@ import {approvedChecks,executionFields} from './execution.mjs';
 import { matches,protectedPath,relativePath,secretPath,digest as fileDigest,Pause } from '../project/contracts.mjs';
 import { git,gitBytes } from '../project/process.mjs';
 import { windowsIndexModes } from '../project/git.mjs';
+import { windowsGitFileMode } from '../project/windows-git.mjs';
 import { CodingAdapter } from './coding.mjs';
 import { digest,identifier,text } from './contracts.mjs';
 import { assertBehavioralChecks,behavioralModeHash,deriveBehavioralEvidence,readBehavioralFileModes } from './behavioral-validation.mjs';
@@ -37,20 +38,7 @@ function checkedPath(workspace,file,{includeWrites=true}={}){
 }
 
 function checkedFileModes(workspace,snapshot){
- return readBoundModes(workspace,Object.keys(snapshot).filter(file=>checkedPath(workspace,file)));
-}
-
-function assertWindowsRegularModes(...modes){
- if(isWindows&&modes.some(mode=>mode!=null&&mode!=='100644'))throw Error('Windows integration currently requires regular non-executable Git files');
-}
-
-async function readBoundModes(workspace,files){
- const modes=await readBehavioralFileModes(workspace,files);
- if(isWindows){
-  const index=await windowsIndexModes(workspace.root,files);
-  for(const [file,mode] of modes)assertWindowsRegularModes(mode,index.get(file));
- }
- return modes;
+ return readBehavioralFileModes(workspace,Object.keys(snapshot).filter(file=>checkedPath(workspace,file)));
 }
 
 async function assertCheckedModes(workspace,snapshot,modes){
@@ -118,7 +106,6 @@ async function committedChanges(workspace,base,commit,writePaths){
   if(protectedPath(file)||!matches(file,writePaths))throw Error('Candidate change outside approved scope');
   const [beforeMode,afterMode,beforeBlob,afterBlob]=records[i].slice(1).split(' ');
   if([beforeMode,afterMode].some(mode=>!['000000','100644','100755'].includes(mode)))throw Error('Candidate checkpoint contains an unsupported file type');
-  assertWindowsRegularModes(...[beforeMode,afterMode].filter(mode=>mode!=='000000'));
   const before=beforeMode==='000000'?null:await commitBlob(workspace,beforeBlob);
   const after=afterMode==='000000'?null:await commitBlob(workspace,afterBlob);
   const content=after?.toString('utf8')??null;
@@ -367,9 +354,9 @@ export class Integration {
   for(const contract of contracts.values()){
    this.currentCandidate(task);
    const {overnightV2:ignored,...manifest}=target.workspace.manifest,workspace=new Workspace({...manifest,permissions:contract.project,...(contract.overnightV2?{overnightV2:true}:{})},target.journal);
-   const snapshot=await workspace.snapshot(),modes=await readBoundModes(workspace,Object.keys(snapshot));
+   const snapshot=await workspace.snapshot(),modes=await readBehavioralFileModes(workspace,Object.keys(snapshot));
    const runner=this.integrationChecks(workspace,task,'integration-proof:'+task.id);await runner.verify(this.signal);this.currentCandidate(task);const checks=await runner.run(contract.checkSpecs,`integrate-${task.id}-${contract.goalId}`,this.signal);
-   await workspace.assertSnapshot(snapshot);const afterModes=await readBoundModes(workspace,Object.keys(snapshot));if(behavioralModeHash(modes)!==behavioralModeHash(afterModes))throw Error('Combined executable bit changed during protected checks');
+   await workspace.assertSnapshot(snapshot);const afterModes=await readBehavioralFileModes(workspace,Object.keys(snapshot));if(behavioralModeHash(modes)!==behavioralModeHash(afterModes))throw Error('Combined executable bit changed during protected checks');
    const behavioralEvidence=behavioralEvidenceFor(contract.project,contract.checkSpecs,checks,snapshot,modes);
    evidence.push({...contract,checks,...(behavioralEvidence?{behavioralEvidence}:{})});
    if(contract===current)results=checks;
@@ -389,7 +376,7 @@ export class Integration {
   for(const file of files){
    if(protectedPath(file)||!matches(file,writePaths))throw Error('Candidate change outside approved scope');
    const entry=await git(workspace.root,'ls-tree',base,'--',file),listed=Boolean(entry),beforeMode=entry?entry.split(' ')[0]:null;
-   assertWindowsRegularModes(beforeMode,index?.get(file));
+   if(isWindows&&listed)windowsGitFileMode(beforeMode);
    let beforeExact=null;
    if(listed){
     // Retrieve the committed bytes without line-ending or whitespace trimming.
@@ -403,7 +390,8 @@ export class Integration {
     const content=bytes?.toString('utf8')??null;
     if(bytes&&(bytes.includes(0)||!bytes.equals(Buffer.from(content))))throw Error('Candidate file must be valid UTF-8 text: '+file);
     current={content,hash:bytes?fileDigest(bytes):null};
-    afterMode=bytes?'100644':null;
+    const indexedMode=windowsGitFileMode(index.get(file));
+    afterMode=bytes?indexedMode:null;
    }else{
     current=await workspace.content(file);
     afterMode=await workspace.fileMode(file);
@@ -415,7 +403,6 @@ export class Integration {
  async prepareChanges(workspace,changes){
   const edits=[];
   for(const change of changes){
-   assertWindowsRegularModes(change.beforeMode,change.afterMode);
    const current=await workspace.content(change.path),mode=await workspace.fileMode(change.path),hasMode=Object.hasOwn(change,'afterMode');
    if(current.hash===change.afterHash&&(!hasMode||mode===change.afterMode))continue;
    if(current.hash!==change.beforeHash||hasMode&&mode!==change.beforeMode){

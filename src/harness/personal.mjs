@@ -24,7 +24,16 @@ async function runLocal(command,args,input){
 }
 export async function openObserver({root,run=runLocal}){
  const file=path.join(root,'viewer-connection.json');let connection;
- try{const info=await lstat(file);if(!info.isFile()||info.isSymbolicLink()||info.size>8192)throw Error();connection=JSON.parse(await readFile(file,'utf8'));}catch{throw Error('Mosaic viewer connection unavailable; inspect the local coordinator');}
+ try{
+  if(process.platform==='win32'){
+   const {windowsFile}=await import('../beta/windows-files.mjs');
+   connection=JSON.parse(await windowsFile('read-private',file,{max:8192}));
+  }else{
+   const info=await lstat(file);
+   if(!info.isFile()||info.isSymbolicLink()||info.size>8192)throw Error();
+   connection=JSON.parse(await readFile(file,'utf8'));
+  }
+ }catch{throw Error('Mosaic viewer connection unavailable; inspect the local coordinator');}
  let origin;
  try{const u=new URL(connection.url);if(u.protocol!=='http:'||u.hostname!=='127.0.0.1'||u.username||u.password||u.pathname!=='/'||u.search||u.hash||connection.role!=='viewer'||typeof connection.token!=='string'||connection.token.length<32)throw Error();origin=u.origin;}catch{throw Error('A viewer connection to the local loopback coordinator is required');}
  try{
