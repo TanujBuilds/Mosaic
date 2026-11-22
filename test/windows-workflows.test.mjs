@@ -257,3 +257,129 @@ test('Windows source coordinator qualifies four selected host configurations and
     assert.equal(await fixture.git(fixture.repo, 'status', '--porcelain'), '');
   });
 });
+
+test('Windows Beta app-only consult uses host review and cannot grant project or worker authority', {
+  skip: process.platform !== 'win32', timeout: 120000,
+}, async t => {
+  const stage = await stageWindowsSource(t);
+  // Re-open a pre-consult draft with the exact historical capability inventory.
+  const {Coordinator} = await stage.load('harness/coordinator.mjs');
+  const {normalizeGoal, digest} = await stage.load('harness/contracts.mjs');
+  const {Goals} = await stage.load('harness/goals.mjs');
+  let now = Date.now();
+  const old = new Coordinator({root:path.join(stage.root,'old consult drafts'),beta:true,selectedHost:'claude-code',now:()=>now});
+  try {
+    const raw = {submissionId:'historical-consult',mode:'codex_only',objective:'Explain the total.',
+      acceptance:['Include shipping.']};
+    const historical = normalizeGoal(old.reviewPreparation(raw,{portable:true}),old.registry);
+    historical.mode = {...historical.mode,capabilities:historical.mode.capabilities.filter(id=>id!=='research')};
+    historical.capabilities = historical.capabilities.filter(cap=>cap.id!=='research');
+    assert.ok(historical.mode.capabilities.includes('coding'));
+    const hash=digest(historical);
+    const saved=old.store.command('original-key',{op:'goal.prepare',manifest:historical},()=>
+      old.store.submission('goal','',raw.submissionId,hash,id=>({id,manifest:historical,hash,version:1,
+        status:'draft',createdAt:old.now(),activatedAt:null,deadline:null})));
+    for(const key of ['original-key','fresh-key']){
+      const retry=old.preparePortableGoal(raw,key);
+      assert.equal(retry.id,saved.id);
+      assert.equal(retry.hash,hash);
+    }
+    assert.throws(()=>old.preparePortableGoal({...raw,objective:'Changed objective'},'changed'),/Submission conflict/);
+    assert.throws(()=>old.activateGoal({goalId:saved.id,hash},'try-old-approval'),/Windows protected coding/);
+    for(const action of ['stop','expire']){
+      const draft=old.preparePortableGoal({...raw,submissionId:action},action+'-prepare');
+      old.activateGoal({goalId:draft.id,hash:draft.hash},action+'-activate');
+      const task=old.submitTask({goalId:draft.id,kind:'consult',actor:'codex',submissionId:action,
+        objective:raw.objective,acceptance:raw.acceptance},action+'-submit');
+      const active=old.startNativeText({taskId:task.id},action+'-start');
+      if(action==='stop'){
+        old.control({taskId:task.id,action:'pause'},'pause-text');
+        assert.throws(()=>old.finishNativeText({taskId:task.id,content:'late answer'},'late-paused'));
+        assert.equal(old.control({taskId:task.id,action:'resume'},'resume-text').status,'codex_ready');
+        const restarted=old.startNativeText({taskId:task.id},'restart-text');
+        assert.equal(restarted.deadline,active.deadline);
+        assert.notEqual(restarted.nativeTextFinish.idempotencyKey,active.nativeTextFinish.idempotencyKey);
+        assert.throws(()=>old.finishNativeText({taskId:task.id,content:'stale answer'},active.nativeTextFinish.idempotencyKey),/current native_text_start/);
+        old.control({goalId:draft.id,action:'stop'},'stop-text');
+      }else{
+        now=active.deadline;
+        old.expireQuiescent();
+        assert.equal(old.getTask(task.id).status,'partial');
+      }
+      assert.throws(()=>old.finishNativeText({taskId:task.id,content:'late answer'},action+'-late'));
+      const finished=new Goals(old).finalize({goalId:draft.id,partial:true,summary:action},action+'-receipt');
+      assert.equal(finished.status,'partial');
+      assert.equal(finished.receipt.tasks[0].deadline,active.deadline);
+    }
+  } finally {old.close();}
+  const {locations, privateDirectories} = await stage.load('beta/files.mjs');
+  const home = path.join(stage.root, 'consult profile');
+  await mkdir(home);
+  const paths = locations(home, true);
+  await privateDirectories(paths);
+  const provider = await loopbackSetupProvider(t);
+  await configure(stage, paths, 'claude-code', provider, false);
+  const stop = await startWorkflowService(t, stage, paths);
+  const {client,call} = await connectScriptedMcp(t, stage, paths);
+  let goalId;
+  try {
+    await call('registry_list');
+    const mutate = (name, input, options) => call(name, {...input, idempotencyKey: randomUUID()}, options);
+    const manifest = {submissionId:'text-consult', objective:'Explain the invoice total in words.',
+      acceptance:['State both amounts.'], mode:'codex_only', limits:{hours:1,maxTasks:1,reviewAgentRuns:1}};
+    const prepare = {manifest, idempotencyKey:randomUUID()};
+    const draft = await call('goal_prepare', prepare);
+    assert.deepEqual(await call('goal_prepare', prepare), draft);
+    assert.equal(draft.manifest.project, null);
+    assert.deepEqual(draft.manifest.capabilities.map(item => item.id), ['consult']);
+    goalId = draft.id;
+    await mutate('goal_activate', {goalId, hash:'0'.repeat(64)}, {error:true});
+    const goal = await mutate('goal_activate', {goalId, hash:draft.hash});
+    const fixture = await createWorkflowRepository(stage);
+    const coding = workflowManifest(stage,fixture,cases[1]);
+    const revision = await mutate('goal_revision_prepare',{goalId,expectedHash:draft.hash,
+      manifest:{...manifest, executionPolicy:draft.manifest.executionPolicy, project:coding.project}});
+    const blocked = await mutate('goal_revision_activate',{revisionId:revision.id,hash:revision.hash},{error:true});
+    assert.match(blocked.error,/Windows protected coding is in development/);
+    assert.equal((await call('goal_get',{goalId})).hash,draft.hash);
+    const spec = {submissionId:'explain', objective:manifest.objective, acceptance:manifest.acceptance, actor:'codex'};
+    for (const kind of ['coding','research','learning']) {
+      const refused = await mutate('task_submit', {goalId, task:{...spec, kind}}, {error:true});
+      if (kind==='research') assert.equal(refused.error,'Invalid kind');
+      else assert.match(refused.error, /capability|prohibit/i);
+    }
+    const scoped = await mutate('task_submit', {goalId, task:{...spec, kind:'consult',
+      permissions:{readPaths:['src/'],writePaths:['src/'],checks:[]}}}, {error:true});
+    assert.match(scoped.error, /Non-coding task cannot grant file write scope/);
+    const task = await mutate('task_submit', {goalId, task:{...spec, kind:'consult'}});
+    assert.deepEqual(task.spec.permissions, {readPaths:[],writePaths:[],checks:[]});
+    const active = await mutate('native_text_start', {taskId:task.id});
+    await call('native_text_finish', {taskId:task.id, content:'1250 plus 250 is 1500.',
+      idempotencyKey:active.nativeTextFinish.idempotencyKey});
+    const {binding} = (await call('review_inbox', {goalId})).items[0];
+    const ticket = await mutate('review_reserve', binding);
+    const result = await mutate('review_submit', {...binding, ticketId:ticket.ticketId,
+      verdict:{decision:'accept', feedback:'Both amounts and their sum are present.', findings:[]}});
+    assert.equal(result.status,'accepted');
+    assert.equal(result.spent.model,0);
+    assert.equal((await call('goal_get',{goalId})).deadline,goal.deadline);
+    const final = await mutate('goal_finalize',{goalId,summary:'Host-reviewed written consultation completed.'});
+    assert.equal(final.status,'completed');
+    assert.equal(final.receipt.tasks[0].resultHash.length,64);
+    assertProviderTraffic(provider,false);
+    const db = new DatabaseSync(path.join(paths.state,'harness.sqlite3'), {readOnly:true});
+    try {
+      assert.equal(db.prepare('SELECT count(*) AS n FROM requests').get().n,0);
+      assert.equal(db.prepare("SELECT count(*) AS n FROM records WHERE kind IN ('native_preflight','execution_owner')").get().n,0);
+    } finally { db.close(); }
+  } finally {
+    try {
+      if(goalId && !['completed','partial'].includes((await call('goal_get',{goalId})).status)){
+        await call('work_control',{goalId,action:'stop',idempotencyKey:randomUUID()});
+        await call('goal_finalize',{goalId,summary:'Stopped qualification fixture.',partial:true,idempotencyKey:randomUUID()});
+      }
+    } finally {
+      try { await client.close(); } finally { await stop(); }
+    }
+  }
+});

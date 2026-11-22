@@ -1,7 +1,7 @@
 import {controlBinding} from './owner-inbox.mjs';
 import {ExecutionOwnership,executionHolds} from './execution-ownership.mjs';
 import {assertNativePreflight,preflightNativeExecution} from './native-preflight.mjs';
-import {normalizeExecutionPolicy,assertExecutionAvailable,assertExecutionConfiguration,assertExecutionRuntime,isNativeExecution,normalizeNativeCheckRuntime} from './execution.mjs';
+import {windowsHostConsult,normalizeExecutionPolicy,assertExecutionAvailable,assertExecutionConfiguration,assertExecutionRuntime,isNativeExecution,normalizeNativeCheckRuntime} from './execution.mjs';
 import { randomUUID } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
@@ -216,6 +216,17 @@ export class Coordinator {
   if(!['collaborative','deepseek_only','codex_only','overnight_review'].includes(manifest.mode.id)||(manifest.mode.version!==1&&!isOvernightV2(manifest)))throw Error('Select a built-in Mosaic Beta workflow');
   manifest.mode={...manifest.mode,capabilities:manifest.mode.capabilities.filter(id=>id!=='research')};
   manifest.capabilities=manifest.capabilities.filter(capability=>capability.id!=='research');
+  if(process.platform==='win32' && manifest.project===null && manifest.mode.id==='codex_only' &&
+     manifest.reviewPolicy?.source==='host'){
+   // Older drafts remain held under their original hash, including retries with
+   // a new command key but the same submission identity.
+   const originalHash=cachedApproval ? digest(cachedApproval) :
+    this.store.db.prepare("SELECT hash FROM submissions WHERE kind='goal' AND scope='' AND key=?").get(manifest.submissionId)?.hash;
+   if(originalHash!==digest(manifest)){
+    manifest.mode={...manifest.mode,capabilities:['consult']};
+    manifest.capabilities=manifest.capabilities.filter(capability=>capability.id==='consult');
+   }
+  }
   if(manifest.mode.actors.includes('deepseek')&&!manifest.providerPolicy){
    if(cachedApproval){
     // Cached comparison is not new execution authority. Its command/manifest
@@ -264,7 +275,12 @@ export class Coordinator {
  }
  verifyGoalBinding(goal,{taskId}={}){
   if(executionHolds(this,{goalId:goal.id}).some(row=>!taskId||!row.taskId||row.taskId===taskId))throw Error('Native execution ownership remains held; exact quiescence required');
-  this.verifyCurrentWorker?.();assertExecutionAvailable(goal.manifest,this.executionConfig);assertNativePreflight(this,goal);
+  this.verifyCurrentWorker?.();
+  if(windowsHostConsult(this,goal.manifest)){
+   if(goal.manifest.reviewPolicy.hostId!==this.selectedHost)throw Error('Selected host differs from approved reviewer host');
+  }else{
+   assertExecutionAvailable(goal.manifest,this.executionConfig);assertNativePreflight(this,goal);
+  }
   if(goal.manifest.mode.actors.includes('deepseek'))this.verifyWorkerBinding(goal,undefined,{executionTaskId:taskId});
   if(goal.manifest.reviewPolicy){const policy=normalizeReviewPolicy(goal.manifest.reviewPolicy);if(digest(policy)!==goal.manifest.reviewPolicyHash)throw Error('Approved review policy changed');if(policy.source==='api'&&(!this.providerRegistry||digest(this.providerRegistry.get(policy.reviewer.id,policy.reviewer.revision))!==digest(policy.reviewer)))throw Error('Approved reviewer identity changed');}
  }
@@ -345,14 +361,27 @@ export class Coordinator {
  startNativeText(input,key){return this.store.command(key,{op:'native.text.start',...input},()=>{
   if(this.beta)this.verifyCurrentWorker?.();
   const t=this.getTask(input.taskId),g=this.store.get('goal',t.goalId);this.liveTask(t);
+  if(process.platform==='win32' && this.beta)this.verifyGoalBinding(g,{taskId:t.id});
   if(!g.manifest.mode.actors.includes('codex')||!['consult','learning'].includes(t.spec.kind))throw Error('Mode/capability prohibits native text execution');
   if(t.spec.actor!=='codex')text(input.reason,'takeover reason');
   if(t.owner||!['codex_ready','blocked','stopped','awaiting_review'].includes(t.status))throw Error('Verify quiescence before native execution');
   if(!t.spec.dependsOn.every(id=>this.getTask(id).status==='accepted'))throw Error('Dependencies are incomplete');
+  if(windowsHostConsult(this,g.manifest)){
+   t.nativeTextFinish={tool:'native_text_finish',taskId:t.id,idempotencyKey:randomUUID()};
+  }
   t.status='codex_active';t.executionActor='codex';t.startedAt??=this.now();t.deadline??=Math.min(g.deadline,t.startedAt+t.spec.limits.seconds*1000);this.store.put('task',t);this.learning.pin(t.id);this.emit('task.native_started',g.id,t.id,{kind:t.spec.kind,reason:input.reason??null});return this.getTask(t.id);
  });}
  finishNativeText(input,key){return this.store.command(key,{op:'native.text.finish',...input},()=>{
   const t=this.getTask(input.taskId);this.liveTask(t);if(t.status!=='codex_active'||t.executionActor!=='codex'||!['consult','learning'].includes(t.spec.kind))throw Error('Native text ownership required');
+  if(process.platform==='win32' && this.beta){
+   const goal=this.store.get('goal',t.goalId);
+   this.verifyGoalBinding(goal,{taskId:t.id});
+   if(windowsHostConsult(this,goal.manifest)){
+    if(!t.nativeTextFinish || key!==t.nativeTextFinish.idempotencyKey)
+     throw Error('Use the nativeTextFinish idempotencyKey returned by the current native_text_start to finish this consultation');
+    delete t.nativeTextFinish;
+   }
+  }
   const lessons=t.spec.kind==='learning'?this.store.all('lesson').filter(l=>l.maintenanceId===t.id):[];
   if(t.spec.kind==='learning'&&(!lessons.length||lessons.some(l=>l.status==='candidate')||!this.store.all('evaluation').some(e=>lessons.some(l=>l.id===e.lessonId))))throw Error('Native learning needs a protected evaluation and finalized procedure decision');
   text(input.content,'native result',20000);t.result={content:input.content,actor:'codex',accounting:'native host; token totals unavailable',...(lessons.length?{lessons:lessons.map(l=>({id:l.id,status:l.status,recipeHash:l.recipeHash}))}:{})};t.status=this.store.get('goal',t.goalId).manifest.reviewPolicy&&t.spec.kind==='consult'?'awaiting_review':'accepted';this.store.put('task',t);this.emit('task.native_finished',t.goalId,t.id,{status:t.status,actor:'codex'});return this.getTask(t.id);
@@ -408,7 +437,8 @@ export class Coordinator {
  expireQuiescent(){return this.store.tx(()=>{
   for(const t of this.store.unfinishedTasks()){
    const g=this.store.get('goal',t.goalId),now=this.now();
-   if(executionHolds(this,{goalId:g.id}).some(row=>!row.taskId||row.taskId===t.id)||t.owner||t.status==='legacy_reviewing'||t.executionActor==='codex'||g.integrationOwner===t.id)continue;
+   const textOnly=t.spec.kind==='consult' && windowsHostConsult(this,g.manifest);
+   if(executionHolds(this,{goalId:g.id}).some(row=>!row.taskId||row.taskId===t.id)||t.owner||t.status==='legacy_reviewing'||(t.executionActor==='codex'&&!textOnly)||g.integrationOwner===t.id)continue;
    if(now>=Math.min(g.deadline,t.deadline??g.deadline)){
     this.settleTask(t,'partial','Original deadline reached; saved evidence retained','task.expired');
    }else if(t.providerWait&&['queued','suspended'].includes(t.status)&&now>=t.providerWait.until){
@@ -611,6 +641,13 @@ export class Coordinator {
     if(['paused','stopped'].includes(t.status)){t.status=t.controlReturnStatus??(t.executionActor==='codex'?'codex_active':t.spec.actor==='codex'?'codex_ready':'queued');delete t.controlReturnStatus;}
    }else if(['running','legacy_reviewing'].includes(t.status)){t.pauseRequested=input.action==='pause';t.stopRequested=input.action==='stop';}
    else if(!t.owner&&!['paused','stopped'].includes(t.status)){t.controlReturnStatus=t.status;t.status=input.action==='stop'?'stopped':'paused';t.pauseRequested=input.action==='pause';t.stopRequested=input.action==='stop';}
+   if(input.action!=='resume' && t.spec.kind==='consult' && windowsHostConsult(this,g.manifest) &&
+      t.executionActor==='codex' && !t.owner && !t.native && ['stopped','paused'].includes(t.status)){
+    // Text execution owns no process or checkout. Revoking the in-flight answer
+    // permits partial finalization; a resume requires an explicit new text start.
+    delete t.executionActor;delete t.nativeTextFinish;
+    if(t.controlReturnStatus==='codex_active')t.controlReturnStatus='codex_ready';
+   }
    this.store.put('task',t);
   }
   if(input.goalId&&input.action==='resume'){
