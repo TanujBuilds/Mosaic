@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import {test} from 'node:test';
 import * as detection from '../src/beta/hosts/detection.mjs';
 import {formatHostRegistrationGuide} from '../src/beta/hosts/index.mjs';
-import {runHost} from '../distribution/onboarding/host.mjs';
+import {runHost} from '../distribution/onboarding/windows-host.mjs';
 import {runFirstTask} from '../src/beta/first-task.mjs';
 
 const home = String.raw`C:\Users\Mosaic Tester`;
