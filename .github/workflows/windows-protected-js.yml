@@ -2,7 +2,7 @@ name: Windows protected JavaScript feasibility
 
 'on':
   push:
-    branches: [codex/windows-protected-js-probe, codex/windows-protected-js-supervisor, codex/windows-protected-js-package, codex/windows-protected-js-coordinator]
+    branches: [codex/windows-protected-js-probe, codex/windows-protected-js-supervisor, codex/windows-protected-js-package, codex/windows-protected-js-coordinator, codex/windows-protected-js-onboarding]
   workflow_dispatch:
 
 permissions:

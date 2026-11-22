@@ -58,7 +58,7 @@ try {
   assert.match(help.stdout,/Mosaic/);
   await reviewInvoice({runtime,node,artifact});
   console.log(JSON.stringify({source:candidate.sourceCommit, fingerprint:verified.fingerprint, verified:verified.files.length,
-    tamperedBootstrapRejected:true, productionCodingEnabled:false}));
+    tamperedBootstrapRejected:true, guidedSetupConfigured:true}));
 } finally {
   await rm(installRoot,{recursive:true,force:true,maxRetries:8,retryDelay:200});
   await rm(root,{recursive:true,force:true,maxRetries:8,retryDelay:200});
@@ -85,10 +85,17 @@ if (invoiceTotal(1250, 0) !== 1250) throw 'Preserve zero shipping';
   await git('commit','--quiet','-m','Baseline invoice fixture');
   const base = (await git('rev-parse','HEAD')).trim();
   const executionPolicy = {version:1,backend:'windows-isolated-js',backendRevision:1,runtimeFingerprint:candidate.javascriptFingerprint};
-  const nativeCheckRuntime = {schema:1,artifactManifestPath:path.join(artifact,'javascript-artifact.json'),
-    artifactManifestSha256:candidate.javascriptFingerprint};
-  const reviewPolicy = {version:1,source:'host',hostId:'claude-code',fallback:'wait'};
-  const config = {beta:true,hostId:'claude-code',executionPolicy,nativeCheckRuntime,configuredPolicies:{reviewPolicy}};
+  const module = relative => import(pathToFileURL(path.join(runtime,relative)));
+  const {readBundledJavaScriptCheckRuntime} = await module('src/beta/package-contract.mjs');
+  const manifest = JSON.parse(await readFile(path.join(runtime,'..','package-manifest.json'),'utf8'));
+  const nativeCheckRuntime = await readBundledJavaScriptCheckRuntime(runtime,manifest.javascriptCheckArtifact);
+  assert.equal(nativeCheckRuntime.artifactManifestSha256,candidate.javascriptFingerprint);
+  const settings = {schema:2,host:{id:'claude-code',options:{}},providers:[],capacityGroups:[],serviceMaxConcurrentTasks:1,
+    defaults:{workerId:null,plannerWorkerId:null,review:{source:'host',hostId:'claude-code'}},
+    execution:{backend:executionPolicy.backend,backendRevision:executionPolicy.backendRevision,
+      runtimeFingerprint:executionPolicy.runtimeFingerprint},nativeCheckRuntime};
+  const {configuredPolicies} = await module('src/beta/settings.mjs');
+  const config = {beta:true,hostId:'claude-code',executionPolicy,nativeCheckRuntime,configuredPolicies:configuredPolicies(settings)};
   const service = String.raw`
     import {serve} from ${JSON.stringify(pathToFileURL(path.join(runtime,'src','harness','cli.mjs')).href)};
     await serve({root:process.argv[1], port:0, runtimeConfig:JSON.parse(process.argv[2]),headless:true});
@@ -129,10 +136,33 @@ if (invoiceTotal(1250, 0) !== 1250) throw 'Preserve zero shipping';
       }
       throw Error(name+' exceeded fixture deadline');
     };
-    const draft = await key('goal_prepare',{manifest:{submissionId:'windows-js-invoice',mode:'codex_only',
-      environment:'fixture',objective:'Include shipping in the invoice total',acceptance:['Preserve the zero-shipping behavior'],
-      reviewPolicy,project:{repo,baseCommit:base,readPaths:['src/','checks/'],writePaths:[source],
-        checks:[{id:'invoice',argv:[path.join(artifact,'node.exe'),script]}]}}});
+    const {runFirstTask} = await module('src/beta/first-task.mjs');
+    const {locations} = await module('src/beta/files.mjs');
+    const paths = {...locations(env.USERPROFILE),state};
+    let transcript = '', prepared;
+    const replies = ['1','Include shipping in the invoice total','Preserve zero shipping','src/, checks/',source,'node checks/verify.mjs'];
+    const wizardStatus = await runFirstTask(paths,['--repo',repo],{
+      ask:async prompt => {
+        assert.ok(replies.length,'Unexpected guided prompt: '+prompt);
+        return replies.shift();
+      },
+      output:{write:text=> { transcript += text; }},
+      loadSettings:async()=>settings,
+      invoke:async (name,input)=>{
+        const reply = name==='assignment_prepare'
+          ? await invoke(name,{...input,manifest:{...input.manifest,environment:'fixture'}})
+          : await invoke(name,input);
+        if(name==='assignment_prepare')prepared=reply;
+        return reply;
+      },
+    });
+    assert.equal(wizardStatus,0,transcript);
+    assert.deepEqual(replies,[]);
+    assert.match(transcript,/Windows checks support dependency-free JavaScript modules/);
+    assert.match(transcript,/Claude Code only/);
+    assert.equal(prepared.status,'prepared');
+    const draft = await invoke('goal_get',{goalId:prepared.goalId});
+    assert.deepEqual(draft.manifest.project.checks[0].argv,[path.join(artifact,'node.exe'),script]);
     const goal = await key('goal_activate',{goalId:draft.id,hash:draft.hash});
     const task = await key('task_submit',{goalId:goal.id,task:{submissionId:'invoice',actor:'codex',kind:'coding',
       objective:'Include shipping',acceptance:['Both invoice totals are correct']}});

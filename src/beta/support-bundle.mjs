@@ -91,7 +91,7 @@ async function localMetadata(paths,bundle){
    return {schema:raw.schema,host:choice(raw.host?.id,hosts),providerCount:Array.isArray(raw.providers)&&raw.providers.length<=16?raw.providers.length:null,
     capacityGroupCount:Array.isArray(raw.capacityGroups)&&raw.capacityGroups.length<=16?raw.capacityGroups.length:null,
     serviceConcurrency:integer(raw.serviceMaxConcurrentTasks,4)||null,
-    executionBackend:choice((raw.execution??raw.executionPolicy)?.backend,['darwin-seatbelt','codex-sandbox','windows-appcontainer']),
+    executionBackend:choice((raw.execution??raw.executionPolicy)?.backend,['darwin-seatbelt','codex-sandbox','windows-appcontainer','windows-isolated-js']),
     executionRevision:choice((raw.execution??raw.executionPolicy)?.backendRevision,[1,2]),reviewSource:choice(raw.defaults?.review?.source,['host','api'])};
   }],
   ['installation','installation.json','INSTALLATION',raw=>{

@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {createInterface} from 'node:readline';
 import {promisify, stripVTControlCharacters} from 'node:util';
-import {isNativeExecution, nativeRuntime} from '../harness/execution.mjs';
+import {isNativeExecution, isWindowsJavaScriptPolicy, nativeRuntime} from '../harness/execution.mjs';
 import {readOutcomeSnapshot} from '../harness/outcomes/snapshot.mjs';
 import {client} from './client.mjs';
 import {entry} from './files.mjs';
@@ -238,6 +238,8 @@ async function guidedTask(output, ask, {repo, settings, host, invoke, readPreset
   }
   const executionPolicy = settings.schema === 2 ? settings.execution : settings.executionPolicy;
   const nativeChecks = isNativeExecution({executionPolicy});
+  const isolatedJavaScript = isWindowsJavaScriptPolicy(executionPolicy);
+  if (isolatedJavaScript) line(output, 'Windows checks support dependency-free JavaScript modules in the approved read scope. Use a committed check outside the edit scope.');
   const example = nativeChecks ? 'node checks/verify.mjs' : 'npm test';
   let checks = checkList(await question(`Protected check command, e.g. ${example}. Use JSON argument lists for spaces in an argument or multiple commands: `));
   if (nativeChecks && checks.length) {
@@ -247,6 +249,11 @@ async function guidedTask(output, ask, {repo, settings, host, invoke, readPreset
       return 1;
     }
     checks = checks.map(check => ({...check, argv: [executable, ...check.argv.slice(1)]}));
+    if (isolatedJavaScript) {
+      const {assertWindowsJavaScriptChecks} = await import('../project/check-backends/windows-isolated-js-runner.mjs');
+      try { assertWindowsJavaScriptChecks({checks,readPaths,writePaths},executable); }
+      catch (error) { line(output,error.message); return 1; }
+    }
   }
   let overnightPolicy;
   if (mode === 'overnight_review') {
@@ -403,7 +410,7 @@ export async function runFirstTask(paths, args = [], options = {}) {
     output.write(usage);
     return 0;
   }
-  if (process.platform==='win32' && (action==='guide'||action==='demo')) {
+  if (process.platform==='win32' && action==='demo') {
     const {windowsCodingHold}=await import('../project/check-backends/platform-native-runtime.mjs');
     if(windowsCodingHold){line(output,windowsCodingHold);return 1;}
   }
@@ -433,6 +440,11 @@ export async function runFirstTask(paths, args = [], options = {}) {
   const settings = await loadSettings(paths);
   if (!settings) {
     line(output, 'Run mosaic setup to choose your coding app, or try mosaic first-task --demo.');
+    return 1;
+  }
+  if (process.platform==='win32' && !isWindowsJavaScriptPolicy(settings.schema===2?settings.execution:settings.executionPolicy)) {
+    const {windowsCodingHold}=await import('../project/check-backends/platform-native-runtime.mjs');
+    line(output,windowsCodingHold);
     return 1;
   }
   line(output, 'Prepare your first coding task');

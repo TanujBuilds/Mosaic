@@ -321,7 +321,14 @@ export async function setup(paths,options={}){
  const pending=await jsonFile(paths.setupIntent,{privateFile:true});
  if(options.portable||options.settings||old?.schema===2||pending?.schema===2||(manifest?.layout==='terminal-beta-v2'||process.platform==='win32'&&manifest?.layout==='windows-beta-v1')){
   let execution=options.execution??(old?.schema===2?old.execution:undefined),nativeCheckRuntime=options.nativeCheckRuntime??(old?.schema===2?old.nativeCheckRuntime:undefined);
-  if(!execution&&!options.settings&&!pending){nativeCheckRuntime=await (await import('./package-contract.mjs')).readBundledNativeCheckRuntime(runtimeRoot);execution={...(process.platform==='win32'?{backend:'windows-appcontainer',backendRevision:1}:{backend:'darwin-seatbelt',backendRevision:2}),runtimeFingerprint:nativeCheckRuntime.artifactManifestSha256};}
+  if(!execution&&!options.settings&&!pending){
+   const artifacts=await import('./package-contract.mjs');
+   const isolated=await artifacts.readBundledJavaScriptCheckRuntime(runtimeRoot,manifest?.javascriptCheckArtifact);
+   nativeCheckRuntime=isolated??await artifacts.readBundledNativeCheckRuntime(runtimeRoot);
+   const backend=isolated?{backend:'windows-isolated-js',backendRevision:1}:
+    process.platform==='win32'?{backend:'windows-appcontainer',backendRevision:1}:{backend:'darwin-seatbelt',backendRevision:2};
+   execution={...backend,runtimeFingerprint:nativeCheckRuntime.artifactManifestSha256};
+  }
   const firstRun=!old&&!pending&&!options.settings;
   return askSession(input,output,async(ask,signal,choose)=>{
    const gitTools=process.platform==='win32'?await import('./git-readiness.mjs'):null;

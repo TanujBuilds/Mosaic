@@ -14,3 +14,14 @@ export async function readBundledNativeCheckRuntime(runtimeRoot=fileURLToPath(ne
  validateNativeCheckRuntime(config);
  return config;
 }
+
+export async function readBundledJavaScriptCheckRuntime(runtimeRoot, descriptor) {
+ if(process.platform!=='win32'||!descriptor) return null;
+ const {javascriptArtifactDirectory,javascriptArtifactManifest,windowsJavaScriptBackend}=await import('../project/check-backends/windows-js-artifact.mjs');
+ if(descriptor.backend?.id!==windowsJavaScriptBackend.id||descriptor.backend.revision!==windowsJavaScriptBackend.revision||
+    !/^[a-f0-9]{64}$/.test(descriptor.fingerprint??''))throw Error('Unexpected installed Windows JavaScript runtime descriptor');
+ const config={schema:1,artifactManifestPath:path.join(runtimeRoot,javascriptArtifactDirectory,javascriptArtifactManifest),
+  artifactManifestSha256:descriptor.fingerprint};
+ validateNativeCheckRuntime(config);
+ return config;
+}
