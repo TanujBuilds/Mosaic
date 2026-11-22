@@ -6,6 +6,16 @@ import { command, git } from './project/process.mjs';
 // An explicit preparation command, never invoked by a model during an approved run.
 const target = process.argv[2];
 if (!target) throw new Error('Usage: npm run pilot -- /path/to/new-disposable-repository');
+if (process.platform === 'win32') {
+  const {windowsFileSync} = await import('./beta/windows-files.mjs');
+  const parent = await realpath(path.dirname(path.resolve(target)));
+  try {
+    windowsFileSync('directory', parent);
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+    throw new Error('Source preparation needs bin/mosaic-files.exe. From the source root, create bin and run distribution/win32-files/build.cmd bin/mosaic-files.exe with the x64 MSVC tools installed.', {cause:error});
+  }
+}
 await mkdir(path.resolve(target)); // Refuse existing directories, even empty ones.
 const repo = await realpath(target);
 const template = fileURLToPath(new URL('../examples/web-ui-pilot', import.meta.url));
