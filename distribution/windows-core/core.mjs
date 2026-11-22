@@ -31,6 +31,7 @@ export async function main(args) {
       executionPolicy:{version:1,backend:'windows-appcontainer',backendRevision:1,runtimeFingerprint:nativeCheckRuntime.artifactManifestSha256}}});
   }
   if (args.includes('--root')) throw Error('Installed Mosaic core has its own per-user state directory');
+  if (!args.length || args.includes('--help')) return main(['--help']);
   return main([...args,'--root',paths.state]);
 }
 
