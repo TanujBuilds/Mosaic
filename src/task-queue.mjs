@@ -1,7 +1,7 @@
 import { access } from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { spawn } from 'node:child_process';
+import { IdleSleepAssertion } from './harness/overnight-lifecycle.mjs';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Journal, atomicJson } from './project/journal.mjs';
 import { digest, Pause } from './project/contracts.mjs';
@@ -229,8 +229,9 @@ export async function runQueue({ root, signal, once = false, pollMs = 1000, runJ
         } catch { cancel(); }
       })().finally(() => { pollTask = null; });
     }, Math.min(pollMs, 200));
-    if (keepAwake && process.platform === 'darwin') {
-      awake = spawn('/usr/bin/caffeinate', ['-i', '-w', String(process.pid)], { stdio: 'ignore' }); awake.on('error', () => {});
+    if (keepAwake) {
+      awake = new IdleSleepAssertion();
+      awake.sync(true, Date.parse(started.deadline));
     }
     while (!controller.signal.aborted) {
       const claim = await transaction(root, async journal => {
@@ -285,7 +286,7 @@ export async function runQueue({ root, signal, once = false, pollMs = 1000, runJ
     }
     if (controller.signal.aborted) reason = 'Queue interrupted, stopped, or time budget exhausted';
   } finally {
-    clearTimeout(timer); clearInterval(poll); await pollTask; awake?.kill(); signal?.removeEventListener('abort', cancel);
+    clearTimeout(timer); clearInterval(poll); await pollTask; awake?.close(); signal?.removeEventListener('abort', cancel);
     if (owned) await transaction(root, async journal => {
       const state = requireState(journal);
       if (state.worker?.token !== workerToken) return;

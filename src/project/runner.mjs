@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { access, writeFile } from 'node:fs/promises';
 import { setTimeout as delay } from 'node:timers/promises';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
+import { IdleSleepAssertion } from '../harness/overnight-lifecycle.mjs';
 import { digest, validateReply, stageAssignment, Pause, AttemptError } from './contracts.mjs';
 import { Workspace } from './workspace.mjs';
 import { CheckRunner } from './sandbox.mjs';
@@ -123,9 +123,9 @@ export async function runProject(journal, {
       try { await access(path.join(journal.dir, 'stop.request')); stopReason = 'Stopped by user'; cancel(); } catch {}
     }, 500);
     await journal.append('run.started');
-    if (keepAwake && process.platform === 'darwin') {
-      awake = spawn('/usr/bin/caffeinate', ['-i', '-w', String(process.pid)], { stdio: 'ignore' });
-      awake.on('error', () => {});
+    if (keepAwake) {
+      awake = new IdleSleepAssertion();
+      awake.sync(true, deadline);
     }
     await workspace.initialize();
     await workspace.recover();
@@ -280,7 +280,7 @@ export async function runProject(journal, {
       : controller.signal.aborted ? 'paused' : 'failed';
     await journal.append('run.finished', { status, reason: stopReason ?? error.message, code: budgetExpired ? 'budget' : error.code ?? 'error' });
   } finally {
-    clearTimeout(timer); clearInterval(stopPoll); awake?.kill();
+    clearTimeout(timer); clearInterval(stopPoll); awake?.close();
     signal?.removeEventListener('abort', cancel);
     await release();
   }

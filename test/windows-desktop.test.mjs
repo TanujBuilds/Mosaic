@@ -17,3 +17,19 @@ test('Windows overnight sleep assertion releases at stop and retains the approve
   power.sync(true,Date.now()-1);
   assert.equal(calls.length,1);
 });
+
+test('native Windows sleep assertion exits when its owner pipe closes or its deadline expires',
+  {skip: process.platform !== 'win32', timeout: 30000}, async t => {
+    const {once} = await import('node:events');
+    for (const closePipe of [true, false]) {
+      const power = new IdleSleepAssertion();
+      t.after(() => power.close());
+      const deadline = Date.now() + (closePipe ? 60000 : 3000);
+      power.sync(true, deadline);
+      const exited = once(power.child, 'exit', {signal: AbortSignal.timeout(13000)});
+      if (closePipe) power.child.stdin.end();
+      const [code] = await exited;
+      assert.equal(code, 0);
+      if (!closePipe) assert.ok(Date.now() >= deadline);
+    }
+  });
