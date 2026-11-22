@@ -8,6 +8,7 @@ on:
       - test/release-*.test.mjs
       - .github/scripts/installer-smoke.exp
       - .github/scripts/registry-smoke.mjs
+      - .github/scripts/finish-first-task.mjs
       - .github/workflows/installer.yml
 
 permissions:
@@ -42,5 +43,5 @@ jobs:
           # The scripted MCP client substitutes for a signed-in GUI application.
           mkdir -p "$HOME/Applications/Cursor.app/Contents"
           touch "$HOME/Applications/Cursor.app/Contents/Info.plist"
-      - name: Exercise pasted installation through the first-task approval handoff
+      - name: Exercise pasted installation through first-task review and integration
         run: /usr/bin/expect .github/scripts/installer-smoke.exp

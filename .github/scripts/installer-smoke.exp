@@ -45,7 +45,7 @@ expect {
     timeout { error "Missing host verification prompt" }
     eof { error "Guide exited before checking its host connection" }
 }
-set node [file join $env(HOME) "Library/Application Support/Mosaic Beta/versions/0.1.0-beta.227/runtime/bin/node"]
+set node [file join $env(HOME) "Library/Application Support/Mosaic Beta/versions/0.1.0-beta.228/runtime/bin/node"]
 exec $node .github/scripts/registry-smoke.mjs >@stdout 2>@stderr
 send -- "check\r"
 answer "Git project path" [file join $env(RUNNER_TEMP) "First Mosaic project"]
@@ -72,3 +72,4 @@ set launcher [file join $env(HOME) .local bin mosaic]
 set saved [exec $launcher first-task result --goal $goal]
 if {[string first {Prepared draft} $saved] == -1} { error "Draft could not be reopened" }
 puts "Verified a first-task draft with a real coordinator and scripted MCP client."
+exec $node .github/scripts/finish-first-task.mjs $goal >@stdout 2>@stderr
