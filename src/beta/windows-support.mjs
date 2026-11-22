@@ -1,5 +1,5 @@
 import path from 'node:path';
-import {spawn} from 'node:child_process';
+import {spawn,spawnSync} from 'node:child_process';
 import {lstat} from 'node:fs/promises';
 import {windowsSystemTool} from '../harness/windows-desktop.mjs';
 import {windowsFile} from './windows-files.mjs';
@@ -172,6 +172,15 @@ exit ([MosaicSupport]::Run([string]$request.operation,$path,$bytes))
 } catch {exit 1}
 `;
 const args = ['-NoLogo','-NoProfile','-NonInteractive','-EncodedCommand',Buffer.from(script,'utf16le').toString('base64')];
+function request(operation,file,bytes) {
+  return JSON.stringify({operation,path:Buffer.from(file).toString('base64'),data:Buffer.from(bytes).toString('base64')});
+}
+export function createPrivateFileSync(file,bytes) {
+  const shell=windowsSystemTool('WindowsPowerShell','v1.0','powershell.exe');
+  const result=spawnSync(shell,args,{input:request('export',file,bytes),stdio:['pipe','ignore','ignore'],windowsHide:true,timeout:8000});
+  if(result.status===3)throw Object.assign(Error('Private file already exists'),{code:'EEXIST'});
+  if(result.error||result.status!==0)throw Error('Cannot create a private Windows file');
+}
 function companion(operation,file,bytes='') {
   const shell=windowsSystemTool('WindowsPowerShell','v1.0','powershell.exe');
   return new Promise((resolve,reject)=>{
@@ -180,7 +189,7 @@ function companion(operation,file,bytes='') {
     child.on('error',onFailure);
     child.stdin.on('error',onFailure);
     child.on('close',code=>code===0?resolve():reject(unsafe(code===3?'OUTPUT_EXISTS':'OUTPUT_UNSAFE')));
-    child.stdin.end(JSON.stringify({operation,path:Buffer.from(file).toString('base64'),data:Buffer.from(bytes).toString('base64')}));
+    child.stdin.end(request(operation,file,bytes));
   });
 }
 export async function writeSupportBundle(file,bytes) {
