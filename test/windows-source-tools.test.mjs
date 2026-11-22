@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import {execFile, spawn} from 'node:child_process';
 import {randomUUID} from 'node:crypto';
 import {once} from 'node:events';
-import {cp, mkdir, mkdtemp, readFile, realpath, rm, writeFile} from 'node:fs/promises';
+import {appendFile, cp, mkdir, mkdtemp, readFile, realpath, rm, writeFile} from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import {createInterface} from 'node:readline';
@@ -60,6 +60,23 @@ test('source demo, dashboard, project status and queue operate in a directory wi
   const response = await fetch(url + '/api/jobs/' + jobId);
   assert.equal(response.status, 200);
   assert.equal((await response.json()).job.id, jobId);
+  const page = await (await fetch(url + '/')).text();
+  assert.match(page, /<title>Mosaic · Job timeline<\/title>/u);
+  assert.doesNotMatch(page, /Mac coordinator|On this Mac|both Sparks/u);
+  const log = path.join(data,'jobs',jobId+'.jsonl');
+  const events = (await readFile(log,'utf8')).trim().split('\n');
+  const screenshot = 'result.png';
+  const check = {id:'screen',passed:true,screenshots:[path.win32.join('C:', 'saved', screenshot)]};
+  await appendFile(log,JSON.stringify({jobId,sequence:events.length+1,type:'operation.completed',
+    at:new Date().toISOString(),data:{key:'stage/attempt/checks',value:[check]}})+'\n');
+  const artifacts = path.join(data,'artifacts',jobId);
+  await mkdir(artifacts,{recursive:true});
+  const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aWQAAAABJRU5ErkJggg==','base64');
+  await writeFile(path.join(artifacts,screenshot),png);
+  const attachment = await fetch(url+'/api/artifacts/'+jobId+'/'+screenshot);
+  assert.equal(attachment.status,200);
+  assert.deepEqual(Buffer.from(await attachment.arrayBuffer()),png);
+  assert.equal((await fetch(url+'/api/artifacts/'+jobId+'/unlisted.png')).status,404);
   const project = randomUUID(), manifest = {mode:'fake',limits:{attempts:1},planVersion:1,plan:{stages:[]}};
   await writeFile(path.join(data,'jobs',project+'.jsonl'), JSON.stringify({
     jobId:project,sequence:1,type:'project.created',data:manifest,at:new Date().toISOString(),

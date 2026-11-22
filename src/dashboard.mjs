@@ -165,7 +165,7 @@ export function createDashboardServer({ dataDir = path.resolve('.data') } = {}) 
         const job = await readJob(dataDir, id);
         const listed = job?.events.some(event => event.type === 'operation.completed' &&
           event.data?.key?.endsWith('/checks') && event.data.value?.some(check =>
-            check.screenshots?.some(file => path.basename(file) === name)));
+            check.screenshots?.some(file => path.win32.basename(file) === name)));
         if (!listed) return respond(response, 404, 'Not found', 'text/plain; charset=utf-8');
         return respond(response, 200, await readFile(path.join(dataDir, 'artifacts', id, name)), 'image/png');
       }
@@ -204,7 +204,7 @@ async function main() {
   const server = createDashboardServer(parsed);
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen(parsed.port, '127.0.0.1', resolve); });
   const address = server.address();
-  console.log('Frontier dashboard: http://127.0.0.1:' + address.port + '/' + (parsed.job ? '?job=' + parsed.job : ''));
+  console.log('Mosaic dashboard: http://127.0.0.1:' + address.port + '/' + (parsed.job ? '?job=' + parsed.job : ''));
   console.log('Read-only local viewer. Press Ctrl-C to close it.');
 }
 
