@@ -106,7 +106,10 @@ export class WindowsIsolatedJavaScriptCheckRunner {
     const {workspace, options} = this;
     const {runtime} = this.backendIdentity;
     this.verifyDependencies();
-    const stage = path.join(workspace.journal.dir,'windows-js-'+randomUUID());
+    const stageRoot = path.join(options.stateRoot,'js-stage');
+    await windowsFile('mkdir',stageRoot);
+    await windowsFile('private-directory',stageRoot);
+    const stage = path.join(stageRoot,randomUUID());
     await windowsFile('mkdir',stage);
     await windowsFile('private-directory',stage);
     let disposable = true;
@@ -121,7 +124,8 @@ export class WindowsIsolatedJavaScriptCheckRunner {
         if (bytes.length !== file.bytes || digest(bytes) !== file.sha256) throw isolation('Pinned Windows runtime changed');
         const destination = path.join(stagedRuntime,file.path);
         await mkdir(path.dirname(destination),{recursive:true});
-        await windowsWrite(destination,bytes);
+        try { await windowsWrite(destination,bytes); }
+        catch (error) { throw isolation('Cannot stage pinned component '+file.path+': '+error.message); }
         written.push({path:destination, hash:file.sha256, max:file.bytes});
       }
       const payload = Buffer.from(JSON.stringify({entry, modules, timeoutMs}));
