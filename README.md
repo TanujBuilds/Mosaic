@@ -16,6 +16,10 @@ curl -fsSL https://raw.githubusercontent.com/TanujBuilds/Mosaic/main/install.sh 
 
 To pick up after an interruption, run the same install command again. [Read the installer](install.sh) · [Release downloads](https://github.com/TanujBuilds/Mosaic/releases/tag/v0.1.0-beta.228)
 
+## Windows download (experimental)
+
+The Windows installer is in development. We’ll post the download here when the first build is ready to test.
+
 ## Try the source
 
 Use Git and Node.js **24.22.0**. Confirm that `node --version` reports `v24.22.0`. The demo and the focused test use Node.js built-ins and can run before dependency installation.
