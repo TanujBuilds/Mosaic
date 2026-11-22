@@ -4,7 +4,7 @@ import {Journal} from '../project/journal.mjs';
 import {Workspace} from '../project/workspace.mjs';
 import {Pause} from '../project/contracts.mjs';
 import {digest} from './contracts.mjs';
-import {approvedChecks,isNativeExecution,executionFields} from './execution.mjs';
+import {approvedChecks,isNativeExecution,executionFields,windowsHostConsult} from './execution.mjs';
 import {overnightInputs} from './overnight-preflight.mjs';
 
 function assertNativeCheckLaunchers(manifest, inputs) {
@@ -23,6 +23,7 @@ export function assertNativePreflight(c,g){
 }
 export async function preflightNativeExecution(c,input,{config=c.executionConfig,checksFactory,resumeBinding}={}){
  const parent=c.store.get('goal',input.goalId),revision=parent.hash===input.hash?null:c.store.all('goal_revision').find(row=>row.goalId===parent.id&&row.hash===input.hash&&row.status==='draft');if(!isNativeExecution(revision?.manifest??parent.manifest))return {required:false};if(parent.hash!==input.hash&&!revision)throw Error('Exact goal or draft revision approval hash required for native preflight');const original=executionApproval(c,{goalId:parent.id,revisionId:revision?.id});
+ if(windowsHostConsult(c,original.manifest))return {required:false};
  if(!original.manifest.project)throw new Pause('Native revision 2 requires an approved coding project and real execution preflight','isolation');
  if(!['draft','active','paused','stopped'].includes(original.status))throw Error('Native preflight goal is terminal');c.verifyCurrentWorker?.();
  const inputs=overnightInputs(original.manifest,config),inputsHash=digest(inputs),identity=digest({goalId:original.id,goalHash:original.hash,inputsHash}),receiptId=original.id+':'+original.hash,saved=c.store.maybe('native_preflight',receiptId);

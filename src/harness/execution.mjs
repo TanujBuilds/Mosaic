@@ -29,6 +29,15 @@ export function nativeRuntime(config,expected){return validateNativeCheckRuntime
 export function executionFields(manifest){return manifest.executionPolicy===undefined?{}:{executionPolicy:normalizeExecutionPolicy(manifest.executionPolicy)};}
 export function executionIdentity(manifest){return normalizeExecutionPolicy(manifest.executionPolicy)??{version:1,backend:'codex-sandbox',backendRevision:1};}
 export function sameExecutionBackend(a,b){const x=executionIdentity(a),y=executionIdentity(b);return x.backend===y.backend&&x.backendRevision===y.backendRevision&&x.runtimeFingerprint===y.runtimeFingerprint;}
+// Only a newly pinned, host-reviewed consultation can run without a project.
+export function windowsHostConsult(c, manifest) {
+ return process.platform === 'win32' && c.beta && manifest.project === null &&
+  manifest.mode.id === 'codex_only' && manifest.mode.actors.length === 1 &&
+  manifest.mode.actors[0] === 'codex' && manifest.reviewPolicy?.source === 'host' &&
+  !manifest.providerPolicy && !manifest.workerProfile && !manifest.researchPolicy &&
+  manifest.mode.capabilities.length === 1 && manifest.mode.capabilities[0] === 'consult' &&
+  manifest.capabilities.length === 1 && manifest.capabilities[0].id === 'consult';
+}
 export function assertExecutionAvailable(manifest,config={}){
  if(process.platform==='win32')throw new Pause('Windows protected coding is in development. No execution backend has passed Windows filesystem isolation qualification.','isolation');
  return assertExecutionPrerequisites(manifest,config);

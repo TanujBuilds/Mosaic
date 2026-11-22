@@ -1,7 +1,7 @@
 import {controlBinding} from './owner-inbox.mjs';
 import {ExecutionOwnership,executionHolds} from './execution-ownership.mjs';
 import {assertNativePreflight,preflightNativeExecution} from './native-preflight.mjs';
-import {normalizeExecutionPolicy,assertExecutionAvailable,assertExecutionConfiguration,assertExecutionRuntime,isNativeExecution,normalizeNativeCheckRuntime} from './execution.mjs';
+import {windowsHostConsult,normalizeExecutionPolicy,assertExecutionAvailable,assertExecutionConfiguration,assertExecutionRuntime,isNativeExecution,normalizeNativeCheckRuntime} from './execution.mjs';
 import { randomUUID } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
@@ -216,6 +216,12 @@ export class Coordinator {
   if(!['collaborative','deepseek_only','codex_only','overnight_review'].includes(manifest.mode.id)||(manifest.mode.version!==1&&!isOvernightV2(manifest)))throw Error('Select a built-in Mosaic Beta workflow');
   manifest.mode={...manifest.mode,capabilities:manifest.mode.capabilities.filter(id=>id!=='research')};
   manifest.capabilities=manifest.capabilities.filter(capability=>capability.id!=='research');
+  // Existing approval hashes retain their original capabilities on exact replay.
+  if(process.platform==='win32' && manifest.project===null && manifest.mode.id==='codex_only' &&
+     manifest.reviewPolicy?.source==='host' && (!cachedApproval || windowsHostConsult(this,cachedApproval))){
+   manifest.mode={...manifest.mode,capabilities:['consult']};
+   manifest.capabilities=manifest.capabilities.filter(capability=>capability.id==='consult');
+  }
   if(manifest.mode.actors.includes('deepseek')&&!manifest.providerPolicy){
    if(cachedApproval){
     // Cached comparison is not new execution authority. Its command/manifest
@@ -264,7 +270,10 @@ export class Coordinator {
  }
  verifyGoalBinding(goal,{taskId}={}){
   if(executionHolds(this,{goalId:goal.id}).some(row=>!taskId||!row.taskId||row.taskId===taskId))throw Error('Native execution ownership remains held; exact quiescence required');
-  this.verifyCurrentWorker?.();assertExecutionAvailable(goal.manifest,this.executionConfig);assertNativePreflight(this,goal);
+  this.verifyCurrentWorker?.();
+  if(!windowsHostConsult(this,goal.manifest)){
+   assertExecutionAvailable(goal.manifest,this.executionConfig);assertNativePreflight(this,goal);
+  }
   if(goal.manifest.mode.actors.includes('deepseek'))this.verifyWorkerBinding(goal,undefined,{executionTaskId:taskId});
   if(goal.manifest.reviewPolicy){const policy=normalizeReviewPolicy(goal.manifest.reviewPolicy);if(digest(policy)!==goal.manifest.reviewPolicyHash)throw Error('Approved review policy changed');if(policy.source==='api'&&(!this.providerRegistry||digest(this.providerRegistry.get(policy.reviewer.id,policy.reviewer.revision))!==digest(policy.reviewer)))throw Error('Approved reviewer identity changed');}
  }

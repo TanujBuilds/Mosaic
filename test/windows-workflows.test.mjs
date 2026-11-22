@@ -257,3 +257,55 @@ test('Windows source coordinator qualifies four selected host configurations and
     assert.equal(await fixture.git(fixture.repo, 'status', '--porcelain'), '');
   });
 });
+
+test('Windows Beta app-only consult uses host review and cannot grant project or worker authority', {
+  skip: process.platform !== 'win32', timeout: 120000,
+}, async t => {
+  const stage = await stageWindowsSource(t);
+  const {locations, privateDirectories} = await stage.load('beta/files.mjs');
+  const home = path.join(stage.root, 'consult profile');
+  await mkdir(home);
+  const paths = locations(home, true);
+  await privateDirectories(paths);
+  const provider = await loopbackSetupProvider(t);
+  await configure(stage, paths, 'claude-code', provider, false);
+  await startWorkflowService(t, stage, paths);
+  const {call} = await connectScriptedMcp(t, stage, paths);
+  await call('registry_list');
+  const mutate = (name, input, options) => call(name, {...input, idempotencyKey: randomUUID()}, options);
+  const manifest = {submissionId:'text-consult', objective:'Explain the invoice total in words.',
+    acceptance:['State both amounts.'], mode:'codex_only', limits:{hours:1,maxTasks:1,reviewAgentRuns:1}};
+  const prepare = {manifest, idempotencyKey:randomUUID()};
+  const draft = await call('goal_prepare', prepare);
+  assert.deepEqual(await call('goal_prepare', prepare), draft);
+  assert.equal(draft.manifest.project, null);
+  assert.deepEqual(draft.manifest.capabilities.map(item => item.id), ['consult']);
+  const goalId = draft.id;
+  await mutate('goal_activate', {goalId, hash:'0'.repeat(64)}, {error:true});
+  const goal = await mutate('goal_activate', {goalId, hash:draft.hash});
+  const spec = {submissionId:'explain', objective:manifest.objective, acceptance:manifest.acceptance, actor:'codex'};
+  for (const kind of ['coding','research','learning']) {
+    const refused = await mutate('task_submit', {goalId, task:{...spec, kind}}, {error:true});
+    assert.match(refused.error, /capability|prohibit|parked/i);
+  }
+  const scoped = await mutate('task_submit', {goalId, task:{...spec, kind:'consult',
+    permissions:{readPaths:['src/'],writePaths:['src/'],checks:[]}}}, {error:true});
+  assert.match(scoped.error, /Non-coding task cannot grant file write scope/);
+  const task = await mutate('task_submit', {goalId, task:{...spec, kind:'consult'}});
+  assert.deepEqual(task.spec.permissions, {readPaths:[],writePaths:[],checks:[]});
+  await mutate('native_text_start', {taskId:task.id});
+  await mutate('native_text_finish', {taskId:task.id, content:'1250 plus 250 is 1500.'});
+  const {binding} = (await call('review_inbox', {goalId})).items[0];
+  const ticket = await mutate('review_reserve', binding);
+  const result = await mutate('review_submit', {...binding, ticketId:ticket.ticketId,
+    verdict:{decision:'accept', feedback:'Both amounts and their sum are present.', findings:[]}});
+  assert.equal(result.status,'accepted');
+  assert.equal(result.spent.model,0);
+  assert.equal((await call('goal_get',{goalId})).deadline,goal.deadline);
+  assertProviderTraffic(provider,false);
+  const db = new DatabaseSync(path.join(paths.state,'harness.sqlite3'), {readOnly:true});
+  try {
+    assert.equal(db.prepare('SELECT count(*) AS n FROM requests').get().n,0);
+    assert.equal(db.prepare("SELECT count(*) AS n FROM records WHERE kind IN ('native_preflight','execution_owner')").get().n,0);
+  } finally { db.close(); }
+});
