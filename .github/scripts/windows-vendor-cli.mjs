@@ -45,7 +45,7 @@ await cli('mcp', 'add', foreign, '--', other, '--preserve-this-argument');
 const saved = await get(foreign);
 assert.equal(saved.transport.command, other);
 assert.deepEqual(saved.transport.args, ['--preserve-this-argument']);
-await assert.rejects(cli('mcp', 'get', '--json', name), e => e.code === 1 && /No MCP server named 'mosaic-beta' found/.test(e.stderr));
+await assert.rejects(cli('mcp', 'get', '--json', name), e => e.code === 1 && e.stderr.trim() === "Error: No MCP server named 'mosaic-beta' found.");
 
 assert.equal(await registerCodex(executable, launcher, options), 'written');
 const binding = await get(name);
