@@ -4,6 +4,8 @@ Mosaic coordinates bounded coding work between your coding app and an existing m
 
 ## Install Mosaic on an Apple Silicon Mac
 
+<!-- mosaic-desktop-release -->
+
 On an Apple Silicon Mac running macOS 26 or later, paste this line into Terminal from any folder. It installs the [Mosaic Beta .228 release](https://github.com/TanujBuilds/Mosaic/releases/tag/v0.1.0-beta.228) for your Mac account and guides you to your first coding task.
 
 ```sh

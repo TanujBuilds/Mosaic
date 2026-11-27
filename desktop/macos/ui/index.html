@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; font-src 'self'; connect-src 'none'; object-src 'none'; form-action 'none'; base-uri 'none'"
+    />
+    <title>Mosaic Desktop</title>
+    <link rel="stylesheet" href="styles.css" />
+    <script src="app.js" defer></script>
+  </head>
+  <body>
+    <a class="skip" href="#content">Skip to workspace</a>
+    <div class="shell">
+      <aside class="rail" aria-label="Workspace navigation">
+        <div class="brand">
+          <img src="assets/mosaic.svg" alt="" /><span>mosaic</span>
+        </div>
+        <nav id="navigation" aria-label="Projects and handoffs"></nav>
+        <div class="rail-foot" id="utilities"></div>
+      </aside>
+      <main class="pane" id="content" tabindex="-1">
+        <header class="toolbar">
+          <div class="crumb" id="crumb">Workspace</div>
+          <div class="tool-actions">
+            <button
+              type="button"
+              id="search-button"
+              data-action="search"
+              class="search-button"
+              aria-label="Search projects and handoffs (Command K)"
+            >
+              Search <kbd>⌘K</kbd>
+            </button>
+            <button
+              type="button"
+              id="refresh-button"
+              data-action="refresh"
+              class="icon-button"
+              aria-label="Refresh"
+              title="Refresh · ⌘R"
+            ></button>
+          </div>
+        </header>
+        <div id="notice" aria-live="polite"></div>
+        <div id="surface" class="surface">
+          <p class="loading">Opening Mosaic…</p>
+        </div>
+      </main>
+    </div>
+    <dialog id="search-dialog" aria-labelledby="search-label">
+      <form method="dialog" class="dialog-head">
+        <label id="search-label" for="query">Search this workspace</label>
+        <button class="icon-button" value="close" aria-label="Close search">
+          ×
+        </button>
+      </form>
+      <input
+        id="query"
+        type="search"
+        autocomplete="off"
+        spellcheck="false"
+        placeholder="Find a project or handoff"
+      />
+      <div id="results" class="search-results"></div>
+    </dialog>
+    <dialog id="discard-dialog" aria-labelledby="discard-title">
+      <h2 id="discard-title">Discard unsaved connection changes?</h2>
+      <p>Terminal and Mosaic Desktop share these connections.</p>
+      <form method="dialog" class="dialog-actions">
+        <button value="keep" class="button" autofocus>Keep editing</button>
+        <button value="discard" class="button primary">Discard changes</button>
+      </form>
+    </dialog>
+    <div
+      id="announcement"
+      class="sr-only"
+      aria-live="polite"
+      role="status"
+    ></div>
+  </body>
+</html>
