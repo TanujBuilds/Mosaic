@@ -255,7 +255,7 @@
       $("#crumb"),
       state.view === "all" ? `<span>${esc(srcName())}</span>` : `${state.view === "detail" ? labelBtn("back", `Back to ${state.backView === "attention" ? "needs attention" : state.backView === "all" ? "projects" : "board"}`, "text-button crumb-back") : ""}<span>${esc(a)}</span><span aria-hidden="true" class="slash">/</span><strong>${esc(b || "")}</strong>`,
     );
-    document.title = `${b || "Workspace"} — Mosaic Preview`;
+    document.title = `${b || "Workspace"} — Mosaic Desktop`;
   }
   function emptyPanel(title, body, action = "", label = "") {
     return `<section class="empty">${icon("projects")}<h2>${esc(title)}</h2><p>${esc(body)}</p>${action ? labelBtn(action, label) : ""}</section>`;
