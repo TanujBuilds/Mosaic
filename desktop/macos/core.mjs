@@ -10,13 +10,13 @@ import {install, installedLauncher, verifyVersion} from '../../src/beta/install.
 import {readBundledNativeCheckRuntime} from '../../src/beta/package-contract.mjs';
 
 const run = promisify(execFile);
-export const version = '0.1.0-beta.228';
+export const version = '0.1.0-beta.240';
 const stem = 'mosaic-beta-' + version + '-darwin-arm64';
 const url = 'https://github.com/TanujBuilds/Mosaic/releases/download/v' + version + '/' + stem + '.tar.gz';
-const archiveBytes = 86315923;
-const archiveHash = 'a43a5bfba1eea70ed213ad401782250cb4193c0e011940b0f592f963fcfdd6d2';
-const manifestHash = 'ecd13a265d568d7cb8bcdf35cf0cbcb9022f3b8097194973873c12d11284e5ae';
-const contentHash = 'e58f5372e93df910cc06ff8373edb1d285bac7a62d3dd268acdd66553be3beec';
+const archiveBytes = 86319202;
+const archiveHash = 'f1775387bd7d1935d7712613255c68642164a1d910c72fa7c98e13c54861c1dd';
+const manifestHash = '915d045c5ec3db55f7bba390b7e5e35b5d3a326da534c8ac506ef82677d39aa4';
+const contentHash = '13f628aa7beccd1c1fc337971a7a0ce17e083159128db9fe9518ff6719e91360';
 const thisFile = fileURLToPath(import.meta.url);
 
 async function verifyManifest(directory) {

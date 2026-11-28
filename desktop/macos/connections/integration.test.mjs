@@ -76,7 +76,7 @@ test('desktop, terminal setup, host registration and coordinator use one portabl
   assert.equal((await stat(paths.credentials)).mode&0o777,0o600);
   const saved=await readSettings(paths);
   assert.ok(saved.nativeCheckRuntime.artifactManifestPath.startsWith(paths.versions+path.sep));
-  assert.deepEqual(await (await mod('src/beta/package-contract.mjs')).readBundledNativeCheckRuntime(path.join(paths.versions,'0.1.0-beta.228','runtime')),saved.nativeCheckRuntime);
+  assert.deepEqual(await (await mod('src/beta/package-contract.mjs')).readBundledNativeCheckRuntime(path.join(paths.versions,'0.1.0-beta.240','runtime')),saved.nativeCheckRuntime);
   assert.equal((await readJson(path.join(paths.configDir,'portable-binding.json'))).complete,true);
   assert.equal((await readJson(path.join(paths.configDir,'host-codex-binding.json'))).state,'complete');
   assert.ok(!JSON.stringify([first,saved]).includes(secret) && !JSON.stringify([first,saved]).includes(reviewerSecret));
@@ -180,7 +180,7 @@ test('desktop, terminal setup, host registration and coordinator use one portabl
   await saveJson(path.join(historical,'viewer-connection.json'),{});
   const older=await action('settings.get');
   assert.ok(older.configured && older.installedAvailable);
-  assert.match(older.readOnlyReason,/0\.1\.0-beta\.6.*0\.1\.0-beta\.228.*official Terminal installer/);
+  assert.match(older.readOnlyReason,/0\.1\.0-beta\.6.*0\.1\.0-beta\.240.*official Terminal installer/);
   assert.ok(!JSON.stringify(older).includes(secret));
   await assert.rejects(action('settings.save',{...draft,revision:older.revision}),/official Terminal installer/);
   assert.deepEqual(await readJson(paths.config),unparseable);

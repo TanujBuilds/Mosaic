@@ -6,7 +6,7 @@ Mosaic coordinates bounded coding work between your coding app and an existing m
 
 <!-- mosaic-desktop-release -->
 
-On an Apple Silicon Mac running macOS 26 or later, paste this line into Terminal from any folder. It installs the [Mosaic Beta .228 release](https://github.com/TanujBuilds/Mosaic/releases/tag/v0.1.0-beta.228) for your Mac account and guides you to your first coding task.
+On an Apple Silicon Mac running macOS 26 or later, paste this line into Terminal from any folder. It installs the [Mosaic Beta .240 release](https://github.com/TanujBuilds/Mosaic/releases/tag/v0.1.0-beta.240) for your Mac account and guides you to your first coding task.
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/TanujBuilds/Mosaic/main/install.sh | /bin/sh
@@ -18,7 +18,7 @@ curl -fsSL https://raw.githubusercontent.com/TanujBuilds/Mosaic/main/install.sh 
 
 The project-chat workflow uses a local MCP connection to the coding app on your Mac. For a project you usually discuss in ChatGPT, open its local folder in Codex or Claude Code and connect Mosaic there. Ordinary ChatGPT conversations do not load this local bridge.
 
-To pick up after an interruption, run the same install command again. [Read the installer](install.sh) · [Release downloads](https://github.com/TanujBuilds/Mosaic/releases/tag/v0.1.0-beta.228)
+To pick up after an interruption, run the same install command again. [Read the installer](install.sh) · [Release downloads](https://github.com/TanujBuilds/Mosaic/releases/tag/v0.1.0-beta.240)
 
 ## Try the source
 

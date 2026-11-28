@@ -14,17 +14,17 @@ use File::Temp ();
 use JSON::PP ();
 use MIME::Base64 qw(encode_base64);
 
-my $version = '0.1.0-beta.228';
+my $version = '0.1.0-beta.240';
 my $stem = "mosaic-beta-$version-darwin-arm64";
 my $archive_url = "https://github.com/TanujBuilds/Mosaic/releases/download/v$version/$stem.tar.gz";
-my $archive_sha = 'a43a5bfba1eea70ed213ad401782250cb4193c0e011940b0f592f963fcfdd6d2';
-my $archive_bytes = 86315923;
-my $manifest_sha = 'ecd13a265d568d7cb8bcdf35cf0cbcb9022f3b8097194973873c12d11284e5ae';
-my $content_sha = 'e58f5372e93df910cc06ff8373edb1d285bac7a62d3dd268acdd66553be3beec';
+my $archive_sha = 'f1775387bd7d1935d7712613255c68642164a1d910c72fa7c98e13c54861c1dd';
+my $archive_bytes = 86319202;
+my $manifest_sha = '915d045c5ec3db55f7bba390b7e5e35b5d3a326da534c8ac506ef82677d39aa4';
+my $content_sha = '13f628aa7beccd1c1fc337971a7a0ce17e083159128db9fe9518ff6719e91360';
 # The promotion helper fills this pin after checking the signed, stapled release.
 my $desktop_release = undef;
-my $guide_revision = 'b60b5d6a6bc126f6cb9f9282f0e6e05a9ae8facb';
-my $guide_sha = '48d2337a77a79741334f085c9992eecf8b195e45136df669d966778702142b78';
+my $guide_revision = 'a30b4097f89dc984602c8fc03e8c4906392741f4';
+my $guide_sha = '2b49a550158f3cc98d8e68186a623e484026017deb4846769c70f4a78fc9ff92';
 my $helper_sha = 'e132fceb1b4b0ea25cec4796f2f65d0dc7ed7b2a3afe8541b90c458975811ec8';
 my $resources = "https://raw.githubusercontent.com/TanujBuilds/Mosaic/$guide_revision/distribution/onboarding";
 my $rerun = 'curl -fsSL https://raw.githubusercontent.com/TanujBuilds/Mosaic/main/install.sh | /bin/sh';

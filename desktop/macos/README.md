@@ -6,15 +6,15 @@ Use Mosaic Desktop to configure your coding app, see what it handed off, and fol
 
 Open the disk image on an Apple silicon Mac running macOS 26 or later. Drag **Mosaic Desktop** to Applications and open it. You can also use your personal Applications folder. To keep it in the Dock, choose **Options → Keep in Dock** from its Dock menu.
 
-If you already configured Terminal Beta .228, open **Connections** to see your saved host and provider. Existing keys stay on your Mac. With a fresh installation, choose your coding app and save your connections. The first save downloads the verified runtime and installs the same launcher used by Terminal. This step requires an internet connection. A host-only Codex setup can leave the worker model empty.
+If you already configured Terminal Beta .240, open **Connections** to see your saved host and provider. Existing keys stay on your Mac. With a fresh installation, choose your coding app and save your connections. The first save downloads the verified runtime and installs the same launcher used by Terminal. This step requires an internet connection. A host-only Codex setup can leave the worker model empty.
 
-Choose **Install in Codex** or **Install in Claude Code** to register Mosaic. Open a new chat there and ask it to use the `mosaic-beta` server to list its modes. Connections shows the first successful MCP call. **Test saved worker** checks the worker endpoint separately. A handoff created in that chat appears on its project board. Recent projects appear on the home screen. Pin a project for a sidebar shortcut, or browse the full project directory.
+Choose **Install in Codex** or **Install in Claude Code** to register Mosaic. Open a chat in your project and say “Use Mosaic to fix the failing test.” Choose the workflow when your app asks. Connections shows the first successful MCP call. **Test saved worker** checks the worker endpoint separately. A handoff created in that chat appears on its project board. Recent projects appear on the home screen. Pin a project for a sidebar shortcut, or browse the full project directory.
 
 Use **Settings → Dashboard source** to open available history from the separate coding core or the earlier Mosaic Preview. Connection edits apply to the shared workspace. Older Terminal Beta versions and setup options the app cannot safely edit show their Terminal instructions in Connections.
 
 ## Building and verifying the Mac image
 
-Run on an Apple silicon Mac with Xcode Command Line Tools and the .228 darwin-arm64 portable archive. Use a fresh output folder.
+Run on an Apple silicon Mac with Xcode Command Line Tools and the .240 darwin-arm64 portable archive. Use a fresh output folder.
 
 ```sh
 node desktop/macos/package.mjs --archive /path/to/portable.tar.gz --output /path/to/output

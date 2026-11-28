@@ -9,7 +9,7 @@ import {promisify} from 'node:util';
 
 const exec = promisify(execFile);
 const source = await readFile(new URL('../install.sh', import.meta.url), 'utf8');
-const version = '0.1.0-beta.228';
+const version = '0.1.0-beta.240';
 const stem = `mosaic-beta-${version}-darwin-arm64`;
 const sha = data => createHash('sha256').update(data).digest('hex');
 const dmgName = 'Mosaic-Desktop-arm64.dmg';
@@ -184,7 +184,7 @@ if (name === 'codesign' && args.includes('-R') && !args.at(-2).includes('"${team
         archive_sha:sha(bytes), manifest_sha:sha(manifest(version)), guide_sha:sha(guide), helper_sha:sha('fixture helper\n'),
         guide_revision:'a'.repeat(40), content_sha:contentHash, curl
     })) script = replacePin(script, name, value);
-    script = replaceOnce(script, 'my $archive_bytes = 86315923;', 'my $archive_bytes = ' + bytes.length + ';');
+    script = replaceOnce(script, 'my $archive_bytes = 86319202;', 'my $archive_bytes = ' + bytes.length + ';');
     script = replaceOnce(script, '$offset + 4 * 1024 * 1024 - 1', '$offset + 256 - 1');
     script = replaceOnce(script, "DIR => '/private/tmp'", "DIR => '" + stage + "'");
     script = replaceOnce(script, 'sleep $attempt;', 'sleep 0;');
@@ -222,9 +222,9 @@ test('official installer binds the published archive and immutable onboarding fi
         const local = await readFile(new URL('../distribution/onboarding/' + file, import.meta.url));
         assert.ok(source.includes(`my $${key} = '${sha(local)}';`), file + ' must match the published pin');
     }
-    assert.match(source, /a43a5bfba1eea70ed213ad401782250cb4193c0e011940b0f592f963fcfdd6d2/);
-    assert.match(source, /my \$archive_bytes = 86315923;/);
-    assert.match(source, /ecd13a265d568d7cb8bcdf35cf0cbcb9022f3b8097194973873c12d11284e5ae/);
+    assert.match(source, /f1775387bd7d1935d7712613255c68642164a1d910c72fa7c98e13c54861c1dd/);
+    assert.match(source, /my \$archive_bytes = 86319202;/);
+    assert.match(source, /915d045c5ec3db55f7bba390b7e5e35b5d3a326da534c8ac506ef82677d39aa4/);
     assert.match(source, /my \$resources = "https:\/\/raw\.githubusercontent\.com\/TanujBuilds\/Mosaic\/\$guide_revision\/distribution\/onboarding"/);
 });
 test('a piped fresh install runs the original package and guide in a terminal; a rerun skips the archive', async t => {

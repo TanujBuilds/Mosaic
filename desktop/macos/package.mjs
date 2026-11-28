@@ -5,11 +5,11 @@ import {parseArgs} from 'node:util';
 import {appName, bundleId, diskName, notarize, product, receiptName, releaseTag, run, sha256,
     signingIdentity, staple, verifyApp, verifyImage, verifyRelease, version} from './native/release.mjs';
 
-const release = '0.1.0-beta.228';
+const release = '0.1.0-beta.240';
 // Same pinned upstream tarball as install.sh. Never execute code from an
 // archive until an independent trusted digest has matched the private copy.
-const archiveDigest = 'a43a5bfba1eea70ed213ad401782250cb4193c0e011940b0f592f963fcfdd6d2';
-const manifestDigest = 'ecd13a265d568d7cb8bcdf35cf0cbcb9022f3b8097194973873c12d11284e5ae';
+const archiveDigest = 'f1775387bd7d1935d7712613255c68642164a1d910c72fa7c98e13c54861c1dd';
+const manifestDigest = '915d045c5ec3db55f7bba390b7e5e35b5d3a326da534c8ac506ef82677d39aa4';
 const uiAssets = ['index.html', 'app.js', 'styles.css', 'assets/mosaic.svg'];
 async function verifyPayload(root, manifest, selected = manifest.files) {
     for (let index = 0; index < selected.length; index += 24) {
