@@ -14,7 +14,9 @@ curl -fsSL https://raw.githubusercontent.com/TanujBuilds/Mosaic/main/install.sh 
 
 1. **Install.** Mosaic verifies the download and brings its own Node runtime. If Git needs Apple’s Command Line Tools, the guide offers to open the macOS installer and waits while you finish.
 2. **Connect.** Choose your coding app and, if you want it to delegate work, a local model server or hosted provider. Setup collects provider keys privately. Follow the guide in your chosen app to confirm it can call Mosaic.
-3. **Start a task.** Choose a local Git project with a commit, or paste the HTTPS URL of a public GitHub repository to clone it. Describe the change, the files Mosaic can use, and the check it should pass. Review the resulting draft in your coding app before approving work.
+3. **Start in your project chat.** Open your Git project in the connected coding app and say “Use Mosaic to fix the failing test.” Your app opens a workflow picker or asks you to choose in chat. In Codex, you can skip the picker by saying “Use Mosaic with Codex only to fix the failing test.” Review the proposed changes, checks and limits, then approve the work in the same conversation. The Terminal guide can also prepare a first task from a local project or public GitHub URL.
+
+The project-chat workflow uses a local MCP connection to the coding app on your Mac. For a project you usually discuss in ChatGPT, open its local folder in Codex or Claude Code and connect Mosaic there. Ordinary ChatGPT conversations do not load this local bridge.
 
 To pick up after an interruption, run the same install command again. [Read the installer](install.sh) · [Release downloads](https://github.com/TanujBuilds/Mosaic/releases/tag/v0.1.0-beta.228)
 

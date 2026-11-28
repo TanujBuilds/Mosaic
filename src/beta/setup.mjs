@@ -26,23 +26,27 @@ import {supportsSetupMenus,terminalSetupInput,welcomeSetup} from './terminal-set
 
 const exec=promisify(execFile);
 const mcpName='mosaic-beta';
-export const starter='Use Mosaic Beta in this repository. Inspect the mosaic-beta registry, ask me to choose a workflow if needed, then prepare an exact goal and show me its scope and limits for approval before activation.';
+export const starter='Use Mosaic to fix the failing test in this project.';
 const skill=`---
 name: mosaic-beta
-description: Use only for explicit Mosaic Beta requests through the separate local beta coordinator.
+description: Use when someone asks to use Mosaic or Mosaic Beta for a coding task in their project chat.
 ---
 
 # Mosaic Beta
 
-Use the \`mosaic-beta\` MCP server for explicit Mosaic Beta work. Use its registry,
+Use the \`mosaic-beta\` MCP server for Mosaic requests in this project. Use its registry,
 goal, task, observer and protected integration tools. The private terminal
 observer opens with \`mosaic\`. If the beta server is unavailable, ask the
 operator to run \`mosaic doctor\` and reopen Codex.
 
 Use the configured API worker in eligible modes. Protocol actor \`deepseek\` and
 mode \`deepseek_only\` are stable identifiers for the selected API worker.
-Choose among \`collaborative\`, \`deepseek_only\`, \`codex_only\`, and
-\`overnight_review\` with the operator. With no API worker use \`codex_only\`.
+For a new task, call \`choose_workflow\` with the project root. Pass a mode only
+when the user has chosen it. Continue a related active goal in its pinned mode.
+The tool checks owner-saved project choices and opens the host's workflow picker.
+If it returns \`choice_required\`, show the choices once in chat and wait.
+Keep the original request and project. If a worker needs setup, explain the
+available choices and let the user decide. On cancellation, stop.
 Research is parked. Confirm exact manifest and hash with the operator before
 activation, including worker profile, project revision, paths, protected checks,
 deadline, and call budgets. A setup or mode selection grants no dispatch.

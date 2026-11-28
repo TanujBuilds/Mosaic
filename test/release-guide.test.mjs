@@ -45,7 +45,7 @@ async function fixture(t, {state = 'saved', gitReady = true, skipGit = false, id
   t.after(() => rm(dir, {recursive: true, force: true}));
   const home = path.join(dir, "User's home");
   const launcher = path.join(home, '.local/bin/mosaic');
-  const runtime = path.join(home, 'Library/Application Support/Mosaic Beta/versions/0.1.0-beta.228/runtime');
+  const runtime = path.join(home, 'Library/Application Support/Mosaic Beta/versions/0.1.0-beta.240/runtime');
   const stage = path.join(dir, 'staging area');
   const setupState = path.join(home, 'setup-state');
   const trace = path.join(dir, 'trace');
@@ -155,10 +155,18 @@ test('noninteractive onboarding preserves the install without starting setup or 
   assert.equal(await result.trace, '');
 });
 
+test('a connected user can go straight to project chat without preparing a terminal draft', {skip: !portable}, async t => {
+  const f = await fixture(t, {skipGit: true});
+  const result = await f.invoke([['Press Enter to finish setup', '\n']]);
+  completed(0, result);
+  assert.match(result.output, /Use Mosaic to fix the failing test/);
+  assert.equal(await result.trace, 'host\n');
+});
+
 for (const state of ['missing', 'incomplete', 'saved']) {
   test(`onboarding with ${state} settings reaches first-task from the original directory`, {skip: !portable}, async t => {
     const f = await fixture(t, {state});
-    const result = await f.invoke([['press Enter', '\n']]);
+    const result = await f.invoke([['Git project path', '.\n']]);
     completed(0, result);
     assert.equal(await result.trace, (state === 'saved' ? '' : 'setup\n') + `host\nfirst-task\n--repo\n${f.cwd}\n`);
   });
@@ -188,7 +196,7 @@ test('setup, host and first-task failures retain their status and stop onboardin
     ['saved', {TASK_STATUS: '9'}, 9, null],
   ]) {
     const f = await fixture(t, {state});
-    const result = await f.invoke([['press Enter', '\n']], override);
+    const result = await f.invoke([['Git project path', '.\n']], override);
     completed(code, result);
     assert.match(result.output, /resume|run the Mosaic install command again/i);
     assert.equal(await result.trace, trace ?? `host\nfirst-task\n--repo\n${f.cwd}\n`);
@@ -209,7 +217,7 @@ test('author setup preserves configured values and saves only missing fields wit
   f.git(f.cwd, 'config', '--local', 'user.email', 'existing@example.invalid');
   const before = await readFile(path.join(f.cwd, '.git/config'), 'utf8');
   const result = await f.invoke([
-    ['press Enter', '\n'],
+    ['Git project path', '.\n'],
     ['this repository (name)', 'y\n'],
     ['Git author name', 'Mosaic "Quoted" \\ User\n'],
     ['Save these Git author values', 'y\n'],
@@ -229,7 +237,7 @@ test('declining author setup leaves repository configuration byte-for-byte intac
   const config = path.join(f.cwd, '.git/config');
   const before = await readFile(config);
   const result = await f.invoke([
-    ['press Enter', '\n'],
+    ['Git project path', '.\n'],
     ['this repository (name email)', 'y\n'],
     ['Git author name', 'Example Author\n'],
     ['Git author email', 'author@example.invalid\n'],
@@ -245,7 +253,7 @@ test('an existing global author profile is reused without writing local config',
   const config = path.join(f.cwd, '.git/config');
   const before = await readFile(config);
   await writeFile(path.join(f.home, '.gitconfig'), '[user]\n  name = Existing User\n  email = user@example.invalid\n');
-  const result = await f.invoke([['press Enter', '\n']]);
+  const result = await f.invoke([['Git project path', '.\n']]);
   completed(0, result);
   assert.equal(await result.trace, 'host\nfirst-task\n--repo\n' + f.cwd + '\n');
   assert.deepEqual(await readFile(config), before);
@@ -257,7 +265,7 @@ test('a concurrent Git config lock preserves existing repo configuration', {skip
   const before = await readFile(config);
   await writeFile(config + '.lock', 'owned by a concurrent git config');
   const result = await f.invoke([
-    ['press Enter', '\n'],
+    ['Git project path', '.\n'],
     ['this repository', 'y\n'],
     ['Git author name', 'Example Author\n'],
     ['Git author email', 'author@example.invalid\n'],
@@ -309,7 +317,7 @@ for (const outcome of ['ready', 'timeout', 'interrupted']) {
     if (outcome === 'timeout') source = source.replace('const waitMs = 20 * 60_000;', 'const waitMs = 25;');
     await writeFile(f.script, source);
     const answers = [['Open Apple', 'y\n']];
-    if (outcome === 'ready') answers.push(['press Enter', '\n']);
+    if (outcome === 'ready') answers.push(['Git project path', '.\n']);
     if (outcome === 'interrupted') answers.push(['Press Control-C', '\x03']);
     const result = await f.invoke(answers);
     completed({ready: 0, timeout: 1, interrupted: 130}[outcome], result);
@@ -323,7 +331,7 @@ test('legacy settings use the normal migration approval and refresh setup before
   const result = await f.invoke([
     ['Open Mosaic to review', 'y\n'],
     ['Approve the exact migration', 'y\n'],
-    ['press Enter', '\n'],
+    ['Git project path', '.\n'],
   ]);
   completed(0, result);
   assert.equal(await result.trace, 'migrate\nsetup\nhost\nfirst-task\n--repo\n' + f.cwd + '\n');
@@ -359,7 +367,7 @@ test('existing worktree-level and matching shell and login XDG author settings a
   f.git(f.cwd, 'config', 'extensions.worktreeConfig', 'true');
   f.git(f.cwd, 'config', '--worktree', 'user.name', 'Worktree User');
   const before = await readFile(config);
-  const result = await f.invoke([['press Enter', '\n']], {XDG_CONFIG_HOME: xdg});
+  const result = await f.invoke([['Git project path', '.\n']], {XDG_CONFIG_HOME: xdg});
   completed(0, result);
   assert.equal(await result.trace, 'host\nfirst-task\n--repo\n' + f.cwd + '\n');
   assert.deepEqual(await readFile(config), before);
@@ -376,7 +384,7 @@ test('a shell-only XDG author setting requires an explicit repo-local value', {s
   f.git(f.cwd, 'config', '--local', 'user.name', 'Existing User');
   const before = await readFile(config);
   const result = await f.invoke([
-    ['press Enter', '\n'],
+    ['Git project path', '.\n'],
     ['this repository (email)', 'n\n'],
   ], {XDG_CONFIG_HOME: xdg});
   completed(2, result);

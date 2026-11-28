@@ -1,5 +1,5 @@
 #!/bin/sh
-# Invoked beside verified host.mjs after the original Beta .228 installer.
+# Invoked beside the verified host connection helper.
 set -u
 
 resume() {
@@ -38,7 +38,7 @@ original_directory=$(pwd -P) || stop 1 'Open Terminal from an accessible directo
 stage=$(CDPATH= cd -P -- "$(/usr/bin/dirname -- "$0")" && pwd -P) ||
   stop 1 'The verified Mosaic setup files are unavailable.'
 launcher="$HOME/.local/bin/mosaic"
-runtime="$HOME/Library/Application Support/Mosaic Beta/versions/0.1.0-beta.228/runtime"
+runtime="$HOME/Library/Application Support/Mosaic Beta/versions/0.1.0-beta.240/runtime"
 node="$runtime/bin/node"
 if [ ! -x "$launcher" ] || [ ! -x "$node" ] || [ ! -f "$stage/host.mjs" ]; then
   stop 1 'The Mosaic launcher, bundled runtime or setup files are unavailable.'
@@ -386,17 +386,17 @@ clone_public_repo() (
 )
 
 default_repo=$(probe repo "$original_directory" 2>/dev/null) || default_repo=''
+printf '\n%s\n' 'Mosaic is connected. Open your project in your coding app and start a chat.'
+printf '%s\n' 'Try “Use Mosaic to fix the failing test.” Your app will ask which workflow to use.'
+if [ -n "$default_repo" ]; then
+  printf 'Current Git project: %s\n' "$default_repo"
+fi
 while :; do
-  if [ -n "$default_repo" ]; then
-    printf '\nCurrent Git project: %s\n' "$default_repo"
-    printf '%s' 'Git project path or public GitHub URL (press Enter to use this project, or type q to finish later): '
-  else
-    printf '\n%s' 'Git project path or public GitHub URL (type q to finish later): '
-  fi
-  IFS= read -r choice || stop 2 'First coding task deferred.'
+  printf '\n%s' 'Press Enter to finish setup and use chat, or enter a Git project path or public GitHub URL for the Terminal guide (. for this folder): '
+  IFS= read -r choice || exit 0
   case "$choice" in
+    '') exit 0 ;;
     q) stop 2 'First coding task deferred.' ;;
-    '') candidate=$default_repo ;;
     https://github.com/*)
       candidate=$(clone_public_repo "$choice")
       case $? in

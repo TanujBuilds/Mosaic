@@ -6,13 +6,14 @@ import { isEntry } from './entry.mjs';
 import { Registry } from './contracts.mjs';
 
 export const registryTool={name:'registry_list',description:'List the registered versioned modes, capabilities and workflows. Does not dispatch work.',inputSchema:{type:'object',properties:{},additionalProperties:false},annotations:{readOnlyHint:true}};
-export async function startMcp({invoke,tools=[registryTool],name='frontier-harness'}={}){
- const server=new Server({name,version:'0.1.0'},{capabilities:{tools:{}}});
+export async function startMcp({invoke,tools=[registryTool],name='frontier-harness',instructions}={}){
+ const server=new Server({name,version:'0.1.0'},{capabilities:{tools:{}},instructions});
  server.setRequestHandler(ListToolsRequestSchema,async()=>({tools}));
- server.setRequestHandler(CallToolRequestSchema,async request=>{
+ server.setRequestHandler(CallToolRequestSchema,async (request,extra)=>{
   try{
    if(!tools.some(t=>t.name===request.params.name))throw Error('Unknown harness tool');
-   const value=invoke?await invoke(request.params.name,request.params.arguments??{}):new Registry().snapshot();
+   const value=invoke?await invoke(request.params.name,request.params.arguments??{},
+    {capabilities:server.getClientCapabilities(),sendRequest:extra.sendRequest,signal:extra.signal}):new Registry().snapshot();
    return {content:[{type:'text',text:JSON.stringify(value)}]};
   }catch(error){return {isError:true,content:[{type:'text',text:JSON.stringify({error:error.message})}]};}
  });

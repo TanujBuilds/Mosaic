@@ -115,7 +115,7 @@ export class ReviewService {
     t.reviewAcceptance={ticketId:ticket.id,binding:ticket.binding,source:policy.source,reviewer:current.reviewer,verdictHash,acceptedAt:this.c.now()};
     t.status=t.spec.kind==='coding'?'ready_to_integrate':'accepted';
    }else{
-    delete t.reviewAcceptance;const exhausted=t.reviews>=t.spec.limits.reviews||t.attempts>=t.spec.limits.attempts||(this.c.store.spent(t.id).model??0)>=t.spec.limits.modelCalls;
+    delete t.reviewAcceptance;const exhausted=t.reviews>=t.spec.limits.reviews||t.attempts+(t.native?.checkAttempts??0)>=t.spec.limits.attempts||(this.c.store.spent(t.id).model??0)>=t.spec.limits.modelCalls;
     t.status=exhausted?'blocked':t.native?.layout==='candidate_v1'||t.executionActor==='codex'||t.spec.actor==='codex'?'codex_ready':'queued';t.checkpoint={...t.checkpoint,phase:'attempt'};
     if(t.native?.layout==='candidate_v1')t.native.status='revision_requested';if(exhausted)t.reason='Original review, attempt or request budget exhausted';
    }

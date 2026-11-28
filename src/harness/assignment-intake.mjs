@@ -8,7 +8,7 @@ import { checkoutGit, repositoryGitMetadata } from '../project/git.mjs';
 
 export const assignmentManifestSchema = {
   type: 'object',
-  description: 'Full or partial coding goal manifest. Provide submissionId, objective, acceptance, explicit mode, project repo/readPaths/writePaths/checks, and limits hours/maxTasks/reviewAgentRuns. The exact checked-out base may be omitted. Check environment overrides are unsupported.',
+  description: 'Full or partial coding goal manifest. Provide submissionId, objective, acceptance, the selected mode, project repo/readPaths/writePaths/checks, and limits hours/maxTasks/reviewAgentRuns. Each check takes a lowercase id and literal argv, e.g. {"id":"tests","argv":["node","--test"]}. Use the project’s actual command. The checked-out base may be omitted. Check environment overrides are unsupported.',
 };
 
 const versionsByMode = new Map([

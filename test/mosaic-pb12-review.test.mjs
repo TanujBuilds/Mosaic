@@ -9,6 +9,7 @@ import {Integration} from '../src/harness/integration.mjs';
 import {normalizeReviewPolicy,normalizeVerdict} from '../src/harness/review/contracts.mjs';
 import {normalizeGoal,digest} from '../src/harness/contracts.mjs';
 import {git} from '../src/project/process.mjs';
+import {Journal} from '../src/project/journal.mjs';
 import {Workspace} from '../src/project/workspace.mjs';
 
 async function fixture(t,{beta=false,mode='codex_only',selectedHost='cursor',reviewPolicy}={}){
@@ -38,6 +39,116 @@ async function acceptPrivateReview(f,goal){
  const ticket=await f.c.reviewService.reserve(binding,'reserve');
  await f.c.reviewService.submit({...binding,ticketId:ticket.ticketId,verdict:{decision:'accept',feedback:'Fixture host checked the supplied evidence',findings:[]}},'submit');
 }
+
+async function activeCandidate(f, attempts = 2) {
+ const goal = f.c.prepareGoal(f.raw, 'prepare');
+ f.c.activateGoal({goalId:goal.id,hash:goal.hash}, 'activate');
+ const task = f.c.submitTask({goalId:goal.id,submissionId:'task',kind:'coding',actor:'codex',objective:'Change file',acceptance:['checked'],limits:{attempts}}, 'task');
+ const started = await f.integration.startNative({taskId:task.id,layout:'candidate_v1'}, 'start');
+ return {goal, started, file:path.join(started.native.worktree,'file.txt'), finish:key => f.integration.finishNative({taskId:task.id,summary:'Changed fixture'}, key)};
+}
+
+for (const historical of [false,true]) test(`corrected native finish uses fresh bound checks in the original round (historical=${historical})`, async t => {
+ const f = await fixture(t,{beta:true});
+ const {goal,started,file,finish} = await activeCandidate(f);
+ await writeFile(file,'first candidate');
+ f.setChecks(false);
+ if (historical) {
+  const append = Journal.prototype.append;
+  t.mock.method(Journal.prototype,'append',function(type,data) {
+   if (type === 'native.checks') data = {round:data.round,checks:data.checks,sandbox:data.sandbox};
+   return append.call(this,type,data);
+  });
+ }
+ await assert.rejects(finish('bad'),/Native checks failed.*Correct the files in this candidate/);
+ if (historical) t.mock.restoreAll();
+ await assert.rejects(finish('duplicate'),/correct it before retrying/);
+ if (historical) {
+  await writeFile(file,'corrected candidate');
+  const {journal,workspace} = await f.integration.candidate(started);
+  // .228 records the correction before rejecting its mismatch with the old pin.
+  await journal.append('native.adopted',{taskId:started.id,round:1,snapshot:await workspace.snapshot()});
+ } else await chmod(file,0o755);
+ f.setChecks(true);
+ const finished = await finish('corrected');
+ assert.equal(finished.native.round,started.native.round);
+ assert.equal(finished.deadline,started.deadline);
+ assert.deepEqual(finished.spent,started.spent);
+ const {journal} = await f.integration.candidate(finished);
+ const receipts = journal.events.filter(e => e.type==='native.checks');
+ assert.deepEqual(receipts.map(e => e.data.checks[0].passed),[false,true]);
+ assert.equal(journal.last('native.check_correction').failedReceiptSequence,receipts[0].sequence);
+ assert.equal(receipts[1].data.binding.executableModesHash,finished.result.reviewCheckBinding.executableModesHash);
+ await acceptPrivateReview(f,goal);
+ const input = {taskId:started.id,feedback:'Import corrected candidate'};
+ const accepted = await f.integration.accept(input,'integrate');
+ assert.equal((await f.integration.accept(input,'replay')).integration.commit,accepted.integration.commit);
+ assert.equal(accepted.reviews,1);
+ assert.equal(await readFile(path.join(accepted.integration.worktree,'file.txt'),'utf8'),historical?'corrected candidate':'first candidate');
+});
+
+test('native check corrections stop at the approved attempt limit',async t => {
+ const f = await fixture(t,{beta:true});
+ const {started,file,finish} = await activeCandidate(f);
+ f.setChecks(false);
+ for (const key of ['one','two']) {
+  await writeFile(file,key);
+  await assert.rejects(finish(key),/Native checks failed/);
+ }
+ await writeFile(file,'three');
+ await assert.rejects(finish('three'),/attempt limit/);
+ const {journal} = await f.integration.candidate(started);
+ assert.equal(journal.events.filter(e => e.type==='native.checks').length,2);
+ assert.equal(f.c.getTask(started.id).native.writerActive,true);
+});
+
+test('bound review cannot reopen an exhausted corrected candidate',async t => {
+ const f = await fixture(t,{beta:true});
+ const {goal,started,file,finish} = await activeCandidate(f);
+ f.setChecks(false);
+ await assert.rejects(finish('bad'),/Native checks failed/);
+ await writeFile(file,'correction');
+ f.setChecks(true);
+ assert.equal((await finish('corrected')).native.checkAttempts,2);
+ const {binding} = (await f.c.reviewService.inbox({goalId:goal.id})).items[0];
+ const ticket = await f.c.reviewService.reserve(binding,'reserve');
+ const revised = await f.c.reviewService.submit({...binding,ticketId:ticket.ticketId,verdict:{decision:'revise',feedback:'More work needed',findings:[]}},'revise');
+ assert.equal(revised.status,'blocked');
+ await assert.rejects(f.integration.startNative({taskId:started.id,layout:'candidate_v1'},'restart'),/budget exhausted/);
+});
+
+test('changed bytes during a corrected check cannot authorize another retry',async t => {
+ const f = await fixture(t,{beta:true});
+ const {started,file,finish} = await activeCandidate(f,3);
+ f.setChecks(false);
+ await assert.rejects(finish('bad'),/Native checks failed/);
+ await writeFile(file,'correction');
+ const original = f.integration.checks.bind(f.integration);
+ t.mock.method(f.integration,'checks',(...args) => {
+  const runner = original(...args);
+  return {...runner,run:async(...params) => {
+   const results = await runner.run(...params);
+   await writeFile(file,'concurrent edit');
+   return results;
+  }};
+ });
+ await assert.rejects(finish('racing'),/Workspace changed/);
+ await assert.rejects(finish('changed'),/changed since the protected-check reservation/);
+ const {journal} = await f.integration.candidate(started);
+ assert.equal(journal.events.filter(e => e.type==='native.checks').length,1);
+});
+
+test('an interrupted native finish cannot authorize a changed candidate',async t => {
+ const f = await fixture(t,{beta:true});
+ const {started,file,finish} = await activeCandidate(f);
+ const original = f.integration.checks.bind(f.integration);
+ t.mock.method(f.integration,'checks',(...args) => ({...original(...args),run:async () => {throw Error('interrupted');}}));
+ await assert.rejects(finish('interrupted'),/interrupted/);
+ await writeFile(file,'changed');
+ await assert.rejects(finish('changed'),/changed since the protected-check reservation/);
+ const {journal} = await f.integration.candidate(started);
+ assert.equal(journal.last('native.check_correction'),undefined);
+});
 
 test('private bound review compares the target checkpoint with the checked snapshot',async t=>{
  const f=await fixture(t,{beta:true}),{goal,task}=await f.candidate();
