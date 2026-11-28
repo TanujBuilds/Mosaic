@@ -154,7 +154,12 @@ export async function main(args=process.argv.slice(2)){
   ]);
   const invoke=client(paths),identity=hostConnectionIdentity(await readSettings(paths));
   const tools=(await invoke('tools_list')).filter(tool=>tool.name!=='service_stop');
-  return startMcp({name:'mosaic-beta',tools,invoke:async(name,input)=>{
+  const {chooseWorkflow,pickerInstructions,pickerTool}=await import('./workflow-picker.mjs');
+  return startMcp({name:'mosaic-beta',instructions:pickerInstructions,tools:[pickerTool,...tools],invoke:async(name,input,request)=>{
+   if(name===pickerTool.name)return chooseWorkflow(input,request,{
+    readSettings:()=>readSettings(paths),
+    readPreset:async repo=>(await import('./project-presets.mjs')).readProjectPreset(paths,repo)
+   });
    const result=await invoke(name,input);
    if(name==='registry_list')await recordHostConnection(paths,identity).catch(()=>{});
    return result;

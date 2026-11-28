@@ -11,6 +11,54 @@ import {readBehavioralFileModes,behavioralModeHash} from './behavioral-validatio
 import {capacitySnapshot,writeScopeWait} from './scheduling/capacity.mjs';
 import { normalizeNativeCandidate } from './collaboration-contracts.mjs';
 
+function conclusiveCheckFailure(checks, specs) {
+ return Array.isArray(checks) && checks.length === specs.length &&
+  checks.every((check, index) => check.id === specs[index].id && !check.stopped &&
+   Number.isInteger(check.code) && check.code >= 0 && check.passed === (check.code === 0)) &&
+  checks.some(check => !check.passed);
+}
+
+function correctionCount(journal) {
+ return (journal.last('generation.transferred')?.priorCheckCorrections ?? 0) +
+  journal.events.filter(event => event.type === 'native.check_correction').length;
+}
+
+// Called under the candidate journal lock. The original pin and every correction
+// remain immutable, including round-one pins and receipts from earlier releases.
+async function reserveCheckInput(journal, task, binding, checks) {
+ const round = task.native.round;
+ const stage = `native-${round}`;
+ const used = task.attempts + round + correctionCount(journal);
+ if (used > task.spec.limits.attempts) throw Error('Native check attempt limit reached');
+ const original = await journal.memo(`${stage}/review-input`, async () => binding);
+ const corrections = journal.events.filter(event => event.type === 'native.check_correction');
+ const attempts = [original, ...corrections.filter(event => event.data.round === round).map(event => event.data.binding)];
+ const attempt = attempts.length;
+ const previous = attempts.at(-1);
+ const receipt = journal.events.findLast(event => event.type === 'native.checks' && event.data.round === round);
+ let failed = receipt && (receipt.data.attempt ?? 1) === attempt && conclusiveCheckFailure(receipt.data.checks, checks);
+ if (failed && !receipt.data.binding) {
+  // Older finish calls appended an adoption even when the pin rejected a
+  // correction. A later adoption of the pinned bytes may have begun a new run.
+  const adoptions = journal.events.filter(e => e.type === 'native.adopted' && e.data.round === round);
+  const lastAdopted = adoptions.findLast(e => e.sequence < receipt.sequence);
+  failed = lastAdopted && digest(lastAdopted.data.snapshot) === previous.snapshotHash &&
+   !adoptions.some(e => e.sequence > receipt.sequence && digest(e.data.snapshot) === previous.snapshotHash);
+ } else if (failed) {
+  failed = digest(receipt.data.binding) === digest(previous);
+ }
+ if (digest(previous) === digest(binding)) {
+  if (failed) throw Error('Native checks failed for this candidate; correct it before retrying');
+  return attempt;
+ }
+ if (!failed || journal.events.some(e => e.type === 'operation.started' && e.data.key === `${stage}/checkpoint`))
+  throw Error('Candidate changed since the protected-check reservation');
+ if (attempts.some(input => digest(input) === digest(binding))) throw Error('Native checks already failed for this candidate');
+ if (used >= task.spec.limits.attempts) throw Error('Native check attempt limit reached');
+ await journal.append('native.check_correction', {round, attempt: attempt + 1, binding, failedReceiptSequence: receipt.sequence});
+ return attempt + 1;
+}
+
 // The host confirms finish/release. Reported progress never proves quiescence.
 export class NativeCandidates {
  constructor(integration){this.i=integration;this.c=integration.c;this.agents=new Agents({c:this.c,config:integration.config});}
@@ -95,7 +143,8 @@ export class NativeCandidates {
    await this.i.applyChanges(target.workspace,changes,'generation-transfer',t.spec.permissions.writePaths);
    const sandbox=await this.i.checks(target.workspace,{goalId:t.goalId,taskId:t.id,operationKey:'native-transfer:'+t.id}).verify(this.i.signal);
    this.i.signal?.throwIfAborted();
-   await target.journal.append('generation.transferred',{taskId:t.id,fromGeneration:archived.native.generation??1,generation:t.native.generation,baseCommit:t.native.baseCommit,sandbox,permissionsHash:digest(target.manifest.permissions),snapshot:await target.workspace.snapshot()});
+   const priorCheckCorrections=correctionCount(source.journal);
+   await target.journal.append('generation.transferred',{taskId:t.id,priorCheckCorrections,fromGeneration:archived.native.generation??1,generation:t.native.generation,baseCommit:t.native.baseCommit,sandbox,permissionsHash:digest(target.manifest.permissions),snapshot:await target.workspace.snapshot()});
   }finally{await release();}
  }
  async frozen(t){
@@ -119,6 +168,7 @@ export class NativeCandidates {
    this.assertWriter(t);await this.frozen(t);
    const {workspace,journal}=target;
    // Validate the complete base diff before adopting any manual changes.
+   const snapshot=await workspace.snapshot(),reviewModes=g.manifest.reviewPolicy?await readBehavioralFileModes(workspace,Object.keys(snapshot)):null;
    const changes=await this.i.changes(workspace,t.native.baseCommit,t.spec.permissions.writePaths);
    // Also reject unexpected commits: manual file writes are allowed, arbitrary Git history is not.
    const expected=journal.last('stage.accepted')?.commit??t.native.baseCommit,head=await git(workspace.root,'rev-parse','HEAD');
@@ -127,20 +177,31 @@ export class NativeCandidates {
     const pending=journal.events.some(e=>e.type==='operation.started'&&e.data.key===`${stage}/checkpoint`);
     if(!pending||await git(workspace.root,'log','-1','--format=%s')!==`Orchestrator ${journal.id} stage ${stage}`||await git(workspace.root,'rev-parse','HEAD^')!==expected)throw Error('Native candidate HEAD changed outside recorded checkpoints');
    }
-   const snapshot=await workspace.snapshot(),reviewModes=g.manifest.reviewPolicy?await readBehavioralFileModes(workspace,Object.keys(snapshot)):null;await journal.append('native.adopted',{taskId:t.id,snapshot,round:t.native.round});
-   if(reviewModes){const pinned=await journal.memo(`${stage}/review-input`,async()=>({snapshotHash:digest(snapshot),executableModesHash:behavioralModeHash(reviewModes)}));if(pinned.snapshotHash!==digest(snapshot)||pinned.executableModesHash!==behavioralModeHash(reviewModes))throw Error('Candidate changed since the protected-check reservation');}
-   const runner=this.i.checks(workspace,{goalId:g.id,taskId:t.id,operationKey:'native-finish:'+t.id}),sandbox=await runner.verify(this.i.signal),results=await runner.run(target.manifest.permissions.checks,stage,this.i.signal);
+   this.c.executionOwnership.assertClear({goalId:g.id,taskId:t.id,workspaceRoot:workspace.root});
+   await workspace.assertSnapshot(snapshot);
+   const binding=reviewModes?{snapshotHash:digest(snapshot),executableModesHash:behavioralModeHash(reviewModes)}:null;
+   const attempt=binding?await reserveCheckInput(journal,t,binding,target.manifest.permissions.checks):1;
+   await journal.append('native.adopted',{taskId:t.id,snapshot,round:t.native.round});
+   this.assertWriter(t);
+   const checkKey=attempt===1?stage:`${stage}-attempt-${attempt}`;
+   const runner=this.i.checks(workspace,{goalId:g.id,taskId:t.id,operationKey:'native-finish:'+t.id}),sandbox=await runner.verify(this.i.signal),results=await runner.run(target.manifest.permissions.checks,checkKey,this.i.signal);
    await workspace.assertSnapshot(snapshot);
    if(reviewModes&&behavioralModeHash(await readBehavioralFileModes(workspace,Object.keys(snapshot)))!==behavioralModeHash(reviewModes))throw Error('Candidate executable mode changed during checks');
-   await journal.append('native.checks',{round:t.native.round,checks:results,sandbox});
-   if(!results.every(r=>r.passed))throw Error('Native checks failed');
+   await journal.append('native.checks',{round:t.native.round,...(binding?{attempt,binding}:{}),checks:results,sandbox});
+   if(!results.every(r=>r.passed)){
+    if(!binding || !conclusiveCheckFailure(results,target.manifest.permissions.checks))throw Error('Native checks failed');
+    const failedIds=results.filter(check=>!check.passed).map(check=>check.id).join(', ');
+    const remaining=t.spec.limits.attempts-t.attempts-t.native.round-correctionCount(journal);
+    const next=remaining>0?'Correct the files in this candidate and submit it for checks again.':'The approved check attempts have been used.';
+    throw Error('Native checks failed ('+failedIds+'). '+next);
+   }
    this.assertWriter(t);
    const checkpoint=await journal.memo(`${stage}/checkpoint`,()=>workspace.checkpoint({id:stage,writePaths:t.spec.permissions.writePaths}));
    if(!journal.events.some(e=>e.type==='stage.accepted'&&e.data.stageId===stage))await journal.append('stage.accepted',{stageId:stage,...checkpoint});
    return this.c.store.tx(()=>{
     const current=this.assertWriter(t);
     const candidate=normalizeNativeCandidate({version:1,taskId:t.id,baseCommit:t.native.baseCommit,worktree:workspace.root,commit:checkpoint.commit,status:'awaiting_review',checks:results});
-    current.native={...current.native,...candidate,writerActive:false};current.status='awaiting_review';
+    current.native={...current.native,...candidate,writerActive:false,...(binding?{checkAttempts:t.native.round+correctionCount(journal)}:{})};current.status='awaiting_review';
     current.result={summary:input.summary,changes,checks:results,...(reviewModes?{reviewCheckBinding:{snapshotHash:digest(snapshot),executableModesHash:behavioralModeHash(reviewModes),checksHash:digest(results)}}:{}),sandbox,baseCommit:t.native.baseCommit,worktree:workspace.root,journalRoot:journal.root,accounting:'Native host usage unavailable'};
     this.c.store.put('task',current);this.c.emit('task.native_finished',t.goalId,t.id,{status:current.status,commit:checkpoint.commit});return this.c.getTask(t.id);
    });

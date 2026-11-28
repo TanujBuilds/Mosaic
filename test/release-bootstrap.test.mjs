@@ -9,9 +9,16 @@ import {promisify} from 'node:util';
 
 const exec = promisify(execFile);
 const source = await readFile(new URL('../install.sh', import.meta.url), 'utf8');
-const version = '0.1.0-beta.228';
+const version = '0.1.0-beta.240';
 const stem = `mosaic-beta-${version}-darwin-arm64`;
 const sha = data => createHash('sha256').update(data).digest('hex');
+const dmgName = 'Mosaic-Desktop-arm64.dmg';
+const desktopURL = 'https://github.com/TanujBuilds/Mosaic/releases/download/v0.1.2-desktop/' + dmgName;
+const disk = Buffer.from('verified fixture disk image\n'.repeat(26));
+const team = 'FIXTURE123';
+const blankPin = 'my $desktop_release = undef;';
+const pinPattern = /^my \$desktop_release = [^\n]+;$/m;
+const fixturePin = `my $desktop_release = { version => '0.1.2', team => '${team}', bytes => ${disk.length}, sha256 => '${sha(disk)}' };`;
 const quote = value => "'" + value.replaceAll("'", "'\"'\"'") + "'";
 
 const terminal = String.raw`
@@ -22,6 +29,8 @@ if not pid:
     os.execv('/bin/sh', ['/bin/sh', '-c', '/bin/cat "$1" | /bin/sh', 'pipeline', sys.argv[1]])
 output = bytearray()
 answered = False
+choices = os.environ.get('FIXTURE_CHOICE', '').split('\n')
+choices_sent = 0
 start = time.monotonic()
 while time.monotonic() - start < 30:
     if select.select([fd], [], [], .05)[0]:
@@ -32,6 +41,10 @@ while time.monotonic() - start < 30:
             break
         if not data: break
         output.extend(data)
+        if output.count(b'Choice [2]: ') > choices_sent and choices_sent < len(choices):
+            choice = choices[choices_sent]
+            os.write(fd, b'\x04' if choice == 'EOF' else choice.encode() + b'\n')
+            choices_sent += 1
         if not answered and b'Guide input?' in output:
             os.write(fd, b'from terminal\n')
             answered = True
@@ -54,7 +67,7 @@ function replacePin(text, name, value) {
     assert.match(text, pattern);
     return text.replace(pattern, () => `my $${name} = '${value}';`);
 }
-async function fixture(t) {
+async function fixture(t, {desktop = false} = {}) {
     const dir = await realpath(await mkdtemp(path.join(os.tmpdir(), 'Mosaic bootstrap ')));
     t.after(() => rm(dir, {recursive:true, force:true}));
     const home = path.join(dir, "owner's home");
@@ -113,6 +126,7 @@ exit "$(cat ${quote(path.join(dir, 'guide-exit'))})"
     await writeFile(path.join(dir, 'guide.sh'), guide);
     await writeFile(path.join(dir, 'host.mjs'), 'fixture helper\n');
     await writeFile(path.join(dir, 'guide-exit'), '0');
+    await writeFile(path.join(dir, dmgName), disk);
     const curl = path.join(dir, 'fixture-curl');
     await writeFile(curl, `#!${process.execPath}
 import fs from 'node:fs';
@@ -122,17 +136,19 @@ const args = process.argv.slice(2);
 const arg = name => args[args.indexOf(name)+1];
 const url = arg('--url');
 const mode = JSON.parse(fs.readFileSync(path.join(dir, 'transport.json')));
+fs.appendFileSync(path.join(dir, 'urls'), url + '\\n');
 if (args[0] !== '-q' || arg('--proto') !== '=https' || arg('--proto-redir') !== '=https') process.exit(64);
 if (mode.reject && url.includes(mode.reject)) process.exit(22);
 if (url.endsWith('/guide.sh') || url.endsWith('/host.mjs')) {
     fs.copyFileSync(path.join(dir, path.basename(url)), arg('--output'));
     process.exit(0);
 }
-if (url !== 'https://github.com/TanujBuilds/Mosaic/releases/download/v${version}/${stem}.tar.gz') process.exit(64);
+const desktop = url === ${JSON.stringify(desktopURL)};
+if (!desktop && url !== 'https://github.com/TanujBuilds/Mosaic/releases/download/v${version}/${stem}.tar.gz') process.exit(64);
 const [offset, end] = arg('--range').split('-').map(Number);
 fs.appendFileSync(path.join(dir, 'requests'), offset + '\\n');
 if (mode.failAt !== undefined && offset >= mode.failAt) process.exit(28);
-const archive = fs.readFileSync(path.join(dir, 'archive'));
+const archive = fs.readFileSync(path.join(dir, desktop ? ${JSON.stringify(dmgName)} : 'archive'));
 if (mode.corrupt) archive[0] ^= 255;
 const range = offset + '-' + end + '/' + archive.length;
 const response = mode.full ? '200 OK' : '206 Partial Content\\r\\nContent-Range: bytes ' + (mode.badRange ? '0-0/1' : range);
@@ -141,12 +157,34 @@ fs.writeFileSync(arg('--output'), mode.full ? archive : archive.subarray(offset,
 `, {mode:0o755});
     const mode = v => writeFile(path.join(dir, 'transport.json'), JSON.stringify(v));
     await mode({});
-    let script = source;
+    assert.match(source, pinPattern);
+    let script = source.replace(pinPattern, () => desktop ? fixturePin : blankPin);
+    const systemApps = path.join(dir, 'system-apps');
+    script = replaceOnce(script, "($personal, '/Applications')", "($personal, '" + systemApps + "')");
+    // Finder, Gatekeeper and the signing tools stay inside the disposable fixture.
+    for (const tool of ['/usr/bin/codesign', '/usr/sbin/spctl', '/usr/bin/open', '/usr/bin/xattr', '/usr/bin/plutil']) {
+        const name = path.basename(tool);
+        const stub = path.join(dir, name);
+        script = script.replaceAll("'" + tool + "'", "'" + stub + "'");
+        await writeFile(stub, `#!${process.execPath}
+import fs from 'node:fs';
+import path from 'node:path';
+const dir = ${JSON.stringify(dir)};
+const name = ${JSON.stringify(name)};
+const args = process.argv.slice(2);
+const file = args.at(-1);
+const mode = JSON.parse(fs.readFileSync(path.join(dir, 'transport.json')));
+fs.appendFileSync(path.join(dir, 'calls'), JSON.stringify([name, ...args]) + '\\n');
+if (mode.refuse === name) process.exit(2);
+if (name === 'plutil') console.log(fs.readFileSync(file, 'utf8'));
+if (name === 'codesign' && args.includes('-R') && !args.at(-2).includes('"${team}"')) process.exit(3);
+`, {mode:0o755});
+    }
     for (const [name,value] of Object.entries({
         archive_sha:sha(bytes), manifest_sha:sha(manifest(version)), guide_sha:sha(guide), helper_sha:sha('fixture helper\n'),
         guide_revision:'a'.repeat(40), content_sha:contentHash, curl
     })) script = replacePin(script, name, value);
-    script = replaceOnce(script, 'my $archive_bytes = 86315923;', 'my $archive_bytes = ' + bytes.length + ';');
+    script = replaceOnce(script, 'my $archive_bytes = 86319202;', 'my $archive_bytes = ' + bytes.length + ';');
     script = replaceOnce(script, '$offset + 4 * 1024 * 1024 - 1', '$offset + 256 - 1');
     script = replaceOnce(script, "DIR => '/private/tmp'", "DIR => '" + stage + "'");
     script = replaceOnce(script, 'sleep $attempt;', 'sleep 0;');
@@ -176,7 +214,7 @@ fs.writeFileSync(arg('--output'), mode.full ? archive : archive.subarray(offset,
         await writeFile(receiptFile, receipt(v), {mode:0o600});
         await writeFile(launcherFile, launcher(v), {mode:0o755});
     };
-    return {dir, home, root, work, stage, script, scriptFile, receiptFile, launcherFile, versionDir, run, mode, installed, env, receipt, launcher};
+    return {dir, home, root, work, stage, systemApps, script, scriptFile, receiptFile, launcherFile, versionDir, run, mode, installed, env, receipt, launcher};
 }
 test('official installer binds the published archive and immutable onboarding files', async () => {
     assert.match(source, /my \$guide_revision = '[a-f0-9]{40}';/);
@@ -184,9 +222,9 @@ test('official installer binds the published archive and immutable onboarding fi
         const local = await readFile(new URL('../distribution/onboarding/' + file, import.meta.url));
         assert.ok(source.includes(`my $${key} = '${sha(local)}';`), file + ' must match the published pin');
     }
-    assert.match(source, /a43a5bfba1eea70ed213ad401782250cb4193c0e011940b0f592f963fcfdd6d2/);
-    assert.match(source, /my \$archive_bytes = 86315923;/);
-    assert.match(source, /ecd13a265d568d7cb8bcdf35cf0cbcb9022f3b8097194973873c12d11284e5ae/);
+    assert.match(source, /f1775387bd7d1935d7712613255c68642164a1d910c72fa7c98e13c54861c1dd/);
+    assert.match(source, /my \$archive_bytes = 86319202;/);
+    assert.match(source, /915d045c5ec3db55f7bba390b7e5e35b5d3a326da534c8ac506ef82677d39aa4/);
     assert.match(source, /my \$resources = "https:\/\/raw\.githubusercontent\.com\/TanujBuilds\/Mosaic\/\$guide_revision\/distribution\/onboarding"/);
 });
 test('a piped fresh install runs the original package and guide in a terminal; a rerun skips the archive', async t => {
@@ -420,4 +458,194 @@ test('guide status is preserved; a noninteractive command and truncated stream p
     assert.equal(next.code,2,next.out);
     assert.match(next.out,/Resume the guided setup with/);
     assert.ok((await stat(f.launcherFile)).isFile());
+});
+
+async function lines(file) {
+    try { return (await readFile(file, 'utf8')).trimEnd().split('\n').filter(Boolean); }
+    catch (err) { if (err.code === 'ENOENT') return []; throw err; }
+}
+const calls = async f => (await lines(path.join(f.dir, 'calls'))).map(line => JSON.parse(line));
+const urls = f => lines(path.join(f.dir, 'urls'));
+const chooseDesktop = {FIXTURE_CHOICE:'1'};
+
+test('a pending release offers only Terminal and an active release defaults to the same Terminal guide', async t => {
+    for (const desktop of [false, true]) {
+        const f = await fixture(t, {desktop});
+        const result = await f.run();
+        assert.equal(result.code, 0, result.out);
+        assert.equal(result.out.includes('Choice [2]'), desktop);
+        assert.match(result.out, /guide saw from terminal/);
+        assert.ok((await urls(f)).every(url => url !== desktopURL));
+        assert.deepEqual(await calls(f), []);
+    }
+});
+
+test('the desktop choice verifies a pinned disk image, hands it to Finder and skips the Terminal installer and guide', async t => {
+    const f = await fixture(t, {desktop:true});
+    const result = await f.run({FIXTURE_CHOICE:'bad\ndesktop app'});
+    assert.equal(result.code, 0, result.out);
+    assert.match(result.out, /Enter 1 for the desktop app/);
+    assert.match(result.out, /drag Mosaic Desktop to Applications/);
+    assert.doesNotMatch(result.out, /ORIGINAL INSTALLER|Guide input/);
+    assert.deepEqual(new Set(await urls(f)), new Set([desktopURL]));
+    await assert.rejects(stat(f.root), {code:'ENOENT'});
+    const tools = await calls(f);
+    const image = tools[0].at(-1);
+    assert.deepEqual(await readFile(image), disk);
+    assert.equal(path.basename(image), dmgName);
+    assert.equal(path.basename(path.dirname(image)), 'v0.1.2-desktop');
+    assert.deepEqual(tools.map(call => call[0]), ['xattr','spctl','open']);
+    assert.deepEqual(tools[0].slice(1,3), ['-w','com.apple.quarantine']);
+    assert.deepEqual(tools[1].slice(1), ['--assess','--type','open','--context','context:primary-signature',image]);
+    assert.deepEqual(tools[2].slice(1), ['-a','/System/Library/CoreServices/DiskImageMounter.app',image]);
+    await f.mode({reject:'https://'});
+    assert.equal((await f.run(chooseDesktop)).code, 0);
+    const requests = await urls(f);
+    await writeFile(image, 'unrelated file');
+    const changed = await f.run(chooseDesktop);
+    assert.notEqual(changed.code, 0);
+    assert.match(changed.out, /cached disk image has changed/);
+    assert.equal(await readFile(image, 'utf8'), 'unrelated file');
+    assert.deepEqual(await urls(f), requests);
+});
+
+test('EOF at the mode choice exits before downloads or setup', async t => {
+    const f = await fixture(t, {desktop:true});
+    const result = await f.run({FIXTURE_CHOICE:'EOF'});
+    assert.notEqual(result.code, 0);
+    assert.match(result.out, /ended before a choice/);
+    assert.deepEqual(await urls(f), []);
+    assert.deepEqual(await calls(f), []);
+});
+
+test('interrupted desktop transfer resumes and rejects corrupted or Gatekeeper-rejected disk images', async t => {
+    const f = await fixture(t, {desktop:true});
+    await f.mode({failAt:256});
+    const stopped = await f.run(chooseDesktop);
+    assert.notEqual(stopped.code, 0);
+    assert.match(stopped.out, /Download interrupted/);
+    assert.deepEqual(await calls(f), []);
+    await f.mode({corrupt:true});
+    // Corrupt the already-downloaded prefix too. Later ranges cannot repair it.
+    const partial = path.join(f.home, 'Library/Caches/Mosaic Desktop Installer/v0.1.2-desktop', dmgName + '.part');
+    await writeFile(partial, Buffer.alloc(256));
+    const corrupt = await f.run(chooseDesktop);
+    assert.notEqual(corrupt.code, 0);
+    assert.match(corrupt.out, /resuming at 256 bytes/);
+    assert.match(corrupt.out, /checksum failed/);
+    assert.deepEqual(await calls(f), []);
+    await f.mode({refuse:'spctl'});
+    const blocked = await f.run(chooseDesktop);
+    assert.notEqual(blocked.code, 0);
+    assert.match(blocked.out, /Gatekeeper could not verify/);
+    assert.ok((await calls(f)).every(call => call[0] !== 'open'));
+    await f.mode({});
+    const resumed = await f.run(chooseDesktop);
+    assert.equal(resumed.code, 0, resumed.out);
+    assert.match(resumed.out, /drag Mosaic Desktop/);
+    assert.ok((await urls(f)).every(url => url === desktopURL));
+});
+
+test('installed current and newer apps require the pinned publisher and Gatekeeper before opening; foreign copies stay in place', async t => {
+    const f = await fixture(t, {desktop:true});
+    const personal = path.join(f.home, 'Applications', 'Mosaic Desktop.app');
+    const shared = path.join(f.systemApps, 'Mosaic Desktop.app');
+    const plist = app => path.join(app, 'Contents', 'Info.plist');
+    for (const [app, v] of [[personal,'0.1.2'], [shared,'0.2.0']]) {
+        await mkdir(path.dirname(plist(app)), {recursive:true, mode:0o700});
+        await writeFile(plist(app), v);
+        const done = await f.run(chooseDesktop);
+        assert.equal(done.code, 0, done.out);
+        assert.match(done.out, v === '0.1.2' ? /already installed/ : /newer Mosaic Desktop/);
+        assert.deepEqual(await urls(f), []);
+        const log = await calls(f);
+        assert.deepEqual(log.at(-1), ['open',app]);
+        assert.ok(log.some(call => call.includes('--deep') && call.includes('--strict')));
+        assert.ok(log.some(call => call.includes('-R') && call.some(arg => arg.includes('dev.mosaic.desktop') && arg.includes(team))));
+        assert.ok(log.some(call => call.includes('--assess') && call.includes('execute')));
+        await f.mode({refuse:'codesign'});
+        const changed = await f.run(chooseDesktop);
+        assert.notEqual(changed.code, 0);
+        assert.match(changed.out, /could not be verified/);
+        assert.equal(await readFile(plist(app), 'utf8'), v);
+        assert.deepEqual(await urls(f), []);
+        assert.equal((await calls(f)).at(-1)[0], 'codesign');
+        await f.mode({});
+        await rm(app, {recursive:true});
+    }
+    await symlink(f.work, personal);
+    const linked = await f.run(chooseDesktop);
+    assert.notEqual(linked.code, 0);
+    assert.match(linked.out, /could not be verified/);
+    assert.deepEqual(await urls(f), []);
+});
+
+test('release promotion requires a public receipt and independent verifier, and emits an applicable immutable pin and download link', async t => {
+    const f = await fixture(t);
+    const script = path.join(f.work, 'distribution/desktop/promote.mjs');
+    const verifier = path.join(f.work, 'desktop/macos/package.mjs');
+    await mkdir(path.dirname(script), {recursive:true});
+    await mkdir(path.dirname(verifier), {recursive:true});
+    await cp(new URL('../distribution/desktop/promote.mjs', import.meta.url), script);
+    // Run the real promotion tool against a disposable release-verifier double.
+    // The actual Mac verifier has its own packaging tests.
+    const record = path.join(f.work, 'signed');
+    await writeFile(verifier, `
+import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
+import {createHash} from 'node:crypto';
+const [verify, image, receiptFlag, receipt, teamFlag, team] = process.argv.slice(2);
+assert.deepEqual([verify, receiptFlag, teamFlag, team], ['--verify-dmg','--receipt','--team-id',${JSON.stringify(team)}]);
+assert.equal(readFileSync(${JSON.stringify(record)}, 'utf8'), 'yes');
+assert.equal(createHash('sha256').update(readFileSync(image)).digest('hex'), JSON.parse(readFileSync(receipt)).dmg.sha256);
+`);
+    const installer = path.join(f.work, 'install.sh');
+    const readme = path.join(f.work, 'README.md');
+    const pending = source.replace(pinPattern, () => blankPin);
+    const marker = '<!-- mosaic-desktop-release -->';
+    await writeFile(installer, pending, {mode:0o755});
+    await writeFile(readme, '# Mosaic\n\n' + marker + '\n');
+    const release = {schema:1,version:'0.1.2',releaseTag:'v0.1.2-desktop',bundleId:'dev.mosaic.desktop',
+        mode:'public',publishable:true,teamId:team,dmg:{file:dmgName,bytes:disk.length,sha256:sha(disk)}};
+    const receipt = path.join(f.dir, 'Mosaic-Desktop-release.json');
+    const image = path.join(f.dir, dmgName);
+    const run = () => exec(process.execPath, [script,'--dmg',image,'--receipt',receipt,'--team-id',team]);
+    for (const invalid of [{mode:'local',publishable:false}, {teamId:'OTHER12345'}, {releaseTag:'rolling'}, {dmg:{...release.dmg, bytes:1}}]) {
+        await writeFile(receipt, JSON.stringify({...release,...invalid}));
+        await assert.rejects(run(), e => !e.stdout && /expected public desktop release/.test(e.stderr));
+    }
+    await writeFile(receipt, JSON.stringify(release));
+    await assert.rejects(run(), e => !e.stdout && e.stderr.includes('ENOENT'));
+    await writeFile(record, 'yes');
+    await writeFile(image, Buffer.alloc(disk.length));
+    await assert.rejects(run(), e => !e.stdout);
+    await writeFile(image, disk);
+    const {stdout:patch} = await run();
+    assert.ok(patch.includes(fixturePin));
+    assert.ok(patch.includes(desktopURL));
+    assert.equal(await readFile(installer, 'utf8'), pending);
+    assert.ok(!(await readFile(readme, 'utf8')).includes(desktopURL));
+    const patchFile = path.join(f.dir, 'release.patch');
+    await writeFile(patchFile, patch);
+    await exec('git', ['apply','--check',patchFile], {cwd:f.work});
+    await exec('git', ['apply',patchFile], {cwd:f.work});
+    assert.ok((await readFile(readme, 'utf8')).includes(desktopURL));
+    assert.ok((await readFile(installer, 'utf8')).includes(fixturePin));
+    assert.equal((await run()).stdout, '');
+    await writeFile(installer, pending.replace(blankPin, fixturePin.replace(team, 'OTHER12345')));
+    await assert.rejects(run(), e => !e.stdout && /pins conflict/.test(e.stderr));
+});
+
+test('an older verified desktop app stays in place while Finder opens the new image', async t => {
+    const f = await fixture(t, {desktop:true});
+    const app = path.join(f.systemApps, 'Mosaic Desktop.app');
+    const info = path.join(app, 'Contents/Info.plist');
+    await mkdir(path.dirname(info), {recursive:true});
+    await writeFile(info, '0.1.1');
+    const updated = await f.run(chooseDesktop);
+    assert.equal(updated.code, 0, updated.out);
+    assert.match(updated.out, /Mosaic Desktop 0.1.1 is installed/);
+    assert.deepEqual(new Set(await urls(f)), new Set([desktopURL]));
+    assert.deepEqual((await calls(f)).at(-1).slice(0,3), ['open','-a','/System/Library/CoreServices/DiskImageMounter.app']);
+    assert.equal(await readFile(info, 'utf8'), '0.1.1');
 });

@@ -14,15 +14,17 @@ use File::Temp ();
 use JSON::PP ();
 use MIME::Base64 qw(encode_base64);
 
-my $version = '0.1.0-beta.228';
+my $version = '0.1.0-beta.240';
 my $stem = "mosaic-beta-$version-darwin-arm64";
 my $archive_url = "https://github.com/TanujBuilds/Mosaic/releases/download/v$version/$stem.tar.gz";
-my $archive_sha = 'a43a5bfba1eea70ed213ad401782250cb4193c0e011940b0f592f963fcfdd6d2';
-my $archive_bytes = 86315923;
-my $manifest_sha = 'ecd13a265d568d7cb8bcdf35cf0cbcb9022f3b8097194973873c12d11284e5ae';
-my $content_sha = 'e58f5372e93df910cc06ff8373edb1d285bac7a62d3dd268acdd66553be3beec';
-my $guide_revision = 'b60b5d6a6bc126f6cb9f9282f0e6e05a9ae8facb';
-my $guide_sha = '48d2337a77a79741334f085c9992eecf8b195e45136df669d966778702142b78';
+my $archive_sha = 'f1775387bd7d1935d7712613255c68642164a1d910c72fa7c98e13c54861c1dd';
+my $archive_bytes = 86319202;
+my $manifest_sha = '915d045c5ec3db55f7bba390b7e5e35b5d3a326da534c8ac506ef82677d39aa4';
+my $content_sha = '13f628aa7beccd1c1fc337971a7a0ce17e083159128db9fe9518ff6719e91360';
+# The promotion helper fills this pin after checking the signed, stapled release.
+my $desktop_release = undef;
+my $guide_revision = 'a30b4097f89dc984602c8fc03e8c4906392741f4';
+my $guide_sha = '2b49a550158f3cc98d8e68186a623e484026017deb4846769c70f4a78fc9ff92';
 my $helper_sha = 'e132fceb1b4b0ea25cec4796f2f65d0dc7ed7b2a3afe8541b90c458975811ec8';
 my $resources = "https://raw.githubusercontent.com/TanujBuilds/Mosaic/$guide_revision/distribution/onboarding";
 my $rerun = 'curl -fsSL https://raw.githubusercontent.com/TanujBuilds/Mosaic/main/install.sh | /bin/sh';
@@ -92,7 +94,7 @@ sub version_tuple {
 }
 sub release_order {
     my @installed = version_tuple($_[0]);
-    my @target = version_tuple($version);
+    my @target = version_tuple($_[1] // $version);
     for my $i (0..$#target) { return $installed[$i] <=> $target[$i] if $installed[$i] != $target[$i]; }
     return 0;
 }
@@ -204,33 +206,42 @@ sub download_resource {
     digest($file, 1048576) eq $expected or fail("Checksum failed for $name. Retry with:\n  $rerun");
 }
 
-sub archive_download {
-    my $cache = home_directories('Library/Caches/Mosaic Beta Installer', 1);
+sub pinned_download {
+    my ($relative, $filename, $label, $url, $bytes, $sha, $keep) = @_;
+    my $cache = home_directories($relative, 1);
     my @s = stat $cache;
     fail("Mosaic download cache must be private (0700): $cache") if $s[2] & 0077;
     open($cache_lock, '<', $cache) or fail("Cannot open $cache.");
     flock($cache_lock, LOCK_EX | LOCK_NB) or fail("Another Mosaic install is in progress. Wait for it, then retry.");
-    my $file = "$cache/$stem.tar.gz.part";
+    my $final = "$cache/$filename";
+    if ($keep && present($final)) {
+        my @saved = lstat $final;
+        fail("The cached disk image has changed. Inspect $final before retrying.")
+            unless @saved && S_ISREG($saved[2]) && $saved[3] == 1 && $saved[4] == $<
+                && !($saved[2] & 0077) && $saved[7] == $bytes && digest($final, $bytes) eq $sha;
+        return $final;
+    }
+    my $file = "$final.part";
     if (present($file)) {
         my @part = lstat $file;
-        fail("Unexpected download cache entry at $file.") unless S_ISREG($part[2]) && $part[3] == 1 && $part[4] == $< && !($part[2] & 0077) && $part[7] <= $archive_bytes;
+        fail("Unexpected download cache entry at $file.") unless S_ISREG($part[2]) && $part[3] == 1 && $part[4] == $< && !($part[2] & 0077) && $part[7] <= $bytes;
     }
     sysopen(my $out, $file, O_RDWR | O_CREAT | O_NOFOLLOW | O_NONBLOCK, 0600) or fail("Cannot open the download cache.");
     binmode $out;
     my $offset = sysseek($out, 0, 2);
     defined $offset or fail("Cannot read the download cache.");
     $offset = 0 + $offset;
-    print "Downloading Mosaic Beta $version".($offset ? " (resuming at $offset bytes)" : '')."…\n";
-    while ($offset < $archive_bytes) {
+    print "Downloading $label".($offset ? " (resuming at $offset bytes)" : '')."…\n";
+    while ($offset < $bytes) {
         my $end = $offset + 4 * 1024 * 1024 - 1;
-        $end = $archive_bytes - 1 if $end >= $archive_bytes;
+        $end = $bytes - 1 if $end >= $bytes;
         my $part = "$stage/chunk";
         my $headers = "$stage/headers";
         my $received = 0;
         for my $attempt (1..4) {
             unlink $part, $headers;
-            my $status = system($curl, @curl_options, '--range', "$offset-$end", '--max-filesize', "$archive_bytes",
-                '--max-time', '600', '--dump-header', $headers, '--output', $part, '--url', $archive_url);
+            my $status = system($curl, @curl_options, '--range', "$offset-$end", '--max-filesize', "$bytes",
+                '--max-time', '600', '--dump-header', $headers, '--output', $part, '--url', $url);
             if ($status != -1 && ($status & 127)) {
                 print STDERR "Mosaic: Download interrupted. Resume with:\n  $rerun\n";
                 exit child_status($status);
@@ -240,11 +251,11 @@ sub archive_download {
                 my @responses = grep { /\AHTTP\/\S+ \d{3}/ } split /\r?\n\r?\n/, $raw;
                 my $response = $responses[-1] // '';
                 # A server that ignores Range may return the complete archive.
-                if ($response =~ /\AHTTP\/\S+ 200\b/ && -s $part == $archive_bytes) {
+                if ($response =~ /\AHTTP\/\S+ 200\b/ && -s $part == $bytes) {
                     truncate($out, 0) && defined(sysseek($out, 0, 0)) or fail("Cannot replace the download cache.");
-                    $offset = 0; $received = $archive_bytes;
+                    $offset = 0; $received = $bytes;
                 } elsif ($response =~ /\AHTTP\/\S+ 206\b/
-                    && $response =~ /^Content-Range:\s*bytes \Q$offset-$end\/$archive_bytes\E\s*$/mi && -s $part == $end - $offset + 1) {
+                    && $response =~ /^Content-Range:\s*bytes \Q$offset-$end\/$bytes\E\s*$/mi && -s $part == $end - $offset + 1) {
                     $received = $end - $offset + 1;
                 }
                 last if $received;
@@ -261,12 +272,16 @@ sub archive_download {
             fail("Cannot save downloaded data. Check available disk space.") unless defined $written && $written == $n;
         }
         $offset += $received;
-        printf "  %d%%\n", 100 * $offset / $archive_bytes;
+        printf "  %d%%\n", 100 * $offset / $bytes;
     }
     close($out) or fail("Could not save the complete download.");
-    unless (-s $file == $archive_bytes && digest($file, $archive_bytes) eq $archive_sha) {
+    unless (-s $file == $bytes && digest($file, $bytes) eq $sha) {
         unlink($file) or fail("Checksum failed. Remove the invalid cache file at $file before retrying.");
-        fail("Archive checksum failed. Download a fresh copy with:\n  $rerun");
+        fail("$label checksum failed. Download a fresh copy with:\n  $rerun");
+    }
+    if ($keep) {
+        rename($file, $final) or fail("Cannot save the verified disk image at $final.");
+        return $final;
     }
     return $file;
 }
@@ -274,6 +289,74 @@ sub child_status {
     my ($status) = @_;
     return 1 if $status == -1;
     return ($status & 127) ? 128 + ($status & 127) : $status >> 8;
+}
+# With no public pins the one-liner continues directly into its terminal guide.
+# Read the selection on the controlling terminal, even when sh came from curl.
+sub desktop_selected {
+    return 0 unless defined $desktop_release;
+    while (1) {
+        print "How would you like to set up Mosaic?\n  1. Desktop app\n  2. Terminal (default)\nChoice [2]: ";
+        my $answer = <STDIN>;
+        fail("Setup ended before a choice. Run the installation command again to continue.") unless defined $answer;
+        $answer =~ s/^\s+|\s+$//g;
+        return 0 if $answer =~ /\A(?:|2|terminal)\z/i;
+        return 1 if $answer =~ /\A(?:1|desktop(?: app)?)\z/i;
+        print "Enter 1 for the desktop app or 2 for Terminal.\n";
+    }
+}
+
+sub open_installed_desktop {
+    my ($pin, $before_download) = @_;
+    my $personal = home_directories('Applications', 0);
+    my @apps = grep { present($_) } map { "$_/Mosaic Desktop.app" }
+        grep { defined } ($personal, '/Applications');
+    fail("Multiple copies of Mosaic Desktop are installed. Inspect your Applications folders before continuing.") if @apps > 1;
+    return unless @apps;
+    my $app = $apps[0];
+    my $requirement = 'anchor apple generic and identifier "dev.mosaic.desktop" and '
+        .'certificate 1[field.1.2.840.113635.100.6.2.6] exists and '
+        .'certificate leaf[field.1.2.840.113635.100.6.1.13] exists and certificate leaf[subject.OU] = "'.$pin->{team}.'"';
+    fail("The existing app at $app could not be verified. It was left in place.") unless -d $app && !-l $app
+        && system('/usr/bin/codesign', '--verify', '--deep', '--strict', $app) == 0
+        && system('/usr/bin/codesign', '--verify', '--strict', '-R', "=$requirement", $app) == 0
+        && system('/usr/sbin/spctl', '--assess', '--type', 'execute', $app) == 0;
+    open(my $info, '-|', '/usr/bin/plutil', '-extract', 'CFBundleShortVersionString', 'raw', '-o', '-', "$app/Contents/Info.plist")
+        or fail("Could not read the version at $app.");
+    my $found = do { local $/; <$info> };
+    fail("Unrecognized desktop app version at $app.") unless close($info)
+        && defined($found) && $found =~ /\A([0-9]+\.[0-9]+\.[0-9]+)\n?\z/;
+    my $v = $1;
+    my $order = release_order($v, $pin->{version});
+    if ($order >= 0) {
+        print $order ? "A newer Mosaic Desktop ($v) is installed.\n" : "Mosaic Desktop $v is already installed.\n";
+        system('/usr/bin/open', $app) == 0 or fail("Open $app in Finder to continue.");
+        return 1;
+    }
+    print "Mosaic Desktop $v is installed at $app. You can update that copy in Finder.\n" if $before_download;
+    return;
+}
+
+sub desktop_setup {
+    my ($pin) = @_;
+    return 0 if open_installed_desktop($pin, 1);
+    my $tag = "v$pin->{version}-desktop";
+    my $asset = 'Mosaic-Desktop-arm64.dmg';
+    my $url = "https://github.com/TanujBuilds/Mosaic/releases/download/$tag/$asset";
+    my $image = pinned_download("Library/Caches/Mosaic Desktop Installer/$tag", $asset,
+        "Mosaic Desktop $pin->{version}", $url, $pin->{bytes}, $pin->{sha256}, 1);
+    # curl does not attach browser quarantine metadata. Keep Gatekeeper in the
+    # normal Finder installation path and request its disk-image assessment.
+    my $quarantine = sprintf('0081;%x;Mosaic Installer;', time);
+    system('/usr/bin/xattr', '-w', 'com.apple.quarantine', $quarantine, $image) == 0
+        or fail("Could not mark the downloaded disk image for Gatekeeper.");
+    system('/usr/sbin/spctl', '--assess', '--type', 'open', '--context', 'context:primary-signature', $image) == 0
+        or fail("Gatekeeper could not verify the downloaded disk image.");
+    return 0 if open_installed_desktop($pin, 0); # Another installer may have finished.
+    system('/usr/bin/open', '-a', '/System/Library/CoreServices/DiskImageMounter.app', $image) == 0
+        or fail("Finder could not open the disk image. Inspect $image.");
+    print "In the disk image, drag Mosaic Desktop to Applications, then open the installed app to finish setup.\n";
+    print "For a personal install, you can drag the app to your home Applications folder.\n";
+    return 0;
 }
 sub run {
     fail('Run this installer without arguments.') if @ARGV;
@@ -301,13 +384,16 @@ sub run {
     $receipt = "$root/config/installation.json";
     $| = 1;
     umask 0077;
+    my $desktop = desktop_selected();
+    $stage = File::Temp->newdir('mosaic-install-XXXXXXXX', DIR => '/private/tmp');
+    return desktop_setup($desktop_release) if $desktop;
     my $state = install_state();
     return 0 if $state eq 'newer';
-    $stage = File::Temp->newdir('mosaic-install-XXXXXXXX', DIR => '/private/tmp');
     download_resource('guide.sh', $guide_sha);
     download_resource('host.mjs', $helper_sha);
     if ($state ne 'current') {
-        my $archive = archive_download();
+        my $archive = pinned_download('Library/Caches/Mosaic Beta Installer', "$stem.tar.gz",
+            "Mosaic Beta $version", $archive_url, $archive_bytes, $archive_sha, 0);
         # A user may have finished updating Mosaic during a slow download.
         $state = install_state();
         return 0 if $state eq 'newer';

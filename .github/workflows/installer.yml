@@ -6,6 +6,7 @@ on:
       - install.sh
       - distribution/onboarding/**
       - test/release-*.test.mjs
+      - .github/scripts/stage-candidate.sh
       - .github/scripts/installer-smoke.exp
       - .github/scripts/registry-smoke.mjs
       - .github/scripts/finish-first-task.mjs
@@ -43,5 +44,10 @@ jobs:
           # The scripted MCP client substitutes for a signed-in GUI application.
           mkdir -p "$HOME/Applications/Cursor.app/Contents"
           touch "$HOME/Applications/Cursor.app/Contents/Info.plist"
+      - name: Verify an unpublished candidate archive on a clean Mac
+        if: github.ref_name != github.event.repository.default_branch
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: bash .github/scripts/stage-candidate.sh
       - name: Exercise pasted installation through first-task review and integration
         run: /usr/bin/expect .github/scripts/installer-smoke.exp

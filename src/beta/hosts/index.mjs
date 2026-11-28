@@ -26,6 +26,7 @@ export function formatHostRegistrationGuide(preview){
   `If mosaic-beta already exists, compare it with the command ${JSON.stringify(preview.launcher)} and the single argument "mcp". Keep an exact match. If it differs, preserve the existing entry and resolve the conflict in the app before continuing.`,
   entry,
   connectionHelp.refresh,
+  'Open your project in '+displayName+' and say “Use Mosaic to fix the failing test.” Choose a workflow in the picker or reply in chat.',
   'After the app lists the Mosaic tools, ask it to call mosaic-beta registry_list with {} in the same session. The tool dispatches no Mosaic work. If you use an app conversation to request the call, that conversation may use the app’s model.',
   ''
  ].join('\n');
